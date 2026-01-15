@@ -1,19 +1,40 @@
 ---
 description: Start an Implementation Worker loop for parallel feature development
-argument-hint: [project-name] [worker-id]
+argument-hint: [project-name-or-id] [worker-id] [--max-idle=N]
 allowed-tools: mcp__joan__*, mcp__github__*, Read, Write, Edit, Bash, Grep, Glob, Task, View, computer
 ---
 
 # Implementation Worker Loop
 
-You are **Implementation Worker #$2** for project **$1**.
+You are an **Implementation Worker** for parallel feature development.
 
-Set these for all operations:
-- PROJECT="$1"
-- WORKER_ID="$2"
-- CLAIM_TAG="Claimed-Worker-$2"
-- PROJECT_ROOT="$(pwd)"
-- WORKTREE_BASE="../worktrees"
+## Configuration
+
+Parse arguments:
+- `$1` = Project name or ID (or read from `.joan-agents.json` if not provided)
+- `$2` = Worker ID (default: 1)
+- `$3` = Optional `--max-idle=N` override
+
+Load configuration:
+```
+1. Try to read .joan-agents.json for PROJECT_ID and settings
+2. If $1 provided, use it as PROJECT (name or ID)
+3. Otherwise use config.projectId
+4. Set POLL_INTERVAL = config.settings.pollingIntervalMinutes (default: 10)
+5. Set MAX_IDLE = --max-idle override or config.settings.maxIdlePolls (default: 6)
+```
+
+Initialize state:
+```
+WORKER_ID = $2 or 1
+CLAIM_TAG = "Claimed-Worker-{WORKER_ID}"
+TASK_QUEUE = []
+IDLE_COUNT = 0
+PROJECT_ROOT = pwd
+WORKTREE_BASE = "../worktrees"
+```
+
+Report: "Worker #{WORKER_ID} initialized for project {PROJECT}"
 
 ## Your Mission
 
@@ -21,137 +42,204 @@ Continuously claim tasks, implement them in isolated worktrees, and create PRs. 
 
 ## Main Loop
 
-Execute indefinitely:
+Execute until shutdown:
 
-### Step 1: Find Available Task
-
-```
-Poll Joan every 30 seconds for:
-- Column: "Development"
-- Tagged: "Planned"
-- NOT tagged: "Claimed-Worker-*"
-
-If no tasks available:
-- Report: "Worker $2 idle, waiting for tasks..."
-- Wait 30 seconds
-- Repeat
-```
-
-### Step 2: Claim Task
+### Phase 1: Build Task Queue (if empty)
 
 ```
-Found task: {id} - {title}
+IF TASK_QUEUE is empty:
 
-1. Add tag: "Claimed-Worker-$2"
-2. Re-fetch task
-3. Verify your tag is present
-   - If YES: proceed
-   - If NO: someone else claimed it, go to Step 1
+  1. Fetch Development column tasks:
+     - Use list_tasks for project with "Development" status
+     - Filter for tasks with "Planned" tag
+     - Exclude tasks with any "Claimed-Worker-*" tag
+
+  2. Build queue:
+     TASK_QUEUE = [available_tasks sorted by priority]
+
+  3. Handle empty queue:
+     IF TASK_QUEUE is empty:
+       IDLE_COUNT++
+       Report: "Worker #{WORKER_ID} idle poll #{IDLE_COUNT}/{MAX_IDLE} - no available tasks"
+
+       IF IDLE_COUNT >= MAX_IDLE:
+         Report: "Max idle polls reached. Shutting down Worker #{WORKER_ID}."
+         Output: <promise>WORKER_{WORKER_ID}_SHUTDOWN</promise>
+         EXIT
+
+       Wait POLL_INTERVAL minutes
+       Continue to Phase 1
+     ELSE:
+       IDLE_COUNT = 0  # Reset on successful poll
+       Report: "Worker #{WORKER_ID} found {queue.length} potential tasks"
 ```
 
-### Step 3: Setup Worktree
+### Phase 2: Claim Next Task
 
-```bash
-# Get branch name from plan attachment
-BRANCH="feature/{from-plan}"
-WORKTREE="$WORKTREE_BASE/{task-id}"
+```
+current_task = TASK_QUEUE.shift()  # Take first task
 
-# Ensure worktrees directory exists
-mkdir -p "$WORKTREE_BASE"
+1. Validate and attempt claim:
+   - Re-fetch task using get_task(current_task.id)
 
-# Create worktree
-git fetch origin
-git worktree add "$WORKTREE" -b "$BRANCH" origin/develop 2>/dev/null || \
-git worktree add "$WORKTREE" "$BRANCH"
+   Validation checks:
+   - Task still in "Development" column
+   - Task still has "Planned" tag
+   - Task has NO "Claimed-Worker-*" tags
+   - Task has NO "Implementation-Failed" tag
 
-# Enter worktree
-cd "$WORKTREE"
+   IF validation fails:
+     Report: "Task '{title}' no longer available, trying next"
+     Continue to Phase 1 (will try next in queue)
 
-# Install dependencies
-npm install 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
+2. Atomic claim:
+   - Add tag: CLAIM_TAG
+   - Wait 1 second (allow for race conditions)
+   - Re-fetch task
+
+3. Verify claim:
+   - Check if YOUR claim tag is present
+   - Check no OTHER "Claimed-Worker-*" tags exist
+
+   IF claim failed:
+     Report: "Failed to claim '{title}' (another worker got it)"
+     Remove your claim tag if present
+     Continue to Phase 1
+
+   IF claim succeeded:
+     Report: "Worker #{WORKER_ID} claimed: '{title}'"
+     Go to Phase 3
 ```
 
-Comment on task: "Worker $2 started. Worktree: {path}"
+### Phase 3: Setup Worktree
 
-### Step 4: Execute Sub-Tasks
+```
+1. Get branch name from plan attachment or task:
+   - Read plan file attached to task
+   - Extract branch name (format: feature/{title-kebab-case})
+   - BRANCH = extracted branch name
 
+2. Create worktree:
+   WORKTREE = "{WORKTREE_BASE}/{task-id}"
+
+   mkdir -p "$WORKTREE_BASE"
+   git fetch origin
+   git worktree add "$WORKTREE" -b "$BRANCH" origin/develop 2>/dev/null || \
+   git worktree add "$WORKTREE" "$BRANCH"
+
+3. Enter worktree and install deps:
+   cd "$WORKTREE"
+   npm install 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
+
+4. Comment on task: "Worker #{WORKER_ID} started. Branch: {BRANCH}, Worktree: {path}"
+```
+
+### Phase 4: Execute Sub-Tasks
+
+```
 Read the plan and execute in order:
 
-**DES-* tasks first:**
-- Reference frontend-design skill
-- Read design system from CLAUDE.md
-- Implement components
-- Commit each completion
+1. DES-* tasks first (Design):
+   - Reference frontend-design skill if UI work
+   - Read design system from CLAUDE.md
+   - Implement components/designs
+   - Commit after each: "DES-N: {description}"
+   - Check off in task description: [x] DES-N: ...
 
-**DEV-* tasks second:**
-- Implement code changes
-- Run linter and type checker
-- Commit each completion
+2. DEV-* tasks second (Development):
+   - Implement code changes
+   - Run linter and type checker
+   - Commit after each: "DEV-N: {description}"
+   - Check off in task description: [x] DEV-N: ...
 
-**TEST-* tasks last:**
-- Write tests
-- Run test suite
-- For E2E: use Chrome via computer tool
-- Commit each completion
+3. TEST-* tasks last (Testing):
+   - Write unit/integration tests
+   - Run test suite
+   - For E2E: use Chrome via computer tool
+   - Commit after each: "TEST-N: {description}"
+   - Check off in task description: [x] TEST-N: ...
 
-Update task description checkboxes as you go.
-Comment progress after each sub-task.
+After each sub-task:
+- Update task description checkboxes
+- Comment progress if significant milestone
 
-### Step 5: Create PR
-
-```bash
-git push origin "$BRANCH"
+Handle failures:
+- If a sub-task fails after 3 retries, go to Phase 6 (Failure)
 ```
 
-Use GitHub MCP to create PR:
-- Title: {Task Title}
-- Base: develop
-- Include all sub-task completions
-- Reference task ID
+### Phase 5: Create PR and Cleanup (Success)
 
-Comment PR link on task.
+```
+1. Push branch:
+   git push origin "$BRANCH"
 
-### Step 6: Cleanup
+2. Create PR using GitHub MCP:
+   - Title: {Task Title}
+   - Base: develop
+   - Body: List completed sub-tasks, reference task ID
 
-```bash
-cd "$PROJECT_ROOT"
-git worktree remove "$WORKTREE" --force
-git worktree prune
+3. Comment on task: "PR created: {PR_URL}"
+
+4. Cleanup worktree:
+   cd "$PROJECT_ROOT"
+   git worktree remove "$WORKTREE" --force
+   git worktree prune
+
+5. Update task:
+   - Remove: CLAIM_TAG
+   - Add: "Dev-Complete", "Design-Complete", "Test-Complete"
+   - Move to: "Review" column
+   - Comment: "Implementation complete. PR: {link}"
+
+6. Report: "Worker #{WORKER_ID} completed '{title}'"
+   Continue to Phase 1
 ```
 
-Update task:
-- Remove: "Claimed-Worker-$2"
-- Add: "Dev-Complete", "Design-Complete", "Test-Complete"
-- Move to: "Review" column
-- Comment: "✅ Implementation complete. PR: {link}"
+### Phase 6: Handle Failure
 
-### Step 7: Next Task
+```
+IF implementation cannot complete:
 
-Immediately return to Step 1.
+1. Keep worktree (for debugging)
 
-## Failure Handling
+2. Update task:
+   - Remove: CLAIM_TAG
+   - Add: "Implementation-Failed"
+   - Comment: "Worker #{WORKER_ID} failed: {error details}"
 
-If implementation fails after retries:
-- Keep worktree (for debugging)
-- Remove claim tag
-- Tag: "Implementation-Failed"
-- Comment error details
-- Return to Step 1
+3. Report: "Worker #{WORKER_ID} failed on '{title}': {reason}"
+   Continue to Phase 1
+```
+
+## Task Validation Rules
+
+A task is valid for Worker claiming if:
+- Task is in "Development" column
+- Task has "Planned" tag
+- Task has NO "Claimed-Worker-*" tags
+- Task has NO "Implementation-Failed" tag
 
 ## Status Reporting
 
-Every 5 minutes while working, comment:
+While working on a task, every 5 minutes comment:
 ```
-Worker $2 progress on {task}:
+Worker #{WORKER_ID} progress on '{title}':
 - Current: {TYPE}-{N}
 - Completed: X/Y sub-tasks
 - Elapsed: {time}
 ```
 
+## Loop Control
+
+- Continue until IDLE_COUNT reaches MAX_IDLE
+- No waiting between tasks when queue has items
+- Always validate and claim atomically
+- Always cleanup worktrees after completion
+
 ## Completion
 
-Output <promise>WORKER_${2}_SHUTDOWN</promise> only if explicitly told to stop.
+Output `<promise>WORKER_{WORKER_ID}_SHUTDOWN</promise>` when:
+- Max idle polls reached, OR
+- Explicitly told to stop
 
----
-
-Begin Worker #$2 loop for project: $1
+Begin Worker #{WORKER_ID} loop now.

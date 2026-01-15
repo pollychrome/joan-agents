@@ -1,0 +1,24 @@
+{
+  "$schema": "./.claude/schemas/joan-agents.schema.json",
+  "projectId": "YOUR_PROJECT_UUID_HERE",
+  "projectName": "Your Project Name",
+  "settings": {
+    "pollingIntervalMinutes": 10,
+    "maxIdlePolls": 6
+  },
+  "agents": {
+    "businessAnalyst": {
+      "enabled": true
+    },
+    "architect": {
+      "enabled": true
+    },
+    "projectManager": {
+      "enabled": true
+    },
+    "workers": {
+      "enabled": true,
+      "count": 2
+    }
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Joan Agents Configuration",
+  "description": "Configuration file for Joan multi-agent orchestration system",
+  "type": "object",
+  "required": ["projectId", "projectName", "settings", "agents"],
+  "properties": {
+    "projectId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The Joan project UUID this agent system operates on"
+    },
+    "projectName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable project name for display"
+    },
+    "settings": {
+      "type": "object",
+      "required": ["pollingIntervalMinutes", "maxIdlePolls"],
+      "properties": {
+        "pollingIntervalMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 10,
+          "description": "Minutes between polls when task queue is empty"
+        },
+        "maxIdlePolls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 6,
+          "description": "Number of consecutive empty polls before agent shuts down"
+        }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "properties": {
+        "businessAnalyst": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether the BA agent is enabled"
+            }
+          },
+          "required": ["enabled"]
+        },
+        "architect": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether the Architect agent is enabled"
+            }
+          },
+          "required": ["enabled"]
+        },
+        "projectManager": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether the PM agent is enabled"
+            }
+          },
+          "required": ["enabled"]
+        },
+        "workers": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether worker agents are enabled"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 2,
+              "description": "Number of parallel workers to run"
+            }
+          },
+          "required": ["enabled", "count"]
+        }
+      },
+      "required": ["businessAnalyst", "architect", "projectManager", "workers"]
+    }
+  }
+}
