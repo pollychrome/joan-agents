@@ -50,14 +50,27 @@ Execute until shutdown:
 IF TASK_QUEUE is empty:
 
   1. Fetch Development column tasks:
-     - Use list_tasks for project with "Development" status
-     - Filter for tasks with "Planned" tag
-     - Exclude tasks with any "Claimed-Worker-*" tag
+     - Use list_tasks for project
+     - Get each task's details using get_task to check column and tags
 
-  2. Build queue:
-     TASK_QUEUE = [available_tasks sorted by priority]
+  2. Find workable tasks (TWO categories):
 
-  3. Handle empty queue:
+     a. NEW WORK - Tasks with "Planned" tag:
+        - Task is in "Development" column
+        - Task has "Planned" tag
+        - Task has NO "Claimed-Worker-*" tag
+        - Task has NO "Implementation-Failed" tag
+
+     b. REWORK - Tasks needing revision (PRIORITY):
+        - Task is in "Development" column
+        - Task has "Rework-Requested" tag
+        - Task has NO "Claimed-Worker-*" tag
+        - OR: Check task comments for `@rework` pattern
+
+  3. Build queue (rework tasks FIRST for priority):
+     TASK_QUEUE = [rework_tasks..., planned_tasks...] sorted by priority within each group
+
+  4. Handle empty queue:
      IF TASK_QUEUE is empty:
        IDLE_COUNT++
        Report: "Worker #{WORKER_ID} idle poll #{IDLE_COUNT}/{MAX_IDLE} - no available tasks"
@@ -71,20 +84,21 @@ IF TASK_QUEUE is empty:
        Continue to Phase 1
      ELSE:
        IDLE_COUNT = 0  # Reset on successful poll
-       Report: "Worker #{WORKER_ID} found {queue.length} potential tasks"
+       Report: "Worker #{WORKER_ID} found {queue.length} potential tasks ({rework_count} rework, {new_count} new)"
 ```
 
 ### Phase 2: Claim Next Task
 
 ```
 current_task = TASK_QUEUE.shift()  # Take first task
+is_rework = current_task has "Rework-Requested" tag OR has @rework comment
 
 1. Validate and attempt claim:
    - Re-fetch task using get_task(current_task.id)
 
    Validation checks:
    - Task still in "Development" column
-   - Task still has "Planned" tag
+   - Task still has "Planned" OR "Rework-Requested" tag
    - Task has NO "Claimed-Worker-*" tags
    - Task has NO "Implementation-Failed" tag
 
@@ -107,8 +121,31 @@ current_task = TASK_QUEUE.shift()  # Take first task
      Continue to Phase 1
 
    IF claim succeeded:
-     Report: "Worker #{WORKER_ID} claimed: '{title}'"
-     Go to Phase 3
+     Report: "Worker #{WORKER_ID} claimed: '{title}' (rework={is_rework})"
+     IF is_rework:
+       Go to Phase 2b (Parse Rework Instructions)
+     ELSE:
+       Go to Phase 3
+```
+
+### Phase 2b: Parse Rework Instructions (for rework tasks only)
+
+```
+1. Fetch task comments using list_task_comments(task_id)
+
+2. Find the @rework comment:
+   - Search for most recent comment containing "@rework"
+   - Extract the rework instructions (text after @rework)
+
+3. Store rework context:
+   REWORK_INSTRUCTIONS = extracted instructions
+   Report: "Rework requested: {REWORK_INSTRUCTIONS}"
+
+4. Also check for code review comments:
+   - Look for "## Code Review" comments with issues
+   - Extract specific issues/findings to address
+
+5. Continue to Phase 3 with rework context
 ```
 
 ### Phase 3: Setup Worktree
@@ -119,45 +156,64 @@ current_task = TASK_QUEUE.shift()  # Take first task
    - Extract branch name (format: feature/{title-kebab-case})
    - BRANCH = extracted branch name
 
-2. Create worktree:
+2. Create or reuse worktree:
    WORKTREE = "{WORKTREE_BASE}/{task-id}"
 
-   mkdir -p "$WORKTREE_BASE"
-   git fetch origin
-   git worktree add "$WORKTREE" -b "$BRANCH" origin/develop 2>/dev/null || \
-   git worktree add "$WORKTREE" "$BRANCH"
+   IF is_rework AND worktree already exists:
+     # Reuse existing worktree, just update it
+     cd "$WORKTREE"
+     git fetch origin
+     git pull origin "$BRANCH" --rebase || git pull origin "$BRANCH"
+   ELSE:
+     mkdir -p "$WORKTREE_BASE"
+     git fetch origin
+     git worktree add "$WORKTREE" -b "$BRANCH" origin/develop 2>/dev/null || \
+     git worktree add "$WORKTREE" "$BRANCH"
 
 3. Enter worktree and install deps:
    cd "$WORKTREE"
    npm install 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
 
-4. Comment on task: "Worker #{WORKER_ID} started. Branch: {BRANCH}, Worktree: {path}"
+4. Comment on task:
+   IF is_rework:
+     "Worker #{WORKER_ID} starting rework. Instructions: {REWORK_INSTRUCTIONS}"
+   ELSE:
+     "Worker #{WORKER_ID} started. Branch: {BRANCH}, Worktree: {path}"
 ```
 
 ### Phase 4: Execute Sub-Tasks
 
 ```
-Read the plan and execute in order:
+IF is_rework:
+  # Focus only on the rework instructions
+  1. Analyze REWORK_INSTRUCTIONS to understand what needs fixing
+  2. Make targeted changes to address the issues
+  3. Run tests to verify fixes
+  4. Commit with message: "fix: address rework feedback - {summary}"
 
-1. DES-* tasks first (Design):
-   - Reference frontend-design skill if UI work
-   - Read design system from CLAUDE.md
-   - Implement components/designs
-   - Commit after each: "DES-N: {description}"
-   - Check off in task description: [x] DES-N: ...
+ELSE:
+  # Normal implementation flow
+  Read the plan and execute in order:
 
-2. DEV-* tasks second (Development):
-   - Implement code changes
-   - Run linter and type checker
-   - Commit after each: "DEV-N: {description}"
-   - Check off in task description: [x] DEV-N: ...
+  1. DES-* tasks first (Design):
+     - Reference frontend-design skill if UI work
+     - Read design system from CLAUDE.md
+     - Implement components/designs
+     - Commit after each: "DES-N: {description}"
+     - Check off in task description: [x] DES-N: ...
 
-3. TEST-* tasks last (Testing):
-   - Write unit/integration tests
-   - Run test suite
-   - For E2E: use Chrome via computer tool
-   - Commit after each: "TEST-N: {description}"
-   - Check off in task description: [x] TEST-N: ...
+  2. DEV-* tasks second (Development):
+     - Implement code changes
+     - Run linter and type checker
+     - Commit after each: "DEV-N: {description}"
+     - Check off in task description: [x] DEV-N: ...
+
+  3. TEST-* tasks last (Testing):
+     - Write unit/integration tests
+     - Run test suite
+     - For E2E: use Chrome via computer tool
+     - Commit after each: "TEST-N: {description}"
+     - Check off in task description: [x] TEST-N: ...
 
 After each sub-task:
 - Update task description checkboxes
@@ -173,25 +229,34 @@ Handle failures:
 1. Push branch:
    git push origin "$BRANCH"
 
-2. Create PR using GitHub MCP:
-   - Title: {Task Title}
-   - Base: develop
-   - Body: List completed sub-tasks, reference task ID
+2. Handle PR:
+   IF is_rework:
+     # PR already exists, just push updates
+     Comment on task: "Rework complete. Updated PR with fixes."
+   ELSE:
+     # Create new PR using GitHub MCP
+     - Title: {Task Title}
+     - Base: develop
+     - Body: List completed sub-tasks, reference task ID
+     Comment on task: "PR created: {PR_URL}"
 
-3. Comment on task: "PR created: {PR_URL}"
-
-4. Cleanup worktree:
+3. Cleanup worktree:
    cd "$PROJECT_ROOT"
    git worktree remove "$WORKTREE" --force
    git worktree prune
 
-5. Update task:
+4. Update task:
    - Remove: CLAIM_TAG
+   - Remove: "Rework-Requested" (if present)
    - Add: "Dev-Complete", "Design-Complete", "Test-Complete"
-   - Move to: "Review" column
-   - Comment: "Implementation complete. PR: {link}"
+   - Move to: "Review" column (use sync_column: false)
+   - Comment:
+     IF is_rework:
+       "Rework complete. Ready for re-review."
+     ELSE:
+       "Implementation complete. PR: {link}"
 
-6. Report: "Worker #{WORKER_ID} completed '{title}'"
+5. Report: "Worker #{WORKER_ID} completed '{title}'"
    Continue to Phase 1
 ```
 
@@ -215,16 +280,30 @@ IF implementation cannot complete:
 
 A task is valid for Worker claiming if:
 - Task is in "Development" column
-- Task has "Planned" tag
+- Task has "Planned" OR "Rework-Requested" tag
 - Task has NO "Claimed-Worker-*" tags
 - Task has NO "Implementation-Failed" tag
+
+**Rework tasks take priority over new work.**
+
+## Detecting @rework Comments
+
+When scanning for rework tasks:
+1. Get task comments using `list_task_comments`
+2. Look for comments containing `@rework` pattern
+3. Extract instructions following `@rework`
+4. Common patterns:
+   - `@rework Please fix the validation logic`
+   - `@rework [reason]: Need to update tests`
+   - Just `@rework` with issues listed below
 
 ## Status Reporting
 
 While working on a task, every 5 minutes comment:
 ```
 Worker #{WORKER_ID} progress on '{title}':
-- Current: {TYPE}-{N}
+- Type: {NEW_WORK | REWORK}
+- Current: {TYPE}-{N} or "Addressing rework feedback"
 - Completed: X/Y sub-tasks
 - Elapsed: {time}
 ```
@@ -235,6 +314,7 @@ Worker #{WORKER_ID} progress on '{title}':
 - No waiting between tasks when queue has items
 - Always validate and claim atomically
 - Always cleanup worktrees after completion
+- **Rework tasks are processed before new work**
 
 ## Completion
 
