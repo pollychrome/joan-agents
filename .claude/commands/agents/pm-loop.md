@@ -86,16 +86,62 @@ current_task = TASK_QUEUE.shift()  # Take first task
 2. Determine task type:
 
    IF task in "Review" column:
-     Go to Step 3 (Validate & Merge)
+     Go to Step 3 (Check for Triggers)
 
    IF task in "Deploy" column:
-     Go to Step 4 (Track Deployment)
+     Go to Step 5 (Track Deployment)
 ```
 
-### Step 3: Validate Review Task & Merge
+### Step 3: Check Review Task for Triggers
 
 ```
 For tasks in Review column:
+
+1. Fetch task comments using list_task_comments(task_id)
+
+2. Look for trigger comments (check most recent first):
+
+   a. Check for @rework trigger:
+      - Search comments for "@rework" pattern
+      - Extract rework instructions (text after @rework)
+
+      IF @rework found:
+        Go to Step 3a (Handle Rework)
+
+   b. Check for @approve trigger:
+      - Search comments for "@approve" pattern
+
+      IF @approve found:
+        Go to Step 4 (Validate & Merge)
+
+3. IF no triggers found:
+   Report: "Task '{title}' in Review, awaiting @approve or @rework"
+   Continue to Phase 1
+```
+
+### Step 3a: Handle Rework Request
+
+```
+When @rework is detected:
+
+1. Extract rework instructions:
+   - Parse text after @rework
+   - May include specific issues or general feedback
+
+2. Update task:
+   - Move to "Development" column (use sync_column: false)
+   - Add tag: "Rework-Requested"
+   - Remove completion tags: "Dev-Complete", "Design-Complete", "Test-Complete"
+   - Comment: "🔄 Rework requested: {instructions}. Moving back to Development."
+
+3. Report: "Task '{title}' sent back for rework: {instructions}"
+   Continue to Phase 1
+```
+
+### Step 4: Validate Review Task & Merge
+
+```
+For tasks in Review column with @approve:
 
 1. Check sub-task completion:
    - Parse task description for sub-task checkboxes
@@ -114,37 +160,29 @@ For tasks in Review column:
      Continue to Phase 1
 
 3. Check PR status:
-   - Verify PR is approved
-   - Verify CI checks pass
+   - Verify PR is approved OR @approve overrides
+   - Verify CI checks pass (or are not blocking)
 
    IF not ready:
      Report: "Task '{title}' PR not ready: {reason}"
      Continue to Phase 1
 
-4. Check for @approve mention:
-   - Scan recent comments for "@approve"
-   - This is human authorization to merge
-
-   IF no @approve:
-     Report: "Task '{title}' awaiting @approve to merge"
-     Continue to Phase 1
-
-5. Merge to develop:
+4. Merge to develop:
    git fetch origin
    git checkout develop
    git pull origin develop
    git merge --no-ff {feature-branch} -m "Merge: {task-title}"
    git push origin develop
 
-6. Update task:
-   - Move to "Deploy" column
-   - Comment: "Merged to develop. Branch: {branch}, PR: {url}"
+5. Update task:
+   - Move to "Deploy" column (use sync_column: false)
+   - Comment: "✅ Merged to develop. Branch: {branch}, PR: {url}"
 
-7. Report: "Merged '{title}' to develop"
+6. Report: "Merged '{title}' to develop"
    Continue to Phase 1
 ```
 
-### Step 4: Track Deployment
+### Step 5: Track Deployment
 
 ```
 For tasks in Deploy column:
@@ -154,8 +192,8 @@ For tasks in Deploy column:
    - Or check if PR to main exists and is merged
 
    IF in main:
-     - Move task to "Done" column
-     - Comment: "Deployed to production."
+     - Move task to "Done" column (use sync_column: false)
+     - Comment: "🚀 Deployed to production."
      - Report: "Task '{title}' deployed, moved to Done"
      Continue to Phase 1
 
@@ -173,18 +211,26 @@ A task is valid for PM processing if:
 - Task is in "Review" or "Deploy" column
 - Task has NOT been moved to "Done"
 
+## Comment Triggers
+
+| Trigger | Action | Effect |
+|---------|--------|--------|
+| `@approve` | Merge to develop | Task moves Review → Deploy |
+| `@rework [reason]` | Send back for fixes | Task moves Review → Development |
+
 ## Merge Safety Rules
 
 NEVER:
 - Merge directly to main (only develop)
 - Force push to any branch
 - Revert without human approval (@revert mention)
-- Skip CI checks
+- Skip CI checks without explicit override
 
 ALWAYS:
 - Verify @approve before merging
 - Use --no-ff for merge commits
 - Comment actions on tasks
+- Use sync_column: false when moving tasks
 
 ## Deploy Status Update
 
@@ -211,6 +257,7 @@ Periodically (every 3rd poll), update project with deploy status:
 - Continue until IDLE_COUNT reaches MAX_IDLE
 - Report actions after each task processed
 - Never skip validation before acting
+- **Process @rework triggers before @approve** (check order matters)
 
 ## Completion
 
