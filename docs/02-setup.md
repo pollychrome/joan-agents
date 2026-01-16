@@ -252,9 +252,9 @@ Ensure your Joan project has these columns:
 1. **To Do** - New tasks awaiting analysis
 2. **Analyse** - Tasks being evaluated/planned
 3. **Development** - Tasks being implemented
-4. **Review** - Tasks awaiting human review
-5. **Deploy** - Tasks ready for deployment
-6. **Done** - Completed tasks
+4. **Review** - Tasks undergoing automated code review (Reviewer agent)
+5. **Deploy** - Tasks merged to develop, awaiting production deployment
+6. **Done** - Completed tasks (deployed to production)
 
 ### Create Joan Tags
 
@@ -263,13 +263,18 @@ Create these tags in your Joan project:
 | Tag | Color | Purpose |
 |-----|-------|---------|
 | `Needs-Clarification` | Yellow | Task has unanswered questions |
-| `Ready` | Green | Requirements complete |
-| `Plan-Pending-Approval` | Orange | Plan awaits @architect |
-| `Planned` | Blue | Plan approved, in development |
-| `Dev-Complete` | Purple | All DEV tasks done |
-| `Design-Complete` | Pink | All DES tasks done |
-| `Test-Complete` | Cyan | All TEST tasks pass |
-| `Bug-Found` | Red | Tests revealed a bug |
+| `Ready` | Green | Requirements complete, ready for Architect |
+| `Plan-Pending-Approval` | Orange | Plan awaits human @architect approval |
+| `Planned` | Blue | Plan approved, available for Dev to claim |
+| `Claimed-Dev-1` through `Claimed-Dev-N` | Gray | Dev N is implementing this task |
+| `Dev-Complete` | Purple | All DEV sub-tasks done |
+| `Design-Complete` | Pink | All DES sub-tasks done |
+| `Test-Complete` | Cyan | All TEST sub-tasks pass |
+| `Review-In-Progress` | Teal | Reviewer is actively reviewing |
+| `Rework-Requested` | Orange | Reviewer found issues, Dev needs to fix |
+| `Merge-Conflict` | Red | Late conflict detected during PM merge |
+| `Implementation-Failed` | Red | Dev couldn't complete (needs manual recovery) |
+| `Worktree-Failed` | Red | Worktree creation failed (needs manual recovery) |
 
 ### Set Up Git Branches
 

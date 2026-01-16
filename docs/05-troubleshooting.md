@@ -72,9 +72,10 @@ Solutions for common issues with the Joan Multi-Agent System.
 
 1. **Verify task is in correct column:**
    - BA watches: To Do, Analyse (Needs-Clarification)
-   - Architect watches: Analyse (Ready)
-   - Dev/Design/Test watch: Development (Planned)
-   - PM watches: Deploy
+   - Architect watches: Analyse (Ready, Plan-Pending-Approval)
+   - Dev watches: Development (Planned, Rework-Requested)
+   - Reviewer watches: Review (completion tags present)
+   - PM watches: Review (@approve), Deploy
 
 2. **Verify tags are correct:**
    - Ready tasks need `Ready` tag for Architect
@@ -382,10 +383,15 @@ pkill -9 -f "claude.*agents"
    - Ready
    - Plan-Pending-Approval
    - Planned
+   - Claimed-Dev-*
    - Dev-Complete
    - Design-Complete
    - Test-Complete
-   - Bug-Found
+   - Review-In-Progress
+   - Rework-Requested
+   - Merge-Conflict
+   - Implementation-Failed
+   - Worktree-Failed
 3. Move task back to To Do
 4. BA will re-evaluate from scratch
 
@@ -413,21 +419,24 @@ If automation is stuck, progress task manually:
    - Or add `Needs-Clarification` with questions
 
 2. **Analyse → Development:**
-   - Create plan manually
+   - Create plan manually in task description
    - Add `Planned` tag
    - Move to Development column
 
 3. **Development → Review:**
-   - Add all three Complete tags
+   - Add all three Complete tags (Dev-Complete, Design-Complete, Test-Complete)
+   - Create PR if not already created
    - Move to Review column
 
 4. **Review → Deploy:**
-   - Create PR manually if needed
-   - Move to Deploy column
+   - Merge develop into feature branch (resolve any conflicts)
+   - Comment `@approve` on the task
+   - PM will merge PR to develop and move to Deploy
+   - Or manually: merge PR to develop, then move to Deploy
 
 5. **Deploy → Done:**
-   - Merge PR to develop/main manually
-   - Move to Done column
+   - After production deployment, move to Done column
+   - (No merge happens here - PR was already merged in step 4)
 
 ---
 
