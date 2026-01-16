@@ -48,21 +48,53 @@ This version uses **git worktrees** for genuine parallel development, **intellig
 
 ## Quick Start
 
+### Global Installation (Recommended)
+
+Install once, use in all projects. Updates via `git pull`.
+
 ```bash
-# Clone or copy to your project
+# 1. Clone to a permanent location
+git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
+
+# 2. Create symlinks to global Claude Code config
+mkdir -p ~/.claude/commands
+ln -s ~/joan-agents/.claude/commands/agents ~/.claude/commands/agents
+ln -s ~/joan-agents/.claude/agents ~/.claude/agents
+ln -sf ~/joan-agents/.claude/CLAUDE.md ~/.claude/CLAUDE.md
+
+# 3. Initialize any project
+cd ~/your-project
+claude
+> /agents:init    # Creates .joan-agents.json config
+
+# 4. Run agents
+> /agents:start all
+```
+
+See [docs/03-global-installation.md](docs/03-global-installation.md) for detailed instructions.
+
+### Per-Project Installation
+
+Copy files to each project individually:
+
+```bash
 cp -r joan-agents/.claude/agents/ your-project/.claude/agents/
 cp -r joan-agents/.claude/commands/ your-project/.claude/commands/
+cp joan-agents/.claude/CLAUDE.md your-project/.claude/CLAUDE.md
 
-# Initialize configuration (interactive)
 cd your-project
-/agents:init
+claude
+> /agents:init
+> /agents:start all
+```
 
-# Start agents via slash commands (recommended)
-/agents:start all
+### Shell Scripts (iTerm2)
 
-# Or use shell scripts for iTerm2 tabs
-chmod +x joan-agents/*.sh
-./joan-agents/start-agents-iterm.sh my-project 4
+For launching agents in separate terminal tabs:
+
+```bash
+chmod +x ~/joan-agents/*.sh
+~/joan-agents/start-agents-iterm.sh my-project 4
 ```
 
 ## How Devs Operate
@@ -145,10 +177,11 @@ your-project/                    # Main repo
 ## Documentation
 
 See `docs/` folder for:
-- Architecture details
-- Setup guide
-- Agent reference
-- Troubleshooting
+- [Architecture](docs/01-architecture.md) - System design and agent roles
+- [Setup Guide](docs/02-setup.md) - Per-project configuration
+- [Global Installation](docs/03-global-installation.md) - Install once, use everywhere
+- [Troubleshooting](docs/05-troubleshooting.md) - Common issues and solutions
+- [Best Practices](docs/06-best-practices.md) - Tips for effective usage
 
 ## Key Benefits
 
