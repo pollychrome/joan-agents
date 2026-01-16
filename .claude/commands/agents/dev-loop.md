@@ -270,7 +270,7 @@ Handle failures:
 2. Handle PR:
    IF is_rework:
      # PR already exists, just push updates
-     Comment on task: "Rework complete. Updated PR with fixes."
+     # No comment here - the final comment uses canonical format
    ELSE:
      # Create new PR using GitHub MCP
      - Title: {Task Title}
@@ -290,11 +290,11 @@ Handle failures:
    - Remove: "Merge-Conflict" (if present)
    - Add: "Dev-Complete", "Design-Complete", "Test-Complete"
    - Move to: "Review" column (use sync_column: false)
-   - Comment:
+   - Comment (use canonical ## format for rework):
      IF is_merge_conflict:
-       "Merge conflicts resolved. Ready for re-review."
+       "## rework-complete\n\nMerge conflicts resolved."
      ELSE IF is_rework:
-       "Rework complete. Ready for re-review."
+       "## rework-complete\n\nAddressed reviewer feedback:\n- {summary of changes}\n\nReady for re-review."
      ELSE:
        "Implementation complete. PR: {link}"
 

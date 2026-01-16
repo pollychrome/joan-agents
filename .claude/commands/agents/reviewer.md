@@ -29,6 +29,8 @@ If config missing, report error and exit.
    - Tasks in "Review" column
    - With ALL completion tags: Dev-Complete, Design-Complete, Test-Complete
    - WITHOUT Review-In-Progress tag
+   - WITHOUT @approve comment
+   - WITHOUT unresolved @rework (check for `## rework-complete` after any `@rework`)
 
 2. For each task:
    - Add Review-In-Progress tag

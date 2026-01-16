@@ -78,7 +78,18 @@ If task has `Rework-Requested` tag:
 4. Keep the `Planned` tag (you'll remove it on completion as normal)
 5. Checkout the existing branch (don't create new worktree from scratch)
 6. Address the specific feedback - do NOT redo the entire task
-7. Push changes and comment: "Rework complete. Ready for re-review."
+7. Push changes and comment completion using the canonical format:
+
+```markdown
+## rework-complete
+
+Addressed reviewer feedback:
+- {summary of changes made}
+
+Ready for re-review.
+```
+
+**Important**: The `## rework-complete` header is required - it signals the Reviewer that this task is ready for another review cycle. This follows the `@` / `##` convention where `@` is a request and `##` is a response.
 
 ## Phase 2: Create Worktree
 

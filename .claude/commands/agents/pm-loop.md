@@ -101,11 +101,16 @@ For tasks in Review column:
 
 2. Look for trigger comments (check most recent first):
 
-   a. Check for @rework trigger:
-      - Search comments for "@rework" pattern
-      - Extract rework instructions (text after @rework)
+   a. Check for UNRESOLVED @rework trigger:
+      - Find MOST RECENT comment containing "@rework"
+      - Find MOST RECENT comment containing "## rework-complete"
+      - Compare timestamps:
+        * No @rework → skip to step 2b
+        * @rework exists but no ## rework-complete → @rework is active
+        * ## rework-complete newer than @rework → @rework is resolved, skip to step 2b
+        * @rework newer than ## rework-complete → @rework is active
 
-      IF @rework found:
+      IF @rework is ACTIVE (unresolved):
         Go to Step 3a (Handle Rework)
 
    b. Check for @approve trigger:

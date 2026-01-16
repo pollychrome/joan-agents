@@ -80,7 +80,8 @@ IF TASK_QUEUE is empty:
      - Task is in "Review" column
      - Task has ALL THREE completion tags: Dev-Complete, Design-Complete, Test-Complete
      - Task has NO "Review-In-Progress" tag (another reviewer isn't working on it)
-     - Task has NO existing @approve or @rework comment from Reviewer
+     - Task has NO @approve comment
+     - Task has NO unresolved @rework (see Rework Detection below)
 
   3. Build queue:
      TASK_QUEUE = [...reviewable_tasks] sorted by priority (high first)
@@ -411,7 +412,24 @@ A task is valid for Reviewer processing if:
 - Task is in "Review" column
 - Task has ALL of: Dev-Complete, Design-Complete, Test-Complete tags
 - Task has NO "Review-In-Progress" tag
-- Task has NO @approve or @rework comment from a previous review
+- Task has NO @approve comment
+- Task has NO unresolved @rework (see Rework Detection below)
+
+## Rework Detection
+
+Check if `@rework` is "resolved" before skipping a task:
+
+```
+1. Find the MOST RECENT comment containing "@rework"
+2. Find the MOST RECENT comment containing "## rework-complete"
+3. Compare timestamps:
+   - No @rework → task is fresh, reviewable
+   - @rework but no ## rework-complete → dev still working, skip
+   - ## rework-complete newer than @rework → rework done, reviewable
+   - @rework newer than ## rework-complete → new rework request, skip
+```
+
+This allows multiple rework cycles while maintaining a clear audit trail.
 
 ## Loop Control
 

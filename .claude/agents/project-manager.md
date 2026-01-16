@@ -53,10 +53,26 @@ You are the quality gate that prevents incomplete work from being merged.
    - Merge PR to develop branch
    - Move task to "Deploy" column
    - Comment merge status
-3. **For tasks with @rework comment**:
+3. **For tasks with unresolved @rework comment** (see Rework Detection Logic):
    - Move task back to "Development" column
    - Add `Rework-Requested` tag
    - Remove completion tags
+
+### Rework Detection Logic
+
+Only act on `@rework` if it's unresolved:
+
+```
+1. Find the MOST RECENT comment containing "@rework"
+2. Find the MOST RECENT comment containing "## rework-complete"
+3. Compare timestamps:
+   - If no @rework exists → no action needed
+   - If @rework exists but no ## rework-complete → @rework is unresolved, act on it
+   - If ## rework-complete timestamp > @rework timestamp → @rework is resolved, ignore it
+   - If @rework timestamp > ## rework-complete timestamp → new @rework, act on it
+```
+
+This prevents moving tasks back to Development after a dev has completed their rework.
 
 ### Phase 3: Deploy Column - Production Tracking
 

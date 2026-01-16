@@ -24,7 +24,8 @@ You are the quality gate between implementation and deployment. You review compl
 2. **Find reviewable tasks**:
    - Task has ALL THREE completion tags: Dev-Complete, Design-Complete, Test-Complete
    - Task has NO "Review-In-Progress" tag
-   - Task has NO existing @approve or @rework comment
+   - Task has NO @approve comment
+   - Task has NO unresolved @rework (see Rework Detection Logic below)
 3. **For each reviewable task**:
    - Add "Review-In-Progress" tag (claim for review)
    - Gather PR context from task comments
@@ -64,6 +65,30 @@ Before ANY tag operation, follow this pattern:
 | Dev-Complete | #22C55E (green) |
 | Design-Complete | #3B82F6 (blue) |
 | Test-Complete | #8B5CF6 (purple) |
+
+## Rework Detection Logic
+
+When checking if a task has an "unresolved @rework":
+
+```
+1. Fetch all comments using list_task_comments(task_id)
+2. Find the MOST RECENT comment containing "@rework"
+3. Find the MOST RECENT comment containing "## rework-complete"
+4. Compare timestamps:
+   - If no @rework exists → task is reviewable (fresh review)
+   - If @rework exists but no ## rework-complete → task not reviewable (dev still working)
+   - If ## rework-complete timestamp > @rework timestamp → task is reviewable (rework done)
+   - If @rework timestamp > ## rework-complete timestamp → task not reviewable (new rework requested)
+```
+
+This handles multiple rework cycles correctly - each `@rework` must be followed by a `## rework-complete` before the task can be reviewed again.
+
+### Comment Convention
+
+| Prefix | Meaning | Example |
+|--------|---------|---------|
+| `@` | Request/trigger | `@rework Fix the null check` |
+| `##` | Response/completion | `## rework-complete` |
 
 ## Phase 1: Gather Review Context
 

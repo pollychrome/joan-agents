@@ -26,12 +26,13 @@ If config missing, report error and exit.
 ## Single Pass Mode (default)
 
 1. Fetch all actionable tasks:
-   - Tasks in "Review" column (check for @approve or @rework)
+   - Tasks in "Review" column (check for @approve or unresolved @rework)
    - Tasks in "Deploy" column (check production status)
 
 2. Process each task:
    - Validate before working
-   - Handle @rework → move back to Development
+   - Handle unresolved @rework → move back to Development
+     (only if no `## rework-complete` after the `@rework`)
    - Handle @approve → merge to develop, move to Deploy
    - Track Deploy tasks for production deployment
 

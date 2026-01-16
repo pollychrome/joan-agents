@@ -154,15 +154,42 @@ Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual in
 4. Human ensures `Planned` tag is present
 5. Task becomes available for devs to claim again
 
-### Comment Triggers
+### Comment Convention
+
+Comments follow an `@` / `##` convention:
+
+| Prefix | Meaning | Usage |
+|--------|---------|-------|
+| `@` | **Request/Trigger** | Agent or human requesting action |
+| `##` | **Response/Completion** | Agent responding that action is complete |
+
+This creates an auditable back-and-forth trail in task comments.
+
+### Comment Triggers (Requests)
 
 | Mention | Created By | Consumed By | Effect |
 |---------|------------|-------------|--------|
 | `@approve-plan` | Human | Architect | Approves plan |
 | `@approve` | Reviewer | PM | Authorizes PM to merge |
 | `@rework` | Reviewer | Dev, PM | Dev reads feedback and fixes; PM moves task back |
-| `@rework-requested` | Reviewer | Dev | Alias for @rework - Dev reads feedback and fixes |
+| `@rework-requested` | Reviewer | Dev | Alias for @rework |
 | `@business-analyst` | Any | BA | Escalates requirement questions |
+
+### Comment Responses
+
+| Response | Created By | Consumed By | Effect |
+|----------|------------|-------------|--------|
+| `## rework-complete` | Dev | Reviewer, PM | Signals rework is done, task ready for re-review |
+
+### Rework Detection Logic
+
+Agents check if `@rework` is "resolved" before acting:
+
+1. Find the MOST RECENT `@rework` comment
+2. Find the MOST RECENT `## rework-complete` comment
+3. If `## rework-complete` timestamp > `@rework` timestamp → rework is complete
+
+This allows multiple rework cycles while maintaining a clear audit trail.
 
 ## Worktree Management
 
