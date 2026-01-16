@@ -33,7 +33,7 @@ Agent type from `$1`:
 - `pm` or `project-manager` → Project Manager
 - `reviewer` or `review` → Code Reviewer
 - `dev` → Dev agent (specify ID or defaults to 1)
-- `all` → Start all enabled agents in parallel
+- `all` → Start all enabled agents in separate terminal windows
 
 Parse optional flags:
 - `--loop` → Enable continuous loop mode
@@ -58,6 +58,7 @@ Set these variables from config:
 - `POLL_INTERVAL` = config.settings.pollingIntervalMinutes
 - `MAX_IDLE` = override or config.settings.maxIdlePolls
 - `LOOP_MODE` = true if --loop flag present
+- `DEV_COUNT` = config.agents.devs.count (for `all`)
 
 ### For Single Agent (`ba`, `architect`, `pm`, `reviewer`, `dev`)
 
@@ -84,31 +85,63 @@ Pass configuration in the prompt including:
 - POLL_INTERVAL, MAX_IDLE
 - **LOOP_MODE** - If true, agent runs continuously; if false, single pass
 
-### For `all`
+### For `all` - Launch Separate Terminal Windows
 
-Launch multiple Task tools in parallel for each enabled agent.
-For devs, launch `config.agents.devs.count` parallel devs with IDs 1, 2, 3...
+When `all` is specified, launch each agent in its own Terminal window for better isolation and monitoring.
 
-**Each Task call MUST include `model: "{MODEL}"` from config.**
-**Each Task call MUST include loop mode setting from --loop flag.**
+**Use Bash tool to execute osascript commands that open Terminal windows.**
 
-Report:
+```bash
+# Create log directory
+LOG_DIR="$(pwd)/logs/{PROJECT_NAME}"
+mkdir -p "$LOG_DIR"
+
+# Build the loop flag string
+LOOP_FLAG=""
+if LOOP_MODE:
+  LOOP_FLAG="--loop"
+
+# Launch each agent in separate terminal
+# BA Agent
+osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claude /agents:ba '"$LOOP_FLAG"'"'
+
+# Architect Agent
+osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claude /agents:architect '"$LOOP_FLAG"'"'
+
+# Reviewer Agent
+osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claude /agents:reviewer '"$LOOP_FLAG"'"'
+
+# PM Agent
+osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claude /agents:pm '"$LOOP_FLAG"'"'
+
+# Dev Agents (based on config.agents.devs.count)
+for i in 1..DEV_COUNT:
+  osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claude /agents:dev '"$i $LOOP_FLAG"'"'
 ```
-Starting agents for project: {projectName}
+
+**Sleep 1 second between each launch to avoid race conditions.**
+
+Report after launching:
+```
+🚀 Starting Joan Multi-Agent System for: {PROJECT_NAME}
 Mode: {LOOP_MODE ? "Continuous loop" : "Single pass"}
 
-Launching:
-- Business Analyst {LOOP_MODE ? "(loop mode)" : "(single pass)"}
-- Architect {LOOP_MODE ? "(loop mode)" : "(single pass)"}
-- Code Reviewer {LOOP_MODE ? "(loop mode)" : "(single pass)"}
-- Project Manager {LOOP_MODE ? "(loop mode)" : "(single pass)"}
-- Dev #1 {LOOP_MODE ? "(loop mode)" : "(single pass)"}
-- Dev #2 {LOOP_MODE ? "(loop mode)" : "(single pass)"}
+Launched in separate terminals:
+- 🔍 Business Analyst
+- 📐 Architect
+- 🔬 Code Reviewer
+- 📊 Project Manager
+- ⚙️  Dev #1
+- ⚙️  Dev #2
+...
 
 {IF LOOP_MODE}
-Agents will poll every {POLL_INTERVAL} min.
-Auto-shutdown after {MAX_IDLE} consecutive idle polls ({calculated time}).
+Each agent will poll every {POLL_INTERVAL} min.
+Auto-shutdown after {MAX_IDLE} consecutive idle polls.
 {ENDIF}
+
+Log directory: {LOG_DIR}
+To view logs: tail -f {LOG_DIR}/*.log
 ```
 
 ## Examples

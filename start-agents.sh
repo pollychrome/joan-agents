@@ -1,46 +1,48 @@
 #!/bin/bash
 
 # Joan Multi-Agent Orchestration Launcher (Worktree Edition)
-# Usage: ./start-agents.sh <project-name> [num-devs]
+# Usage: ./start-agents.sh [num-devs]
 #
 # This script launches agents for parallel feature development using git worktrees.
+# Reads configuration from .joan-agents.json
 # - 1 BA Agent
 # - 1 Architect Agent
-# - N Dev agents (default: 4)
+# - N Dev agents (from config or argument)
 # - 1 Reviewer Agent
 # - 1 PM Agent
 
 set -e
 
-PROJECT="${1:-}"
-NUM_DEVS="${2:-4}"
-
-if [ -z "$PROJECT" ]; then
-    echo "Usage: ./start-agents.sh <project-name> [num-devs]"
-    echo ""
-    echo "Arguments:"
-    echo "  project-name    Name of your Joan project"
-    echo "  num-devs        Number of parallel devs (default: 4)"
-    echo ""
-    echo "This will launch:"
-    echo "  - 1 Business Analyst agent"
-    echo "  - 1 Architect agent"
-    echo "  - N Dev agents (parallel feature development)"
-    echo "  - 1 Code Reviewer agent"
-    echo "  - 1 Project Manager agent"
-    echo ""
-    echo "Each dev creates isolated git worktrees for true parallelism."
+# Check for config file
+if [ ! -f ".joan-agents.json" ]; then
+    echo "Error: .joan-agents.json not found."
+    echo "Run '/agents:init' first to set up your Joan project."
     exit 1
 fi
 
-echo "🚀 Starting Joan Multi-Agent Orchestration (Worktree Edition)"
-echo "   Project: $PROJECT"
+# Read project name from config
+PROJECT_NAME=$(cat .joan-agents.json | grep -o '"projectName"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+if [ -z "$PROJECT_NAME" ]; then
+    PROJECT_NAME="joan-project"
+fi
+
+# Get dev count from argument or config
+NUM_DEVS="${1:-}"
+if [ -z "$NUM_DEVS" ]; then
+    NUM_DEVS=$(cat .joan-agents.json | grep -o '"count"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$NUM_DEVS" ]; then
+        NUM_DEVS=2
+    fi
+fi
+
+echo "🚀 Starting Joan Multi-Agent Orchestration"
+echo "   Project: $PROJECT_NAME"
 echo "   Devs: $NUM_DEVS"
 echo ""
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="$SCRIPT_DIR/logs/$PROJECT"
+LOG_DIR="$SCRIPT_DIR/logs/$PROJECT_NAME"
 WORKTREE_DIR="$(pwd)/../worktrees"
 
 # Create directories
@@ -72,20 +74,20 @@ EOF
 echo "📋 Launching agents..."
 echo ""
 
-# Launch core agents
-launch_agent "🔍 Business Analyst" "/agents:ba-loop $PROJECT" "ba"
-launch_agent "📐 Architect" "/agents:architect-loop $PROJECT" "architect"
+# Launch core agents (using unified commands with --loop flag)
+launch_agent "🔍 Business Analyst" "/agents:ba --loop" "ba"
+launch_agent "📐 Architect" "/agents:architect --loop" "architect"
 
 # Launch devs
 for i in $(seq 1 $NUM_DEVS); do
-    launch_agent "⚙️  Dev #$i" "/agents:dev-loop $PROJECT $i" "dev-$i"
+    launch_agent "⚙️  Dev #$i" "/agents:dev $i --loop" "dev-$i"
 done
 
 # Launch Reviewer
-launch_agent "🔍 Code Reviewer" "/agents:reviewer-loop $PROJECT" "reviewer"
+launch_agent "🔬 Code Reviewer" "/agents:reviewer --loop" "reviewer"
 
 # Launch PM
-launch_agent "📊 Project Manager" "/agents:pm-loop $PROJECT" "pm"
+launch_agent "📊 Project Manager" "/agents:pm --loop" "pm"
 
 echo ""
 echo "✅ All agents launched!"
