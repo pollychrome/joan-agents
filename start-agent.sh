@@ -16,6 +16,7 @@ print_usage() {
     echo "  ba          Business Analyst"
     echo "  architect   Software Architect"
     echo "  dev         Dev agent (specify dev-id)"
+    echo "  reviewer    Code Reviewer"
     echo "  pm          Project Manager"
     echo ""
     echo "Examples:"
@@ -48,6 +49,11 @@ case "$AGENT" in
         COMMAND="/agents:dev-loop $PROJECT $WORKER_ID"
         LABEL="⚙️  Dev #$WORKER_ID"
         LOG_FILE="dev-$WORKER_ID.log"
+        ;;
+    reviewer|review|r)
+        COMMAND="/agents:reviewer-loop $PROJECT"
+        LABEL="🔍 Code Reviewer"
+        LOG_FILE="reviewer.log"
         ;;
     pm|project-manager)
         COMMAND="/agents:pm-loop $PROJECT"

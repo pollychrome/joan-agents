@@ -77,9 +77,19 @@ for i in $(seq 1 $NUM_WORKERS); do
         end tell"
 done
 
+# Add Reviewer tab
+APPLESCRIPT="$APPLESCRIPT
+
+        -- Tab: Reviewer Agent
+        set newTab to (create tab with default profile)
+        tell current session of newTab
+            set name to \"🔬 Rev\"
+            write text \"cd '$CURRENT_DIR' && echo '🔬 Code Reviewer Agent' && claude --dangerously-skip-permissions '/agents:reviewer-loop $PROJECT' 2>&1 | tee '$LOG_DIR/reviewer.log'\"
+        end tell"
+
 # Add PM tab
 APPLESCRIPT="$APPLESCRIPT
-        
+
         -- Tab: PM Agent
         set newTab to (create tab with default profile)
         tell current session of newTab
@@ -92,7 +102,7 @@ end tell"
 # Execute
 osascript -e "$APPLESCRIPT"
 
-TOTAL_AGENTS=$((3 + NUM_WORKERS))
+TOTAL_AGENTS=$((4 + NUM_WORKERS))
 
 echo ""
 echo "✅ Launched $TOTAL_AGENTS agents in iTerm2 tabs!"
@@ -100,7 +110,7 @@ echo ""
 echo "┌─────────────────────────────────────────────────────────────┐"
 echo "│  Tab Layout                                                 │"
 echo "├─────────────────────────────────────────────────────────────┤"
-echo "│  🔍 BA      │ 📐 Arch   │ ⚙️ D1-D$NUM_WORKERS   │ 📊 PM       │"
+echo "│  🔍 BA   │ 📐 Arch │ ⚙️ D1-D$NUM_WORKERS │ 🔬 Rev │ 📊 PM │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
 echo "Parallel Development:"

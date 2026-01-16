@@ -7,6 +7,7 @@
 # - 1 BA Agent
 # - 1 Architect Agent
 # - N Dev agents (default: 4)
+# - 1 Reviewer Agent
 # - 1 PM Agent
 
 set -e
@@ -25,6 +26,7 @@ if [ -z "$PROJECT" ]; then
     echo "  - 1 Business Analyst agent"
     echo "  - 1 Architect agent"
     echo "  - N Dev agents (parallel feature development)"
+    echo "  - 1 Code Reviewer agent"
     echo "  - 1 Project Manager agent"
     echo ""
     echo "Each worker creates isolated git worktrees for true parallelism."
@@ -79,6 +81,9 @@ for i in $(seq 1 $NUM_WORKERS); do
     launch_agent "⚙️  Dev #$i" "/agents:dev-loop $PROJECT $i" "dev-$i"
 done
 
+# Launch Reviewer
+launch_agent "🔍 Code Reviewer" "/agents:reviewer-loop $PROJECT" "reviewer"
+
 # Launch PM
 launch_agent "📊 Project Manager" "/agents:pm-loop $PROJECT" "pm"
 
@@ -93,6 +98,7 @@ echo "│  📐 Architect       - Creating implementation plans        │"
 for i in $(seq 1 $NUM_WORKERS); do
 echo "│  ⚙️  Dev #$i          - Ready for parallel development      │"
 done
+echo "│  🔬 Reviewer        - Code review and quality gate         │"
 echo "│  📊 PM Agent        - Managing deployments                 │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
