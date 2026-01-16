@@ -128,23 +128,11 @@ When @rework is detected:
    - Parse text after @rework
    - May include specific issues or general feedback
 
-2. Update task with DEFENSIVE tag operations:
-   (Reviewer may have already updated tags - check before modifying)
-
-   a. Move to "Development" column (use sync_column: false)
-
-   b. Add "Rework-Requested" tag IF NOT already present:
-      - Get current tags: get_task_tags(project_id, task_id)
-      - Check if "Rework-Requested" exists
-      - If not present: add_tag_to_task(project_id, task_id, tag_id)
-
-   c. Remove completion tags only IF they still exist:
-      - Get current tags: get_task_tags(project_id, task_id)
-      - For each of ["Dev-Complete", "Design-Complete", "Test-Complete"]:
-        - If tag present: remove_tag_from_task(project_id, task_id, tag_id)
-        - If tag not present: skip (Reviewer already removed it)
-
-   d. Comment: "🔄 Rework requested: {instructions}. Moving back to Development."
+2. Update task:
+   - Move to "Development" column (use sync_column: false)
+   - Add tag: "Rework-Requested"
+   - Remove completion tags: "Dev-Complete", "Design-Complete", "Test-Complete"
+   - Comment: "🔄 Rework requested: {instructions}. Moving back to Development."
 
 3. Report: "Task '{title}' sent back for rework: {instructions}"
    Continue to Phase 1
@@ -179,49 +167,12 @@ For tasks in Review column with @approve:
      Report: "Task '{title}' PR not ready: {reason}"
      Continue to Phase 1
 
-4. Attempt merge to develop (with conflict handling):
+4. Merge to develop:
    git fetch origin
    git checkout develop
    git pull origin develop
    git merge --no-ff {feature-branch} -m "Merge: {task-title}"
-
-   IF merge has conflicts:
-     # Late conflict detected (rare - Reviewer should have caught this)
-     # This is the safety net for parallel task races
-
-     a. Abort the merge:
-        git merge --abort
-
-     b. Update task with DEFENSIVE tag operations:
-        - Get current tags: get_task_tags(project_id, task_id)
-        - Remove "Dev-Complete" IF present
-        - Remove "Design-Complete" IF present
-        - Remove "Test-Complete" IF present
-        - Add "Merge-Conflict" tag (create if doesn't exist, color: #EF4444 red)
-
-     c. Move to "Development" column (use sync_column: false)
-
-     d. Comment:
-        "⚠️ **Merge conflict detected during final merge to develop.**
-
-        This can happen when parallel tasks modify the same files.
-        The Reviewer approved this PR, but develop has changed since then.
-
-        **Conflicting files:**
-        {list of conflict files from git diff --name-only --diff-filter=U}
-
-        **Action required:**
-        1. Pull latest develop into your feature branch
-        2. Resolve conflicts
-        3. Push and move back to Review
-
-        @rework Merge conflicts with develop - please rebase/merge and resolve"
-
-     e. Report: "Task '{title}' has merge conflicts, sent back to Development"
-        Continue to Phase 1
-
-   IF merge succeeds:
-     git push origin develop
+   git push origin develop
 
 5. Update task:
    - Move to "Deploy" column (use sync_column: false)

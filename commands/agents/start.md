@@ -10,7 +10,7 @@ Start an agent using the configuration from `.joan-agents.json`.
 
 ## Arguments
 
-- `$1` - Agent type: `ba`, `architect`, `pm`, `reviewer`, `dev`, or `all`
+- `$1` - Agent type: `ba`, `architect`, `pm`, `dev`, or `all`
 - `$2` - (Optional) Dev ID (only for dev type) or `--max-idle=N` override
 
 ## Step 1: Load Configuration
@@ -29,7 +29,6 @@ Agent type from `$1`:
 - `ba` or `business-analyst` → Business Analyst
 - `architect` or `arch` → Architect
 - `pm` or `project-manager` → Project Manager
-- `reviewer` or `review` → Code Reviewer
 - `dev` → Dev agent (requires ID in $2 or defaults to 1)
 - `all` → Start all enabled agents in parallel
 
@@ -53,13 +52,12 @@ Set these variables from config:
 - `POLL_INTERVAL` = config.settings.pollingIntervalMinutes
 - `MAX_IDLE` = override or config.settings.maxIdlePolls
 
-### For Single Agent (`ba`, `architect`, `pm`, `reviewer`, `dev`)
+### For Single Agent (`ba`, `architect`, `pm`, `dev`)
 
 Launch the Task tool with the appropriate subagent:
 - `ba` → subagent_type: "business-analyst"
 - `architect` → subagent_type: "architect"
 - `pm` → subagent_type: "project-manager"
-- `reviewer` → subagent_type: "code-reviewer"
 - `dev` → subagent_type: "developer"
 
 Pass configuration in the prompt.
@@ -76,7 +74,6 @@ Starting agents for project: {projectName}
 Launching:
 - Business Analyst (polling every {N} min, max {M} idle)
 - Architect (polling every {N} min, max {M} idle)
-- Code Reviewer (polling every {N} min, max {M} idle)
 - Project Manager (polling every {N} min, max {M} idle)
 - Dev #1 (polling every {N} min, max {M} idle)
 - Dev #2 (polling every {N} min, max {M} idle)

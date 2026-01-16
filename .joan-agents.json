@@ -1,7 +1,7 @@
 {
   "$schema": "./.claude/schemas/joan-agents.schema.json",
-  "projectId": "YOUR_PROJECT_UUID_HERE",
-  "projectName": "Your Project Name",
+  "projectId": "2aeb0d02-5ece-4673-aa55-a42350fdac61",
+  "projectName": "Joan Agents",
   "settings": {
     "pollingIntervalMinutes": 10,
     "maxIdlePolls": 6
@@ -14,9 +14,6 @@
       "enabled": true
     },
     "projectManager": {
-      "enabled": true
-    },
-    "reviewer": {
       "enabled": true
     },
     "devs": {

@@ -1,0 +1,34 @@
+{
+  "name": "joan-agents",
+  "version": "3.0.0",
+  "description": "Multi-agent orchestration system for Joan projects with task queuing, parallel workers, and auto-shutdown",
+  "author": "Alex Benson",
+  "commands": [
+    "commands/agents/init.md",
+    "commands/agents/start.md",
+    "commands/agents/ba.md",
+    "commands/agents/architect.md",
+    "commands/agents/pm.md",
+    "commands/agents/dev.md",
+    "commands/agents/ba-loop.md",
+    "commands/agents/architect-loop.md",
+    "commands/agents/pm-loop.md",
+    "commands/agents/dev-loop.md"
+  ],
+  "agents": [
+    "agents/business-analyst.md",
+    "agents/architect.md",
+    "agents/project-manager.md",
+    "agents/developer.md"
+  ],
+  "schemas": [
+    "schemas/joan-agents.schema.json"
+  ],
+  "configFiles": [
+    {
+      "name": ".joan-agents.json",
+      "description": "Project-specific agent configuration",
+      "template": "../.joan-agents.example.json"
+    }
+  ]
+}

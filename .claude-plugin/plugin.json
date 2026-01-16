@@ -1,0 +1,6 @@
+{
+  "name": "joan-agents",
+  "version": "3.0.0",
+  "description": "Multi-agent orchestration system for Joan projects with task queuing, parallel workers, and auto-shutdown",
+  "author": "Alex Benson"
+}

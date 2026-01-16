@@ -1,18 +1,18 @@
 ---
-description: Start an Implementation Worker loop for parallel feature development
-argument-hint: [project-name-or-id] [worker-id] [--max-idle=N]
+description: Start a Dev agent loop for parallel feature development
+argument-hint: [project-name-or-id] [dev-id] [--max-idle=N]
 allowed-tools: mcp__joan__*, mcp__github__*, Read, Write, Edit, Bash, Grep, Glob, Task, View, computer
 ---
 
-# Implementation Worker Loop
+# Dev Agent Loop
 
-You are an **Implementation Worker** for parallel feature development.
+You are a **Dev agent** for parallel feature development.
 
 ## Configuration
 
 Parse arguments:
 - `$1` = Project name or ID (or read from `.joan-agents.json` if not provided)
-- `$2` = Worker ID (default: 1)
+- `$2` = Dev ID (default: 1)
 - `$3` = Optional `--max-idle=N` override
 
 Load configuration:
@@ -26,15 +26,15 @@ Load configuration:
 
 Initialize state:
 ```
-WORKER_ID = $2 or 1
-CLAIM_TAG = "Claimed-Worker-{WORKER_ID}"
+DEV_ID = $2 or 1
+CLAIM_TAG = "Claimed-Dev-{DEV_ID}"
 TASK_QUEUE = []
 IDLE_COUNT = 0
 PROJECT_ROOT = pwd
 WORKTREE_BASE = "../worktrees"
 ```
 
-Report: "Worker #{WORKER_ID} initialized for project {PROJECT}"
+Report: "Dev #{DEV_ID} initialized for project {PROJECT}"
 
 ## Your Mission
 
@@ -58,13 +58,13 @@ IF TASK_QUEUE is empty:
      a. NEW WORK - Tasks with "Planned" tag:
         - Task is in "Development" column
         - Task has "Planned" tag
-        - Task has NO "Claimed-Worker-*" tag
+        - Task has NO "Claimed-Dev-*" tag
         - Task has NO "Implementation-Failed" tag
 
      b. REWORK - Tasks needing revision (PRIORITY):
         - Task is in "Development" column
-        - Task has "Rework-Requested" tag
-        - Task has NO "Claimed-Worker-*" tag
+        - Task has "Rework-Requested" OR "Merge-Conflict" tag
+        - Task has NO "Claimed-Dev-*" tag
         - OR: Check task comments for `@rework` pattern
 
   3. Build queue (rework tasks FIRST for priority):
@@ -73,33 +73,34 @@ IF TASK_QUEUE is empty:
   4. Handle empty queue:
      IF TASK_QUEUE is empty:
        IDLE_COUNT++
-       Report: "Worker #{WORKER_ID} idle poll #{IDLE_COUNT}/{MAX_IDLE} - no available tasks"
+       Report: "Dev #{DEV_ID} idle poll #{IDLE_COUNT}/{MAX_IDLE} - no available tasks"
 
        IF IDLE_COUNT >= MAX_IDLE:
-         Report: "Max idle polls reached. Shutting down Worker #{WORKER_ID}."
-         Output: <promise>WORKER_{WORKER_ID}_SHUTDOWN</promise>
+         Report: "Max idle polls reached. Shutting down Dev #{DEV_ID}."
+         Output: <promise>DEV_{DEV_ID}_SHUTDOWN</promise>
          EXIT
 
        Wait POLL_INTERVAL minutes
        Continue to Phase 1
      ELSE:
        IDLE_COUNT = 0  # Reset on successful poll
-       Report: "Worker #{WORKER_ID} found {queue.length} potential tasks ({rework_count} rework, {new_count} new)"
+       Report: "Dev #{DEV_ID} found {queue.length} potential tasks ({rework_count} rework, {new_count} new)"
 ```
 
 ### Phase 2: Claim Next Task
 
 ```
 current_task = TASK_QUEUE.shift()  # Take first task
-is_rework = current_task has "Rework-Requested" tag OR has @rework comment
+is_rework = current_task has "Rework-Requested" OR "Merge-Conflict" tag OR has @rework comment
+is_merge_conflict = current_task has "Merge-Conflict" tag
 
 1. Validate and attempt claim:
    - Re-fetch task using get_task(current_task.id)
 
    Validation checks:
    - Task still in "Development" column
-   - Task still has "Planned" OR "Rework-Requested" tag
-   - Task has NO "Claimed-Worker-*" tags
+   - Task still has "Planned" OR "Rework-Requested" OR "Merge-Conflict" tag
+   - Task has NO "Claimed-Dev-*" tags
    - Task has NO "Implementation-Failed" tag
 
    IF validation fails:
@@ -113,15 +114,15 @@ is_rework = current_task has "Rework-Requested" tag OR has @rework comment
 
 3. Verify claim:
    - Check if YOUR claim tag is present
-   - Check no OTHER "Claimed-Worker-*" tags exist
+   - Check no OTHER "Claimed-Dev-*" tags exist
 
    IF claim failed:
-     Report: "Failed to claim '{title}' (another worker got it)"
+     Report: "Failed to claim '{title}' (another dev got it)"
      Remove your claim tag if present
      Continue to Phase 1
 
    IF claim succeeded:
-     Report: "Worker #{WORKER_ID} claimed: '{title}' (rework={is_rework})"
+     Report: "Dev #{DEV_ID} claimed: '{title}' (rework={is_rework})"
      IF is_rework:
        Go to Phase 2b (Parse Rework Instructions)
      ELSE:
@@ -133,19 +134,27 @@ is_rework = current_task has "Rework-Requested" tag OR has @rework comment
 ```
 1. Fetch task comments using list_task_comments(task_id)
 
-2. Find the @rework comment:
-   - Search for most recent comment containing "@rework"
-   - Extract the rework instructions (text after @rework)
+2. Determine rework type:
 
-3. Store rework context:
-   REWORK_INSTRUCTIONS = extracted instructions
-   Report: "Rework requested: {REWORK_INSTRUCTIONS}"
+   IF is_merge_conflict:
+     REWORK_TYPE = "MERGE_CONFLICT"
+     - Look for PM's conflict comment listing conflicting files
+     - Extract CONFLICT_FILES from comment
+     Report: "Merge conflict detected - need to merge develop and resolve"
 
-4. Also check for code review comments:
+   ELSE:
+     REWORK_TYPE = "CODE_REVIEW"
+     - Find the @rework comment
+     - Search for most recent comment containing "@rework"
+     - Extract the rework instructions (text after @rework)
+     REWORK_INSTRUCTIONS = extracted instructions
+     Report: "Rework requested: {REWORK_INSTRUCTIONS}"
+
+3. Also check for code review comments:
    - Look for "## Code Review" comments with issues
    - Extract specific issues/findings to address
 
-5. Continue to Phase 3 with rework context
+4. Continue to Phase 3 with rework context
 ```
 
 ### Phase 3: Setup Worktree
@@ -174,11 +183,40 @@ is_rework = current_task has "Rework-Requested" tag OR has @rework comment
    cd "$WORKTREE"
    npm install 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
 
-4. Comment on task:
-   IF is_rework:
-     "Worker #{WORKER_ID} starting rework. Instructions: {REWORK_INSTRUCTIONS}"
+4. IF REWORK_TYPE == "MERGE_CONFLICT":
+   # Resolve merge conflicts with develop
+
+   a. Fetch and merge develop:
+      git fetch origin develop
+      git merge origin/develop
+
+   b. IF conflicts occur:
+      - Review each conflicting file in CONFLICT_FILES
+      - Apply intelligent merge resolution:
+        * Keep feature changes where they don't conflict with develop intent
+        * Incorporate develop changes where they're independent improvements
+        * For true conflicts, prefer the feature's new code but ensure develop's changes aren't lost
+      - After resolving each file: git add {file}
+
+   c. Complete the merge:
+      git commit -m "Merge develop into {BRANCH} - resolve conflicts"
+
+   d. Run tests to verify merge didn't break anything:
+      npm test 2>/dev/null || pytest 2>/dev/null || true
+
+      IF tests fail:
+        Report: "Merge succeeded but tests failing - investigating"
+        # Continue to Phase 4 to fix the issues
+
+   e. Report: "Merge conflicts resolved"
+
+5. Comment on task:
+   IF is_merge_conflict:
+     "Dev #{DEV_ID} resolving merge conflicts with develop."
+   ELSE IF is_rework:
+     "Dev #{DEV_ID} starting rework. Instructions: {REWORK_INSTRUCTIONS}"
    ELSE:
-     "Worker #{WORKER_ID} started. Branch: {BRANCH}, Worktree: {path}"
+     "Dev #{DEV_ID} started. Branch: {BRANCH}, Worktree: {path}"
 ```
 
 ### Phase 4: Execute Sub-Tasks
@@ -248,15 +286,18 @@ Handle failures:
 4. Update task:
    - Remove: CLAIM_TAG
    - Remove: "Rework-Requested" (if present)
+   - Remove: "Merge-Conflict" (if present)
    - Add: "Dev-Complete", "Design-Complete", "Test-Complete"
    - Move to: "Review" column (use sync_column: false)
    - Comment:
-     IF is_rework:
+     IF is_merge_conflict:
+       "Merge conflicts resolved. Ready for re-review."
+     ELSE IF is_rework:
        "Rework complete. Ready for re-review."
      ELSE:
        "Implementation complete. PR: {link}"
 
-5. Report: "Worker #{WORKER_ID} completed '{title}'"
+5. Report: "Dev #{DEV_ID} completed '{title}'"
    Continue to Phase 1
 ```
 
@@ -270,18 +311,18 @@ IF implementation cannot complete:
 2. Update task:
    - Remove: CLAIM_TAG
    - Add: "Implementation-Failed"
-   - Comment: "Worker #{WORKER_ID} failed: {error details}"
+   - Comment: "Dev #{DEV_ID} failed: {error details}"
 
-3. Report: "Worker #{WORKER_ID} failed on '{title}': {reason}"
+3. Report: "Dev #{DEV_ID} failed on '{title}': {reason}"
    Continue to Phase 1
 ```
 
 ## Task Validation Rules
 
-A task is valid for Worker claiming if:
+A task is valid for Dev claiming if:
 - Task is in "Development" column
 - Task has "Planned" OR "Rework-Requested" tag
-- Task has NO "Claimed-Worker-*" tags
+- Task has NO "Claimed-Dev-*" tags
 - Task has NO "Implementation-Failed" tag
 
 **Rework tasks take priority over new work.**
@@ -301,7 +342,7 @@ When scanning for rework tasks:
 
 While working on a task, every 5 minutes comment:
 ```
-Worker #{WORKER_ID} progress on '{title}':
+Dev #{DEV_ID} progress on '{title}':
 - Type: {NEW_WORK | REWORK}
 - Current: {TYPE}-{N} or "Addressing rework feedback"
 - Completed: X/Y sub-tasks
@@ -318,8 +359,8 @@ Worker #{WORKER_ID} progress on '{title}':
 
 ## Completion
 
-Output `<promise>WORKER_{WORKER_ID}_SHUTDOWN</promise>` when:
+Output `<promise>DEV_{DEV_ID}_SHUTDOWN</promise>` when:
 - Max idle polls reached, OR
 - Explicitly told to stop
 
-Begin Worker #{WORKER_ID} loop now.
+Begin Dev #{DEV_ID} loop now.

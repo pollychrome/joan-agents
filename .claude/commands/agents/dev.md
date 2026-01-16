@@ -1,17 +1,17 @@
 ---
-description: Run Implementation Worker (single task or loop)
-argument-hint: [worker-id] [--loop] [--max-idle=N]
+description: Run Dev agent (single task or loop)
+argument-hint: [dev-id] [--loop] [--max-idle=N]
 allowed-tools: mcp__joan__*, mcp__github__*, Read, Write, Edit, Bash, Grep, Glob, Task, View, computer
 ---
 
-# Implementation Worker
+# Dev Agent
 
-Quick invocation of an Implementation Worker.
+Quick invocation of a Dev agent for feature implementation.
 
 ## Arguments
 
-- `$1` = Worker ID (default: 1)
-- `--loop` → Run continuously (use worker-loop behavior)
+- `$1` = Dev ID (default: 1)
+- `--loop` → Run continuously (use dev-loop behavior)
 - No flag → Single task (claim one task, complete it, exit)
 - `--max-idle=N` → Override idle threshold (only for loop mode)
 
@@ -20,8 +20,8 @@ Quick invocation of an Implementation Worker.
 Load from `.joan-agents.json`:
 - PROJECT_ID = config.projectId
 - PROJECT_NAME = config.projectName
-- WORKER_ID = $1 or 1
-- CLAIM_TAG = "Claimed-Worker-{WORKER_ID}"
+- DEV_ID = $1 or 1
+- CLAIM_TAG = "Claimed-Dev-{DEV_ID}"
 
 If config missing, report error and exit.
 
@@ -33,26 +33,26 @@ If config missing, report error and exit.
 
 2. If no tasks available:
    ```
-   Worker #{WORKER_ID}: No tasks available.
+   Dev #{DEV_ID}: No tasks available.
    ```
    Exit.
 
 3. Claim and implement the task:
    - Atomic claim with verification
    - Setup worktree
-   - Execute sub-tasks (or rework)
+   - Execute sub-tasks (DES-*, DEV-*, TEST-*)
    - Create/update PR
    - Cleanup and move to Review
 
 4. Report and exit:
    ```
-   Worker #{WORKER_ID} completed: '{task title}'
+   Dev #{DEV_ID} completed: '{task title}'
    - Type: {NEW | REWORK}
    - PR: {url}
    ```
 
 ## Loop Mode (--loop)
 
-Invoke the full worker-loop with configuration from .joan-agents.json.
+Invoke the full dev-loop with configuration from .joan-agents.json.
 
-Begin Worker #{WORKER_ID} now.
+Begin Dev #{DEV_ID} now.
