@@ -24,7 +24,8 @@ This system uses git worktrees for true parallel feature development, with intel
 /agents:pm --loop
 
 # 4. Start all agents at once
-/agents:start all
+/agents:start all                # Single pass
+/agents:start all --loop         # Continuous loop mode
 ```
 
 ## Configuration
@@ -76,6 +77,8 @@ Override per-run with `--max-idle=N`:
 
 ## Invocation Modes
 
+All agent commands support both modes via the `--loop` flag:
+
 ### Single Pass (default)
 ```bash
 /agents:ba
@@ -83,22 +86,26 @@ Override per-run with `--max-idle=N`:
 /agents:dev [id]
 /agents:reviewer
 /agents:pm
+/agents:start all
 ```
 - Process all available tasks once
 - Exit when queue is empty
 - Best for: ad-hoc runs, testing, manual intervention
 
-### Loop Mode
+### Loop Mode (--loop)
 ```bash
 /agents:ba --loop
 /agents:architect --loop
 /agents:dev [id] --loop
 /agents:reviewer --loop
 /agents:pm --loop
+/agents:start all --loop
 ```
 - Poll continuously until max idle reached
 - Auto-shutdown after N empty polls
 - Best for: autonomous operation, overnight runs
+
+**Note:** Each command is a single unified file supporting both modes. There are no separate `-loop` commands.
 
 ## Task Queue Pattern
 
