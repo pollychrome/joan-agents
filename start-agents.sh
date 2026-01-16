@@ -6,7 +6,7 @@
 # This script launches agents for parallel feature development using git worktrees.
 # - 1 BA Agent
 # - 1 Architect Agent
-# - N Implementation Workers (default: 4)
+# - N Dev agents (default: 4)
 # - 1 PM Agent
 
 set -e
@@ -24,7 +24,7 @@ if [ -z "$PROJECT" ]; then
     echo "This will launch:"
     echo "  - 1 Business Analyst agent"
     echo "  - 1 Architect agent"
-    echo "  - N Implementation Workers (parallel feature development)"
+    echo "  - N Dev agents (parallel feature development)"
     echo "  - 1 Project Manager agent"
     echo ""
     echo "Each worker creates isolated git worktrees for true parallelism."
@@ -74,9 +74,9 @@ echo ""
 launch_agent "🔍 Business Analyst" "/agents:ba-loop $PROJECT" "ba"
 launch_agent "📐 Architect" "/agents:architect-loop $PROJECT" "architect"
 
-# Launch workers
+# Launch devs
 for i in $(seq 1 $NUM_WORKERS); do
-    launch_agent "⚙️  Worker #$i" "/agents:worker-loop $PROJECT $i" "worker-$i"
+    launch_agent "⚙️  Dev #$i" "/agents:dev-loop $PROJECT $i" "dev-$i"
 done
 
 # Launch PM
@@ -91,7 +91,7 @@ echo "├───────────────────────�
 echo "│  🔍 BA Agent        - Evaluating requirements              │"
 echo "│  📐 Architect       - Creating implementation plans        │"
 for i in $(seq 1 $NUM_WORKERS); do
-echo "│  ⚙️  Worker #$i       - Ready for parallel development      │"
+echo "│  ⚙️  Dev #$i          - Ready for parallel development      │"
 done
 echo "│  📊 PM Agent        - Managing deployments                 │"
 echo "└─────────────────────────────────────────────────────────────┘"

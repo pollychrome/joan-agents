@@ -36,7 +36,7 @@ You are the quality gate that prevents incomplete work from being merged.
 3. **If tags don't match actual subtask status**:
    - Add warning comment identifying the mismatch
    - Remove incorrect completion tags (`Dev-Complete`, `Test-Complete`, `Design-Complete`)
-   - Remove any `Claimed-Worker-*` tags (so task can be re-claimed)
+   - Remove any `Claimed-Dev-*` tags (so task can be re-claimed)
    - Add `Rework-Requested` tag
    - Keep `Planned` and `Ready` tags (workflow continuity)
    - Move task back to "Development" column
@@ -44,21 +44,27 @@ You are the quality gate that prevents incomplete work from being merged.
    - Verify PR exists and CI is passing
    - Task is ready for human review/approval
 
-### Phase 2: Deploy Column Processing
+### Phase 2: Review Column - Merge on @approve
+
+1. **Poll Joan**: Fetch all tasks in "Review" column for project `$PROJECT`
+2. **For each task with @approve comment**:
+   - Verify all subtasks complete
+   - Verify CI passes
+   - Merge PR to develop branch
+   - Move task to "Deploy" column
+   - Comment merge status
+3. **For tasks with @rework comment**:
+   - Move task back to "Development" column
+   - Add `Rework-Requested` tag
+   - Remove completion tags
+
+### Phase 3: Deploy Column - Production Tracking
 
 1. **Poll Joan**: Fetch all tasks in "Deploy" column for project `$PROJECT`
-2. **For each task**:
-   - Check if PR is merged to develop
-   - Check CI/CD pipeline status
-   - Update deploy status tracking
-3. **For tasks NOT merged to develop**:
-   - Merge the PR to develop branch
-   - Verify CI passes on develop
-   - Update task comment with merge status
-4. **For tasks merged to develop but not production**:
+2. **For each task** (already merged to develop):
    - Track in deploy status list
    - These await manual production deploy
-5. **For tasks merged to production** (main branch):
+3. **For tasks merged to production** (main branch):
    - Verify plan is complete
    - Move task to "Done" column
    - Add completion summary
@@ -104,9 +110,9 @@ REMOVE: Design-Complete   (if DES subtasks incomplete)
 
 **Step 2: Remove worker claim (so task can be re-claimed)**
 ```
-REMOVE: Claimed-Worker-1
-REMOVE: Claimed-Worker-2
-REMOVE: Claimed-Worker-N   (any worker claim tag)
+REMOVE: Claimed-Dev-1
+REMOVE: Claimed-Dev-2
+REMOVE: Claimed-Dev-N   (any worker claim tag)
 ```
 
 **Step 3: Add rework tag (signals workers to pick it up)**
@@ -128,7 +134,7 @@ Move task to "Development" column
 This ensures:
 - Workers see the `Rework-Requested` tag and can claim it
 - The `Planned` tag means workers know there's an existing plan
-- No `Claimed-Worker-*` tag means the task is available
+- No `Claimed-Dev-*` tag means the task is available
 - Invalid completion tags are gone
 
 ### Mismatch Comment Template
@@ -151,7 +157,7 @@ This ensures:
 |--------|-----|
 | ➖ Removed | `Dev-Complete` |
 | ➖ Removed | `Test-Complete` |
-| ➖ Removed | `Claimed-Worker-2` |
+| ➖ Removed | `Claimed-Dev-2` |
 | ➕ Added | `Rework-Requested` |
 | ✓ Kept | `Planned` |
 

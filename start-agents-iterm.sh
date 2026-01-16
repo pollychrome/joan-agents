@@ -65,15 +65,15 @@ APPLESCRIPT="tell application \"iTerm2\"
             write text \"cd '$CURRENT_DIR' && echo '📐 Architect Agent' && claude --dangerously-skip-permissions '/agents:architect-loop $PROJECT' 2>&1 | tee '$LOG_DIR/architect.log'\"
         end tell"
 
-# Add worker tabs dynamically
+# Add dev tabs dynamically
 for i in $(seq 1 $NUM_WORKERS); do
     APPLESCRIPT="$APPLESCRIPT
-        
-        -- Tab: Worker $i
+
+        -- Tab: Dev $i
         set newTab to (create tab with default profile)
         tell current session of newTab
-            set name to \"⚙️ W$i\"
-            write text \"cd '$CURRENT_DIR' && echo '⚙️ Implementation Worker #$i' && claude --dangerously-skip-permissions '/agents:worker-loop $PROJECT $i' 2>&1 | tee '$LOG_DIR/worker-$i.log'\"
+            set name to \"⚙️ D$i\"
+            write text \"cd '$CURRENT_DIR' && echo '⚙️ Dev #$i' && claude --dangerously-skip-permissions '/agents:dev-loop $PROJECT $i' 2>&1 | tee '$LOG_DIR/dev-$i.log'\"
         end tell"
 done
 
@@ -100,12 +100,12 @@ echo ""
 echo "┌─────────────────────────────────────────────────────────────┐"
 echo "│  Tab Layout                                                 │"
 echo "├─────────────────────────────────────────────────────────────┤"
-echo "│  🔍 BA      │ 📐 Arch   │ ⚙️ W1-W$NUM_WORKERS   │ 📊 PM       │"
+echo "│  🔍 BA      │ 📐 Arch   │ ⚙️ D1-D$NUM_WORKERS   │ 📊 PM       │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
 echo "Parallel Development:"
 echo "  • $NUM_WORKERS features can be developed simultaneously"
-echo "  • Each worker creates isolated git worktrees"
+echo "  • Each dev creates isolated git worktrees"
 echo "  • Worktrees location: $WORKTREE_DIR"
 echo ""
 echo "Logs: $LOG_DIR"

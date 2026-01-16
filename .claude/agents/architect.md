@@ -24,15 +24,17 @@ You create detailed implementation plans for tasks that have been analyzed and m
 2. **Check for approval triggers**:
    - Scan comments for "@architect" mentions
    - Tasks with "@architect" mention after a plan = approval to proceed
-3. **For tasks awaiting planning**:
+3. **For tasks awaiting planning** (have "Ready" tag):
    - Analyze the codebase to understand current architecture
    - Read related files, dependencies, and patterns
    - Create comprehensive implementation plan
    - Attach plan as file to task
-   - Tag task as "Plan-Pending-Approval"
+   - Remove tag: "Ready" (no longer needs planning)
+   - Add tag: "Plan-Pending-Approval"
    - Comment notifying that plan is ready for review
 4. **For approved tasks** (have "@architect" approval):
-   - Tag task as "Planned"
+   - Remove tag: "Plan-Pending-Approval" (no longer pending)
+   - Add tag: "Planned"
    - Move task to "Development" column
    - Ensure atomic sub-tasks are in description
 

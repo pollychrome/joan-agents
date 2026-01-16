@@ -68,10 +68,10 @@ Task enters the "Available Work" pool
 ### 2. Worker Claims Task
 
 ```
-Worker #1 polls Joan ──▶ Finds unclaimed "Planned" task
+Dev #1 polls Joan ──▶ Finds unclaimed "Planned" task
         │
         ▼
-Worker tags task "Claimed-Worker-1" (prevents others from claiming)
+Worker tags task "Claimed-Dev-1" (prevents others from claiming)
         │
         ▼
 Worker extracts branch name from plan: feature/user-auth
@@ -80,7 +80,7 @@ Worker extracts branch name from plan: feature/user-auth
 ### 3. Worktree Creation
 
 ```
-Worker #1 creates worktree:
+Dev #1 creates worktree:
         │
         ▼
 git worktree add ../worktrees/user-auth feature/user-auth
@@ -115,7 +115,7 @@ All file operations happen in this isolated directory
 ### 5. Cleanup & Next Task
 
 ```
-Worker #1 finishes task
+Dev #1 finishes task
         │
         ├──▶ Moves task to Review column
         │
@@ -182,11 +182,11 @@ To prevent multiple workers from claiming the same task:
 1. Worker polls Joan for tasks:
    - Column: Development
    - Tag: Planned
-   - NOT tagged: Claimed-Worker-*
+   - NOT tagged: Claimed-Dev-*
 
 2. Worker finds candidate task
 
-3. Worker IMMEDIATELY tags: "Claimed-Worker-{N}"
+3. Worker IMMEDIATELY tags: "Claimed-Dev-{N}"
    (This is atomic - first writer wins)
 
 4. Worker verifies claim stuck

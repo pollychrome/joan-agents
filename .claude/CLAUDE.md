@@ -121,17 +121,18 @@ All agents communicate through Joan MCP and task comments/tags.
 | Tag | Meaning | Set By | Removed By |
 |-----|---------|--------|------------|
 | `Needs-Clarification` | Task has unanswered questions | BA | BA |
-| `Ready` | Requirements complete | BA | Architect |
-| `Plan-Pending-Approval` | Plan created, awaiting @architect | Architect | Architect |
-| `Planned` | Plan approved, available for devs | Architect, Reviewer (on reject) | Dev |
-| `Claimed-Dev-N` | Dev N is implementing this task | Dev | Dev |
+| `Ready` | Requirements complete | BA | Architect (when creating plan) |
+| `Plan-Pending-Approval` | Plan created, awaiting @architect | Architect | Architect (on approval) |
+| `Planned` | Plan approved, available for devs | Architect, Reviewer (on reject) | Dev (on completion) |
+| `Claimed-Dev-N` | Dev N is implementing this task | Dev | Dev (on completion or failure) |
 | `Dev-Complete` | All DEV sub-tasks done | Dev | Reviewer (on reject) |
 | `Design-Complete` | All DES sub-tasks done | Dev | Reviewer (on reject) |
 | `Test-Complete` | All TEST sub-tasks pass | Dev | Reviewer (on reject) |
 | `Review-In-Progress` | Reviewer is actively reviewing | Reviewer | Reviewer |
 | `Rework-Requested` | Reviewer found issues, needs fixes | Reviewer | Dev |
 | `Merge-Conflict` | Late conflict detected during PM merge | PM | Dev |
-| `Implementation-Failed` | Dev couldn't complete | Dev | - |
+| `Implementation-Failed` | Dev couldn't complete (manual recovery) | Dev | Human |
+| `Worktree-Failed` | Worktree creation failed (manual recovery) | Dev | Human |
 
 ### Claim Protocol
 
@@ -140,8 +141,18 @@ Devs use atomic tagging to claim tasks:
 2. Rework tasks get priority over new tasks (finish what's started)
 3. Immediately add `Claimed-Dev-{N}` tag
 4. Re-fetch and verify claim succeeded (no race condition)
-5. Remove claim tag when done (success or failure)
-6. For rework: Remove `Rework-Requested` tag, read `@rework` comment for feedback
+5. On completion: Remove `Claimed-Dev-{N}`, remove `Planned`, add completion tags
+6. On failure: Remove `Claimed-Dev-{N}`, add `Implementation-Failed` or `Worktree-Failed`
+7. For rework: Remove `Rework-Requested` tag, read `@rework` comment for feedback
+
+### Recovering Failed Tasks
+
+Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual intervention**:
+1. Human reviews failure comment to understand the issue
+2. Human resolves the underlying problem
+3. Human removes the failure tag
+4. Human ensures `Planned` tag is present
+5. Task becomes available for devs to claim again
 
 ### Comment Triggers
 
@@ -215,17 +226,17 @@ To Do → Analyse → Development → Review → Deploy → Done
 
 ### Detailed Flow
 
-1. **To Do** → BA evaluates requirements
-2. **Analyse** (Ready) → Architect creates plan
+1. **To Do** → BA evaluates requirements, adds `Ready` tag
+2. **Analyse** (Ready) → Architect creates plan, removes `Ready`, adds `Plan-Pending-Approval`
 3. **Analyse** (Plan-Pending-Approval) → Human approves with `@architect`
-4. **Development** (Planned) → Dev claims with `Claimed-Dev-N`
-5. **Development** → Dev implements, commits, creates PR
-6. **Review** (Dev-Complete, Design-Complete, Test-Complete) → Reviewer validates
-7. **Review** → Reviewer merges develop into feature branch (conflict check)
+4. **Development** (Planned) → Architect removes `Plan-Pending-Approval`, adds `Planned`, moves task
+5. **Development** → Dev claims with `Claimed-Dev-N`, implements, commits, creates PR
+6. **Review** → Dev removes `Planned` + `Claimed-Dev-N`, adds completion tags, moves task
+7. **Review** → Reviewer validates, merges develop into feature (conflict check)
 8. **Review** → Reviewer comments `@approve` or `@rework`
-9. **Deploy** (on @approve) → PM merges to develop, tracks deployment
-10. **Development** (on @rework) → Dev addresses feedback, back to step 6
-11. **Done** (when deployed) → Task complete
+9. **Review** (on @approve) → PM merges to develop, moves to Deploy
+10. **Development** (on @rework) → Reviewer removes completion tags, adds `Rework-Requested` + `Planned`
+11. **Done** (when deployed to production) → Task complete
 
 ### Quality Gates
 

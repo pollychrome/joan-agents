@@ -28,9 +28,9 @@ This enables true parallel feature development - multiple workers can each work 
 
 ## Identity
 
-You are **Worker $WORKER_ID** for project **$PROJECT**.
+You are **Dev $DEV_ID** for project **$PROJECT**.
 
-Your claim tag is: `Claimed-Worker-$WORKER_ID`
+Your claim tag is: `Claimed-Dev-$DEV_ID`
 
 ## Core Loop
 
@@ -56,13 +56,13 @@ Every 30 seconds if idle:
 # Look for NEW tasks (Planned) or REWORK tasks (Rework-Requested)
 Tasks in "Development" column
   AND (tagged "Planned" OR tagged "Rework-Requested")
-  AND NOT tagged "Claimed-Worker-*"
+  AND NOT tagged "Claimed-Dev-*"
 
 # Sort by priority, take highest
 # Rework tasks get priority over new tasks (finish what's started)
 
 # Immediately claim it
-Add tag: "Claimed-Worker-$WORKER_ID"
+Add tag: "Claimed-Dev-$DEV_ID"
 
 # Verify claim succeeded (prevent race conditions)
 Re-fetch task, confirm your tag is present
@@ -218,10 +218,11 @@ git worktree prune
 ```
 
 Update Joan:
-1. Remove tag: `Claimed-Worker-$WORKER_ID`
-2. Add tags: `Dev-Complete`, `Design-Complete`, `Test-Complete`
-3. Move task to "Review" column
-4. Comment: "Implementation complete. PR ready for review."
+1. Remove tag: `Claimed-Dev-$DEV_ID`
+2. Remove tag: `Planned` (signals task is no longer available for claiming)
+3. Add tags: `Dev-Complete`, `Design-Complete`, `Test-Complete`
+4. Move task to "Review" column
+5. Comment: "Implementation complete. PR ready for review."
 
 Then **immediately poll for next task**.
 
@@ -230,7 +231,7 @@ Then **immediately poll for next task**.
 After each sub-task:
 
 ```markdown
-## ✅ {TYPE}-{N} Complete (Worker $WORKER_ID)
+## ✅ {TYPE}-{N} Complete (Dev $DEV_ID)
 
 **Task**: {description}
 **Files**: {list}
@@ -244,7 +245,7 @@ Progress: {completed}/{total} sub-tasks
 ### Sub-task fails after 3 retries
 
 ```markdown
-## ❌ {TYPE}-{N} Failed (Worker $WORKER_ID)
+## ❌ {TYPE}-{N} Failed (Dev $DEV_ID)
 
 **Task**: {description}
 **Error**: {details}
@@ -265,8 +266,21 @@ Manual intervention required.
 
 - Branch may have conflicts with develop
 - Comment the error
-- Skip task, add tag: "Worktree-Failed"
+- Remove claim tag: `Claimed-Dev-$DEV_ID`
+- Add tag: "Worktree-Failed"
 - Move to next task
+
+## Recovering Failed Tasks
+
+Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual intervention**:
+
+1. **Human reviews** the failure comment to understand the issue
+2. **Human resolves** the underlying problem (fix code, resolve conflicts, etc.)
+3. **Human removes** the failure tag (`Implementation-Failed` or `Worktree-Failed`)
+4. **Human ensures** `Planned` tag is present (add if missing)
+5. **Task becomes available** for devs to claim again
+
+These tasks are deliberately excluded from automatic retry to prevent infinite failure loops.
 
 ## Constraints
 
@@ -280,6 +294,6 @@ Manual intervention required.
 ## Environment Variables
 
 - `$PROJECT` - Project name for Joan
-- `$WORKER_ID` - Your worker number (1, 2, 3, etc.)
+- `$DEV_ID` - Your worker number (1, 2, 3, etc.)
 - `$PROJECT_ROOT` - Path to main repo
 - `$WORKTREE_BASE` - Path to worktrees directory (default: ../worktrees)

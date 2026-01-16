@@ -285,6 +285,7 @@ Handle failures:
 
 4. Update task:
    - Remove: CLAIM_TAG
+   - Remove: "Planned" (signals task no longer available for claiming)
    - Remove: "Rework-Requested" (if present)
    - Remove: "Merge-Conflict" (if present)
    - Add: "Dev-Complete", "Design-Complete", "Test-Complete"

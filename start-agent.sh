@@ -15,13 +15,13 @@ print_usage() {
     echo "Agent types:"
     echo "  ba          Business Analyst"
     echo "  architect   Software Architect"
-    echo "  worker      Implementation Worker (specify worker-id)"
+    echo "  dev         Dev agent (specify dev-id)"
     echo "  pm          Project Manager"
     echo ""
     echo "Examples:"
     echo "  ./start-agent.sh ba my-project"
-    echo "  ./start-agent.sh worker my-project 1"
-    echo "  ./start-agent.sh worker my-project 2"
+    echo "  ./start-agent.sh dev my-project 1"
+    echo "  ./start-agent.sh dev my-project 2"
 }
 
 if [ -z "$AGENT" ] || [ -z "$PROJECT" ]; then
@@ -44,10 +44,10 @@ case "$AGENT" in
         LABEL="📐 Architect"
         LOG_FILE="architect.log"
         ;;
-    worker|w)
-        COMMAND="/agents:worker-loop $PROJECT $WORKER_ID"
-        LABEL="⚙️  Implementation Worker #$WORKER_ID"
-        LOG_FILE="worker-$WORKER_ID.log"
+    dev|d)
+        COMMAND="/agents:dev-loop $PROJECT $WORKER_ID"
+        LABEL="⚙️  Dev #$WORKER_ID"
+        LOG_FILE="dev-$WORKER_ID.log"
         ;;
     pm|project-manager)
         COMMAND="/agents:pm-loop $PROJECT"
