@@ -1,16 +1,16 @@
 #!/bin/bash
 
 # Joan Single Agent Launcher
-# Usage: ./start-agent.sh <agent-type> <project-name> [worker-id]
+# Usage: ./start-agent.sh <agent-type> <project-name> [dev-id]
 
 set -e
 
 AGENT="${1:-}"
 PROJECT="${2:-}"
-WORKER_ID="${3:-1}"
+DEV_ID="${3:-1}"
 
 print_usage() {
-    echo "Usage: ./start-agent.sh <agent-type> <project-name> [worker-id]"
+    echo "Usage: ./start-agent.sh <agent-type> <project-name> [dev-id]"
     echo ""
     echo "Agent types:"
     echo "  ba          Business Analyst"
@@ -46,9 +46,9 @@ case "$AGENT" in
         LOG_FILE="architect.log"
         ;;
     dev|d)
-        COMMAND="/agents:dev-loop $PROJECT $WORKER_ID"
-        LABEL="⚙️  Dev #$WORKER_ID"
-        LOG_FILE="dev-$WORKER_ID.log"
+        COMMAND="/agents:dev-loop $PROJECT $DEV_ID"
+        LABEL="⚙️  Dev #$DEV_ID"
+        LOG_FILE="dev-$DEV_ID.log"
         ;;
     reviewer|review|r)
         COMMAND="/agents:reviewer-loop $PROJECT"

@@ -1,8 +1,8 @@
-# Joan Multi-Agent Orchestration System (v2)
+# Joan Multi-Agent Orchestration System (v3)
 
 ## True Parallel Feature Development with Git Worktrees
 
-This version uses **git worktrees** to enable genuine parallel development. Instead of time-slicing agents across tasks, each Dev agent operates in an isolated worktree, allowing multiple features to be developed simultaneously.
+This version uses **git worktrees** for genuine parallel development, **intelligent task queuing** for efficient polling, and **automatic idle shutdown** for resource management. Each Dev agent operates in an isolated worktree, allowing multiple features to be developed simultaneously.
 
 ## Architecture
 
@@ -25,14 +25,16 @@ This version uses **git worktrees** to enable genuine parallel development. Inst
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## What Changed from v1
+## What Changed
 
-| Aspect | v1 | v2 |
-|--------|-----|-----|
-| Development agents | 3 (Dev, Design, Test) | N Devs |
-| Parallelism | Time-sliced | True parallel |
-| Working directory | Single repo | One worktree per task |
-| Features in parallel | 1 | N (configurable) |
+| Aspect | v1 | v2 | v3 |
+|--------|-----|-----|-----|
+| Development agents | 3 (Dev, Design, Test) | N Workers | N Devs + Reviewer |
+| Parallelism | Time-sliced | True parallel | True parallel |
+| Working directory | Single repo | One worktree per task | One worktree per task |
+| Task polling | Continuous | Continuous | Smart queue with idle shutdown |
+| Code review | Manual | Manual | Automated Reviewer agent |
+| Configuration | Hardcoded | Script args | `.joan-agents.json` config file |
 
 ## Agents
 
@@ -47,21 +49,20 @@ This version uses **git worktrees** to enable genuine parallel development. Inst
 ## Quick Start
 
 ```bash
-# Extract to your project
-unzip joan-agents-v2.zip
+# Clone or copy to your project
+cp -r joan-agents/.claude/agents/ your-project/.claude/agents/
+cp -r joan-agents/.claude/commands/ your-project/.claude/commands/
 
-# Copy .claude contents to your project
-cp -r joan-agents-v2/.claude/agents/ .claude/agents/
-cp -r joan-agents-v2/.claude/commands/ .claude/commands/
+# Initialize configuration (interactive)
+cd your-project
+/agents:init
 
-# Make scripts executable
-chmod +x joan-agents-v2/*.sh
+# Start agents via slash commands (recommended)
+/agents:start all
 
-# Launch with 4 parallel devs (default)
-./joan-agents-v2/start-agents-iterm.sh my-project
-
-# Or specify number of devs
-./joan-agents-v2/start-agents-iterm.sh my-project 6
+# Or use shell scripts for iTerm2 tabs
+chmod +x joan-agents/*.sh
+./joan-agents/start-agents-iterm.sh my-project 4
 ```
 
 ## How Devs Operate

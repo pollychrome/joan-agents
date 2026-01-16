@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Joan Multi-Agent Orchestration Launcher (Worktree Edition)
-# Usage: ./start-agents.sh <project-name> [num-workers]
+# Usage: ./start-agents.sh <project-name> [num-devs]
 #
 # This script launches agents for parallel feature development using git worktrees.
 # - 1 BA Agent
@@ -13,14 +13,14 @@
 set -e
 
 PROJECT="${1:-}"
-NUM_WORKERS="${2:-4}"
+NUM_DEVS="${2:-4}"
 
 if [ -z "$PROJECT" ]; then
-    echo "Usage: ./start-agents.sh <project-name> [num-workers]"
+    echo "Usage: ./start-agents.sh <project-name> [num-devs]"
     echo ""
     echo "Arguments:"
     echo "  project-name    Name of your Joan project"
-    echo "  num-workers     Number of parallel workers (default: 4)"
+    echo "  num-devs        Number of parallel devs (default: 4)"
     echo ""
     echo "This will launch:"
     echo "  - 1 Business Analyst agent"
@@ -29,13 +29,13 @@ if [ -z "$PROJECT" ]; then
     echo "  - 1 Code Reviewer agent"
     echo "  - 1 Project Manager agent"
     echo ""
-    echo "Each worker creates isolated git worktrees for true parallelism."
+    echo "Each dev creates isolated git worktrees for true parallelism."
     exit 1
 fi
 
 echo "🚀 Starting Joan Multi-Agent Orchestration (Worktree Edition)"
 echo "   Project: $PROJECT"
-echo "   Workers: $NUM_WORKERS"
+echo "   Devs: $NUM_DEVS"
 echo ""
 
 # Configuration
@@ -77,7 +77,7 @@ launch_agent "🔍 Business Analyst" "/agents:ba-loop $PROJECT" "ba"
 launch_agent "📐 Architect" "/agents:architect-loop $PROJECT" "architect"
 
 # Launch devs
-for i in $(seq 1 $NUM_WORKERS); do
+for i in $(seq 1 $NUM_DEVS); do
     launch_agent "⚙️  Dev #$i" "/agents:dev-loop $PROJECT $i" "dev-$i"
 done
 
@@ -95,7 +95,7 @@ echo "│                    Agent Overview                          │"
 echo "├─────────────────────────────────────────────────────────────┤"
 echo "│  🔍 BA Agent        - Evaluating requirements              │"
 echo "│  📐 Architect       - Creating implementation plans        │"
-for i in $(seq 1 $NUM_WORKERS); do
+for i in $(seq 1 $NUM_DEVS); do
 echo "│  ⚙️  Dev #$i          - Ready for parallel development      │"
 done
 echo "│  🔬 Reviewer        - Code review and quality gate         │"

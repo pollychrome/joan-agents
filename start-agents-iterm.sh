@@ -1,25 +1,25 @@
 #!/bin/bash
 
 # Joan Multi-Agent Orchestration Launcher (iTerm2 + Worktrees)
-# Usage: ./start-agents-iterm.sh <project-name> [num-workers]
+# Usage: ./start-agents-iterm.sh <project-name> [num-devs]
 
 set -e
 
 PROJECT="${1:-}"
-NUM_WORKERS="${2:-4}"
+NUM_DEVS="${2:-4}"
 
 if [ -z "$PROJECT" ]; then
-    echo "Usage: ./start-agents-iterm.sh <project-name> [num-workers]"
+    echo "Usage: ./start-agents-iterm.sh <project-name> [num-devs]"
     echo ""
     echo "Launches agents in iTerm2 tabs for parallel feature development."
-    echo "Default: 4 workers (4 features in parallel)"
+    echo "Default: 4 devs (4 features in parallel)"
     exit 1
 fi
 
-# Validate worker count
-if [ "$NUM_WORKERS" -gt 6 ]; then
-    echo "⚠️  Warning: $NUM_WORKERS workers may strain system resources."
-    echo "   Recommended: 4-6 workers maximum."
+# Validate dev count
+if [ "$NUM_DEVS" -gt 6 ]; then
+    echo "⚠️  Warning: $NUM_DEVS devs may strain system resources."
+    echo "   Recommended: 4-6 devs maximum."
     read -p "Continue? (y/n) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -37,7 +37,7 @@ mkdir -p "$WORKTREE_DIR"
 
 echo "🚀 Starting Joan Multi-Agent Orchestration"
 echo "   Project: $PROJECT"
-echo "   Workers: $NUM_WORKERS (parallel features)"
+echo "   Devs: $NUM_DEVS (parallel features)"
 echo ""
 
 # Check iTerm2
@@ -66,7 +66,7 @@ APPLESCRIPT="tell application \"iTerm2\"
         end tell"
 
 # Add dev tabs dynamically
-for i in $(seq 1 $NUM_WORKERS); do
+for i in $(seq 1 $NUM_DEVS); do
     APPLESCRIPT="$APPLESCRIPT
 
         -- Tab: Dev $i
@@ -102,7 +102,7 @@ end tell"
 # Execute
 osascript -e "$APPLESCRIPT"
 
-TOTAL_AGENTS=$((4 + NUM_WORKERS))
+TOTAL_AGENTS=$((4 + NUM_DEVS))
 
 echo ""
 echo "✅ Launched $TOTAL_AGENTS agents in iTerm2 tabs!"
@@ -110,11 +110,11 @@ echo ""
 echo "┌─────────────────────────────────────────────────────────────┐"
 echo "│  Tab Layout                                                 │"
 echo "├─────────────────────────────────────────────────────────────┤"
-echo "│  🔍 BA   │ 📐 Arch │ ⚙️ D1-D$NUM_WORKERS │ 🔬 Rev │ 📊 PM │"
+echo "│  🔍 BA   │ 📐 Arch │ ⚙️ D1-D$NUM_DEVS │ 🔬 Rev │ 📊 PM │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
 echo "Parallel Development:"
-echo "  • $NUM_WORKERS features can be developed simultaneously"
+echo "  • $NUM_DEVS features can be developed simultaneously"
 echo "  • Each dev creates isolated git worktrees"
 echo "  • Worktrees location: $WORKTREE_DIR"
 echo ""

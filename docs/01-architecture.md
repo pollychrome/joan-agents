@@ -12,8 +12,8 @@ This document describes the updated architecture using git worktrees for true pa
 ├──────────┼──────────┼─────────────────────────────────┼──────────┼─────────┤
 │          │          │                                 │          │         │
 │    ↓     │    ↓     │    ↓       ↓       ↓       ↓   │    ↓     │    ↓    │
-│   BA     │ Architect│  Worker  Worker  Worker  Worker│   YOU    │   PM    │
-│  Agent   │  Agent   │    #1      #2      #3      #4  │          │  Agent  │
+│   BA     │ Architect│   Dev     Dev     Dev     Dev  │ Reviewer │   PM    │
+│  Agent   │  Agent   │    #1      #2      #3      #4  │  Agent   │  Agent  │
 │          │          │    │       │       │       │   │          │         │
 │          │          │    ▼       ▼       ▼       ▼   │          │         │
 │          │          │ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐│          │         │
@@ -29,9 +29,9 @@ WT = Git Worktree (isolated working directory)
 
 | Aspect | Original | Revised |
 |--------|----------|---------|
-| Development agents | 3 (Dev, Design, Test) | N workers (configurable) |
+| Development agents | 3 (Dev, Design, Test) | N Devs (configurable) |
 | Parallelism | Time-sliced within one repo | True parallel via worktrees |
-| Task assignment | Agents pick tasks by type | Workers claim entire tasks |
+| Task assignment | Agents pick tasks by type | Devs claim entire tasks |
 | Working directory | Single shared repo | One worktree per active task |
 | Throughput | 1 feature at a time | N features simultaneously |
 
@@ -45,11 +45,12 @@ WT = Git Worktree (isolated working directory)
 | Architect | 1 | Creates implementation plans |
 | Project Manager | 1 | Merges PRs, tracks deployments |
 
-### New: Implementation Workers
+### New: Dev Agents + Reviewer
 
 | Agent | Count | Role |
 |-------|-------|------|
-| Implementation Worker | 4-6 | Claims a task, creates worktree, does ALL implementation (dev + design + test), creates PR, cleans up |
+| Dev | N (configurable) | Claims a task, creates worktree, does ALL implementation (dev + design + test), creates PR, cleans up |
+| Reviewer | 1 | Reviews completed PRs, merges develop into feature, approves or requests rework |
 
 ## How It Works
 
@@ -65,16 +66,16 @@ Task moves to Development (tagged "Planned")
 Task enters the "Available Work" pool
 ```
 
-### 2. Worker Claims Task
+### 2. Dev Claims Task
 
 ```
 Dev #1 polls Joan ──▶ Finds unclaimed "Planned" task
         │
         ▼
-Worker tags task "Claimed-Dev-1" (prevents others from claiming)
+Dev tags task "Claimed-Dev-1" (prevents others from claiming)
         │
         ▼
-Worker extracts branch name from plan: feature/user-auth
+Dev extracts branch name from plan: feature/user-auth
 ```
 
 ### 3. Worktree Creation
@@ -86,7 +87,7 @@ Dev #1 creates worktree:
 git worktree add ../worktrees/user-auth feature/user-auth
         │
         ▼
-Worker changes to: ../worktrees/user-auth/
+Dev changes to: ../worktrees/user-auth/
         │
         ▼
 All file operations happen in this isolated directory
@@ -126,15 +127,15 @@ Dev #1 finishes task
 
 ## Parallel Execution Example
 
-With 4 workers and 6 planned tasks:
+With 4 devs and 6 planned tasks:
 
 ```
 Time ─────────────────────────────────────────────────────────────▶
 
-Worker 1: [═══ Task A ═══][═══ Task E ═══]
-Worker 2: [═══ Task B ═══][═══ Task F ═══]
-Worker 3: [═══ Task C ═════════]
-Worker 4: [═══ Task D ═══]
+Dev 1: [═══ Task A ═══][═══ Task E ═══]
+Dev 2: [═══ Task B ═══][═══ Task F ═══]
+Dev 3: [═══ Task C ═════════]
+Dev 4: [═══ Task D ═══]
 
 Worktrees:
   ../worktrees/task-a/  (created → used → removed)
@@ -157,15 +158,15 @@ your-project/                    # Main repo (Architect works here)
 └── ...
 
 ../worktrees/                    # Parallel workspaces
-├── user-auth/                   # Worker 1's current task
+├── user-auth/                   # Dev 1's current task
 │   ├── .git → ../../your-project/.git
 │   ├── src/
 │   └── ...
-├── dashboard/                   # Worker 2's current task
+├── dashboard/                   # Dev 2's current task
 │   └── ...
-├── api-refactor/                # Worker 3's current task
+├── api-refactor/                # Dev 3's current task
 │   └── ...
-└── payment-flow/                # Worker 4's current task
+└── payment-flow/                # Dev 4's current task
     └── ...
 ```
 
@@ -176,24 +177,24 @@ All worktrees share the same `.git` directory (via symlink), so:
 
 ## Claim Protocol
 
-To prevent multiple workers from claiming the same task:
+To prevent multiple devs from claiming the same task:
 
 ```
-1. Worker polls Joan for tasks:
+1. Dev polls Joan for tasks:
    - Column: Development
    - Tag: Planned
    - NOT tagged: Claimed-Dev-*
 
-2. Worker finds candidate task
+2. Dev finds candidate task
 
-3. Worker IMMEDIATELY tags: "Claimed-Dev-{N}"
+3. Dev IMMEDIATELY tags: "Claimed-Dev-{N}"
    (This is atomic - first writer wins)
 
-4. Worker verifies claim stuck
+4. Dev verifies claim stuck
    - If yes: proceed
    - If no (race condition): skip, poll again
 
-5. When done, worker removes claim tag and moves task
+5. When done, Dev removes claim tag and moves task
 ```
 
 ## Resource Usage
@@ -208,20 +209,21 @@ Breakdown:
 - BA Agent: 1
 - Architect Agent: 1
 - PM Agent: 1
-- Implementation Workers: 1-5 (your choice)
+- Dev Agents: 1-5 (your choice)
+- Reviewer Agent: 1
 
 ## Benefits
 
 1. **True Parallelism**: N features developed simultaneously
 2. **Isolation**: Each task has its own working directory
-3. **No Conflicts**: Workers never step on each other's files
-4. **Efficient**: Single worker handles entire task lifecycle
-5. **Scalable**: Add more workers for more parallelism
+3. **No Conflicts**: Devs never step on each other's files
+4. **Efficient**: Single dev handles entire task lifecycle
+5. **Scalable**: Add more devs for more parallelism
 6. **Clean**: Worktrees created and destroyed automatically
 
 ## Trade-offs
 
 1. **Disk Space**: Each worktree is a full checkout (~50-200MB typical)
-2. **Memory**: More workers = more Claude Code instances
+2. **Memory**: More devs = more Claude Code instances
 3. **Sequential Within Task**: Dev/Design/Test run sequentially per task
 4. **Coordination**: Need claim protocol to prevent races
