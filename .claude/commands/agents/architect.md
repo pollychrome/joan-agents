@@ -27,7 +27,7 @@ If config missing, report error and exit.
 
 1. Fetch all actionable tasks in Analyse column:
    - Tasks with "Ready" tag (need plans)
-   - Tasks with "Plan-Pending-Approval" tag (check for @architect approval)
+   - Tasks with "Plan-Pending-Approval" tag (check for @approve-plan)
 
 2. Process each task:
    - Validate before working

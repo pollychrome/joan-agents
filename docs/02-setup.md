@@ -264,7 +264,7 @@ Create these tags in your Joan project:
 |-----|-------|---------|
 | `Needs-Clarification` | Yellow | Task has unanswered questions |
 | `Ready` | Green | Requirements complete, ready for Architect |
-| `Plan-Pending-Approval` | Orange | Plan awaits human @architect approval |
+| `Plan-Pending-Approval` | Orange | Plan awaits human `@approve-plan` |
 | `Planned` | Blue | Plan approved, available for Dev to claim |
 | `Claimed-Dev-1` through `Claimed-Dev-N` | Gray | Dev N is implementing this task |
 | `Dev-Complete` | Purple | All DEV sub-tasks done |

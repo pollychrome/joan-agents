@@ -122,7 +122,7 @@ All agents communicate through Joan MCP and task comments/tags.
 |-----|---------|--------|------------|
 | `Needs-Clarification` | Task has unanswered questions | BA | BA |
 | `Ready` | Requirements complete | BA | Architect (when creating plan) |
-| `Plan-Pending-Approval` | Plan created, awaiting @architect | Architect | Architect (on approval) |
+| `Plan-Pending-Approval` | Plan created, awaiting @approve-plan | Architect | Architect (on approval) |
 | `Planned` | Plan approved, available for devs | Architect, Reviewer (on reject) | Dev (on completion) |
 | `Claimed-Dev-N` | Dev N is implementing this task | Dev | Dev (on completion or failure) |
 | `Dev-Complete` | All DEV sub-tasks done | Dev | Reviewer (on reject) |
@@ -158,7 +158,7 @@ Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual in
 
 | Mention | Created By | Consumed By | Effect |
 |---------|------------|-------------|--------|
-| `@architect` | Human | Architect | Approves plan |
+| `@approve-plan` | Human | Architect | Approves plan |
 | `@approve` | Reviewer | PM | Authorizes PM to merge |
 | `@rework` | Reviewer | Dev, PM | Dev reads feedback and fixes; PM moves task back |
 | `@rework-requested` | Reviewer | Dev | Alias for @rework - Dev reads feedback and fixes |
@@ -228,7 +228,7 @@ To Do → Analyse → Development → Review → Deploy → Done
 
 1. **To Do** → BA evaluates requirements, adds `Ready` tag
 2. **Analyse** (Ready) → Architect creates plan, removes `Ready`, adds `Plan-Pending-Approval`
-3. **Analyse** (Plan-Pending-Approval) → Human approves with `@architect`
+3. **Analyse** (Plan-Pending-Approval) → Human approves with `@approve-plan`
 4. **Development** (Planned) → Architect removes `Plan-Pending-Approval`, adds `Planned`, moves task
 5. **Development** → Dev claims with `Claimed-Dev-N`, implements, commits, creates PR
 6. **Review** → Dev removes `Planned` + `Claimed-Dev-N`, adds completion tags, moves task

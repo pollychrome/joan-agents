@@ -117,7 +117,7 @@ your-project/                    # Main repo
 ## Workflow
 
 1. **To Do** → BA evaluates, asks questions
-2. **Analyse** → Architect creates plan, you approve with `@architect`
+2. **Analyse** → Architect creates plan, you approve with `@approve-plan`
 3. **Development** → Devs claim tasks, create worktrees, implement, create PRs
 4. **Review** → Reviewer validates code, merges develop into feature, comments `@approve` or `@rework`
 5. **Review** (on @approve) → PM merges to develop, moves task to Deploy

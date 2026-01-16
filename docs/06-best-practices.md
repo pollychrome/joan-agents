@@ -109,15 +109,15 @@ Before approving, please adjust:
 
 3. TEST-2 should include error scenarios
 
-@architect please revise
+@approve-plan please revise
 ```
 
 ### Approve Explicitly
 
-Use the exact trigger: `@architect`
+Use the exact trigger: `@approve-plan`
 
 ```markdown
-Plan looks good, approved. @architect
+Plan looks good, approved. @approve-plan
 ```
 
 ---

@@ -46,7 +46,7 @@ IF TASK_QUEUE is empty:
   2. Build queue with priority:
      TASK_QUEUE = [
        ...ready_tasks,                    # Need new plans
-       ...plan_pending_approval_tasks     # Check for @architect approval
+       ...plan_pending_approval_tasks     # Check for @approve-plan
      ]
 
   3. Handle empty queue:
@@ -111,7 +111,7 @@ For tasks needing plans:
    - Attach plan file to task
    - Remove "Ready" tag
    - Add "Plan-Pending-Approval" tag
-   - Comment: "Plan ready for review. Approve with @architect mention."
+   - Comment: "Plan ready for review. Approve with @approve-plan mention."
 
 4. Report: "Created plan for '{title}', awaiting approval"
    Continue to Phase 1
@@ -124,17 +124,17 @@ For tasks with "Plan-Pending-Approval":
 
 1. Fetch task comments:
    - Use list_task_comments(task.id)
-   - Look for comments containing "@architect"
+   - Look for comments containing "@approve-plan"
 
 2. Find plan creation comment timestamp
 
-3. Check for @architect after plan:
-   IF found @architect mention after plan was posted:
+3. Check for @approve-plan after plan:
+   IF found @approve-plan mention after plan was posted:
      - Plan is approved
      - Go to Step 5
 
    IF no approval found:
-     Report: "Task '{title}' still awaiting @architect approval"
+     Report: "Task '{title}' still awaiting @approve-plan"
      Continue to Phase 1
 ```
 
