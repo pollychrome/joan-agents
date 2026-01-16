@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Reviews Ready tasks in Analyse column, analyzes codebase, creates implementation plans with atomic sub-tasks. Requires @architect mention in comments to approve and proceed.
-model: claude-sonnet-4-5-20250929
+# Model is set via .joan-agents.json config and passed by /agents:start
 tools:
   - mcp__joan__*
   - Read

@@ -48,6 +48,7 @@ Enable it in .joan-agents.json or run /agents:init to reconfigure.
 ## Step 4: Launch Agent
 
 Set these variables from config:
+- `MODEL` = config.settings.model (default: "opus")
 - `PROJECT_ID` = config.projectId
 - `PROJECT_NAME` = config.projectName
 - `POLL_INTERVAL` = config.settings.pollingIntervalMinutes
@@ -55,19 +56,32 @@ Set these variables from config:
 
 ### For Single Agent (`ba`, `architect`, `pm`, `reviewer`, `dev`)
 
-Launch the Task tool with the appropriate subagent:
+Launch the Task tool with the appropriate subagent.
+
+**CRITICAL: Always pass the `model` parameter from config to ensure correct model usage.**
+
+```
+Task tool call:
+  - subagent_type: "{agent-type}"
+  - model: "{MODEL from config}"  ← REQUIRED
+  - prompt: "... configuration and instructions ..."
+```
+
+Agent type mapping:
 - `ba` → subagent_type: "business-analyst"
 - `architect` → subagent_type: "architect"
 - `pm` → subagent_type: "project-manager"
 - `reviewer` → subagent_type: "code-reviewer"
-- `dev` → subagent_type: "developer"
+- `dev` → subagent_type: "implementation-worker"
 
-Pass configuration in the prompt.
+Pass configuration in the prompt including PROJECT_ID, PROJECT_NAME, POLL_INTERVAL, MAX_IDLE.
 
 ### For `all`
 
 Launch multiple Task tools in parallel for each enabled agent.
 For devs, launch `config.agents.devs.count` parallel devs with IDs 1, 2, 3...
+
+**Each Task call MUST include `model: "{MODEL}"` from config.**
 
 Report:
 ```

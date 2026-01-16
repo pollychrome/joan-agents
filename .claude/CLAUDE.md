@@ -36,6 +36,7 @@ Agents read from `.joan-agents.json` in project root:
   "projectId": "uuid-from-joan",
   "projectName": "My Project",
   "settings": {
+    "model": "opus",
     "pollingIntervalMinutes": 10,
     "maxIdlePolls": 6
   },
@@ -55,8 +56,16 @@ Run `/agents:init` to generate this file interactively.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `model` | opus | Claude model for all agents: `opus`, `sonnet`, or `haiku` |
 | `pollingIntervalMinutes` | 10 | Minutes between polls when queue is empty |
 | `maxIdlePolls` | 6 | Consecutive empty polls before auto-shutdown |
+
+**Model Selection:**
+- `opus` - Best instruction-following, most thorough (recommended for complex workflows)
+- `sonnet` - Faster, lower cost, good for simpler tasks
+- `haiku` - Fastest, lowest cost, for very simple operations
+
+Change model anytime with `/agents:model`.
 
 With defaults: agents auto-shutdown after 1 hour of inactivity (6 polls × 10 min).
 

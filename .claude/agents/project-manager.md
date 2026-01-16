@@ -1,7 +1,7 @@
 ---
 name: project-manager
 description: Validates Review column tasks for subtask completion, monitors Deploy column, merges approved PRs to develop, tracks what's ready for production, moves completed items to Done.
-model: claude-sonnet-4-5-20250929
+# Model is set via .joan-agents.json config and passed by /agents:start
 tools:
   - mcp__joan__*
   - mcp__github__*

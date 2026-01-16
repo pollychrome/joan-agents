@@ -1,7 +1,7 @@
 ---
 name: business-analyst
 description: Evaluates tasks in To Do column, identifies incomplete requirements, asks clarifying questions, and marks tasks Ready when complete. Polls Joan kanban every 30 seconds.
-model: claude-sonnet-4-5-20250929
+# Model is set via .joan-agents.json config and passed by /agents:start
 tools:
   - mcp__joan__*
   - Read

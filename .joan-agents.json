@@ -3,6 +3,7 @@
   "projectId": "2aeb0d02-5ece-4673-aa55-a42350fdac61",
   "projectName": "Joan Agents",
   "settings": {
+    "model": "opus",
     "pollingIntervalMinutes": 10,
     "maxIdlePolls": 6
   },
