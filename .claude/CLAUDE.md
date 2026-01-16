@@ -171,7 +171,7 @@ This creates an auditable back-and-forth trail in task comments.
 |---------|------------|-------------|--------|
 | `@approve-plan` | Human | Architect | Approves plan |
 | `@approve` | Reviewer | PM | Authorizes PM to merge |
-| `@rework` | Reviewer | Dev, PM | Dev reads feedback and fixes; PM moves task back |
+| `@rework` | Reviewer, PM | Dev, PM | Dev reads feedback and fixes; PM moves task back |
 | `@rework-requested` | Reviewer | Dev | Alias for @rework |
 | `@business-analyst` | Any | BA | Escalates requirement questions |
 
@@ -190,6 +190,27 @@ Agents check if `@rework` is "resolved" before acting:
 3. If `## rework-complete` timestamp > `@rework` timestamp → rework is complete
 
 This allows multiple rework cycles while maintaining a clear audit trail.
+
+### Merge Conflict Handling
+
+When PM detects a merge conflict during final merge to `develop`:
+
+1. **PM** adds `Merge-Conflict` tag to the task
+2. **PM** comments with `@rework` including conflict details:
+   ```
+   @rework Merge conflict detected when merging to develop.
+   Conflicting files: [list of files]
+   Please rebase/merge from develop and resolve conflicts.
+   ```
+3. **PM** moves task back to Development column
+4. **Dev** claims the task (has `Planned` + `Merge-Conflict` tags)
+5. **Dev** resolves conflicts, pushes, comments `## rework-complete`
+6. **Dev** removes `Merge-Conflict` tag when resolved
+
+The `@rework` trigger is reused (rather than a new trigger) because:
+- Dev already knows to check for `@rework` comments
+- PM already moves tasks back on `@rework`
+- The `Merge-Conflict` tag differentiates it from code quality rework
 
 ## Worktree Management
 

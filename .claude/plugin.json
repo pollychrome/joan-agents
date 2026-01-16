@@ -6,18 +6,22 @@
   "commands": [
     "commands/agents/init.md",
     "commands/agents/start.md",
+    "commands/agents/model.md",
     "commands/agents/ba.md",
     "commands/agents/architect.md",
+    "commands/agents/reviewer.md",
     "commands/agents/pm.md",
     "commands/agents/dev.md",
     "commands/agents/ba-loop.md",
     "commands/agents/architect-loop.md",
+    "commands/agents/reviewer-loop.md",
     "commands/agents/pm-loop.md",
     "commands/agents/dev-loop.md"
   ],
   "agents": [
     "agents/business-analyst.md",
     "agents/architect.md",
+    "agents/reviewer.md",
     "agents/project-manager.md",
     "agents/developer.md"
   ],
