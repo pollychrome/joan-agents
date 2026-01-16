@@ -114,7 +114,7 @@ All agents communicate through Joan MCP and task comments/tags.
 | `Needs-Clarification` | Task has unanswered questions | BA | BA |
 | `Ready` | Requirements complete | BA | Architect |
 | `Plan-Pending-Approval` | Plan created, awaiting @architect | Architect | Architect |
-| `Planned` | Plan approved, available for devs | Architect | Dev |
+| `Planned` | Plan approved, available for devs | Architect, Reviewer (on reject) | Dev |
 | `Claimed-Dev-N` | Dev N is implementing this task | Dev | Dev |
 | `Dev-Complete` | All DEV sub-tasks done | Dev | Reviewer (on reject) |
 | `Design-Complete` | All DES sub-tasks done | Dev | Reviewer (on reject) |
@@ -127,10 +127,12 @@ All agents communicate through Joan MCP and task comments/tags.
 ### Claim Protocol
 
 Devs use atomic tagging to claim tasks:
-1. Find task with `Planned` tag and NO `Claimed-Dev-*` tag
-2. Immediately add `Claimed-Dev-{N}` tag
-3. Re-fetch and verify claim succeeded (no race condition)
-4. Remove claim tag when done (success or failure)
+1. Find task with (`Planned` OR `Rework-Requested`) tag and NO `Claimed-Dev-*` tag
+2. Rework tasks get priority over new tasks (finish what's started)
+3. Immediately add `Claimed-Dev-{N}` tag
+4. Re-fetch and verify claim succeeded (no race condition)
+5. Remove claim tag when done (success or failure)
+6. For rework: Remove `Rework-Requested` tag, read `@rework` comment for feedback
 
 ### Comment Triggers
 
@@ -138,7 +140,8 @@ Devs use atomic tagging to claim tasks:
 |---------|------------|-------------|--------|
 | `@architect` | Human | Architect | Approves plan |
 | `@approve` | Reviewer | PM | Authorizes PM to merge |
-| `@rework` | Reviewer | PM | Sends task back to Development |
+| `@rework` | Reviewer | Dev, PM | Dev reads feedback and fixes; PM moves task back |
+| `@rework-requested` | Reviewer | Dev | Alias for @rework - Dev reads feedback and fixes |
 | `@business-analyst` | Any | BA | Escalates requirement questions |
 
 ## Worktree Management
@@ -245,4 +248,4 @@ The Reviewer agent performs comprehensive validation:
 6. **Design** - UI matches design system (if applicable)
 
 On **approval**: Comments `@approve`, PM merges to develop
-On **rejection**: Removes completion tags, adds `Rework-Requested`, comments `@rework`
+On **rejection**: Removes completion tags, adds `Rework-Requested` + `Planned`, comments `@rework`

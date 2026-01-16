@@ -297,7 +297,12 @@ ELSE:
    - Follow tag addition protocol
    - Verify added
 
-4. NOW comment with findings (AFTER tags are updated):
+4. Add Planned tag (CRITICAL - enables dev agent to pick up rework):
+   - Follow tag addition protocol
+   - Verify added
+   - This ensures the task is visible to dev agents for rework
+
+5. NOW comment with findings (AFTER tags are updated):
    Comment format:
    ```
    ## Code Review: {Task Title}
@@ -330,7 +335,7 @@ ELSE:
    @rework {concise 1-line summary of required changes}
    ```
 
-5. Report: "Task '{title}' requires rework: {summary}"
+6. Report: "Task '{title}' requires rework: {summary}"
    Continue to Phase 1
 ```
 

@@ -53,11 +53,13 @@ Every 30 seconds if idle:
 
 ```bash
 # Poll Joan for available tasks
+# Look for NEW tasks (Planned) or REWORK tasks (Rework-Requested)
 Tasks in "Development" column
-  AND tagged "Planned"
+  AND (tagged "Planned" OR tagged "Rework-Requested")
   AND NOT tagged "Claimed-Worker-*"
-  
+
 # Sort by priority, take highest
+# Rework tasks get priority over new tasks (finish what's started)
 
 # Immediately claim it
 Add tag: "Claimed-Worker-$WORKER_ID"
@@ -66,6 +68,17 @@ Add tag: "Claimed-Worker-$WORKER_ID"
 Re-fetch task, confirm your tag is present
 If not present: skip this task, poll again
 ```
+
+### Rework Mode
+
+If task has `Rework-Requested` tag:
+1. Read task comments to find the `@rework` or `@rework-requested` comment
+2. Understand what changes were requested by the Reviewer
+3. Remove the `Rework-Requested` tag (you're handling it now)
+4. Keep the `Planned` tag (you'll remove it on completion as normal)
+5. Checkout the existing branch (don't create new worktree from scratch)
+6. Address the specific feedback - do NOT redo the entire task
+7. Push changes and comment: "Rework complete. Ready for re-review."
 
 ## Phase 2: Create Worktree
 
