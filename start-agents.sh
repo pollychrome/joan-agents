@@ -86,8 +86,8 @@ done
 # Launch Reviewer
 launch_agent "🔬 Code Reviewer" "/agents:reviewer --loop" "reviewer"
 
-# Launch PM
-launch_agent "📊 Project Manager" "/agents:pm --loop" "pm"
+# Launch Ops
+launch_agent "🔧 Ops" "/agents:ops --loop" "ops"
 
 echo ""
 echo "✅ All agents launched!"
@@ -101,7 +101,7 @@ for i in $(seq 1 $NUM_DEVS); do
 echo "│  ⚙️  Dev #$i          - Ready for parallel development      │"
 done
 echo "│  🔬 Reviewer        - Code review and quality gate         │"
-echo "│  📊 PM Agent        - Managing deployments                 │"
+echo "│  🔧 Ops Agent       - Merging & conflict resolution         │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
 echo "Worktrees will be created in: $WORKTREE_DIR"

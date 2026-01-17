@@ -55,14 +55,14 @@ APPLESCRIPT="tell application \"iTerm2\"
         -- Tab 1: BA Agent
         tell current session
             set name to \"🔍 BA\"
-            write text \"cd '$CURRENT_DIR' && echo '🔍 Business Analyst Agent' && claude --dangerously-skip-permissions '/agents:ba-loop $PROJECT' 2>&1 | tee '$LOG_DIR/ba.log'\"
+            write text \"cd '$CURRENT_DIR' && echo '🔍 Business Analyst Agent' && claude --dangerously-skip-permissions '/agents:ba --loop' 2>&1 | tee '$LOG_DIR/ba.log'\"
         end tell
         
         -- Tab 2: Architect Agent
         set newTab to (create tab with default profile)
         tell current session of newTab
             set name to \"📐 Arch\"
-            write text \"cd '$CURRENT_DIR' && echo '📐 Architect Agent' && claude --dangerously-skip-permissions '/agents:architect-loop $PROJECT' 2>&1 | tee '$LOG_DIR/architect.log'\"
+            write text \"cd '$CURRENT_DIR' && echo '📐 Architect Agent' && claude --dangerously-skip-permissions '/agents:architect --loop' 2>&1 | tee '$LOG_DIR/architect.log'\"
         end tell"
 
 # Add dev tabs dynamically
@@ -73,7 +73,7 @@ for i in $(seq 1 $NUM_DEVS); do
         set newTab to (create tab with default profile)
         tell current session of newTab
             set name to \"⚙️ D$i\"
-            write text \"cd '$CURRENT_DIR' && echo '⚙️ Dev #$i' && claude --dangerously-skip-permissions '/agents:dev-loop $PROJECT $i' 2>&1 | tee '$LOG_DIR/dev-$i.log'\"
+            write text \"cd '$CURRENT_DIR' && echo '⚙️ Dev #$i' && claude --dangerously-skip-permissions '/agents:dev $i --loop' 2>&1 | tee '$LOG_DIR/dev-$i.log'\"
         end tell"
 done
 
@@ -84,17 +84,17 @@ APPLESCRIPT="$APPLESCRIPT
         set newTab to (create tab with default profile)
         tell current session of newTab
             set name to \"🔬 Rev\"
-            write text \"cd '$CURRENT_DIR' && echo '🔬 Code Reviewer Agent' && claude --dangerously-skip-permissions '/agents:reviewer-loop $PROJECT' 2>&1 | tee '$LOG_DIR/reviewer.log'\"
+            write text \"cd '$CURRENT_DIR' && echo '🔬 Code Reviewer Agent' && claude --dangerously-skip-permissions '/agents:reviewer --loop' 2>&1 | tee '$LOG_DIR/reviewer.log'\"
         end tell"
 
-# Add PM tab
+# Add Ops tab
 APPLESCRIPT="$APPLESCRIPT
 
-        -- Tab: PM Agent
+        -- Tab: Ops Agent
         set newTab to (create tab with default profile)
         tell current session of newTab
-            set name to \"📊 PM\"
-            write text \"cd '$CURRENT_DIR' && echo '📊 Project Manager Agent' && claude --dangerously-skip-permissions '/agents:pm-loop $PROJECT' 2>&1 | tee '$LOG_DIR/pm.log'\"
+            set name to \"🔧 Ops\"
+            write text \"cd '$CURRENT_DIR' && echo '🔧 Ops Agent' && claude --dangerously-skip-permissions '/agents:ops --loop' 2>&1 | tee '$LOG_DIR/ops.log'\"
         end tell
     end tell
 end tell"
@@ -110,7 +110,7 @@ echo ""
 echo "┌─────────────────────────────────────────────────────────────┐"
 echo "│  Tab Layout                                                 │"
 echo "├─────────────────────────────────────────────────────────────┤"
-echo "│  🔍 BA   │ 📐 Arch │ ⚙️ D1-D$NUM_DEVS │ 🔬 Rev │ 📊 PM │"
+echo "│  🔍 BA   │ 📐 Arch │ ⚙️ D1-D$NUM_DEVS │ 🔬 Rev │ 🔧 Ops │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
 echo "Parallel Development:"

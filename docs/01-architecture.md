@@ -12,7 +12,7 @@ This document describes the updated architecture using git worktrees for true pa
 ├──────────┼──────────┼─────────────────────────────────┼──────────┼─────────┤
 │          │          │                                 │          │         │
 │    ↓     │    ↓     │    ↓       ↓       ↓       ↓   │    ↓     │    ↓    │
-│   BA     │ Architect│   Dev     Dev     Dev     Dev  │ Reviewer │   PM    │
+│   BA     │ Architect│   Dev     Dev     Dev     Dev  │ Reviewer │   Ops   │
 │  Agent   │  Agent   │    #1      #2      #3      #4  │  Agent   │  Agent  │
 │          │          │    │       │       │       │   │          │         │
 │          │          │    ▼       ▼       ▼       ▼   │          │         │
@@ -43,7 +43,7 @@ WT = Git Worktree (isolated working directory)
 |-------|-------|------|
 | Business Analyst | 1 | Evaluates requirements, asks questions |
 | Architect | 1 | Creates implementation plans |
-| Project Manager | 1 | Merges PRs, tracks deployments |
+| Ops | 1 | Merges PRs, tracks deployments |
 
 ### New: Dev Agents + Reviewer
 
@@ -208,7 +208,7 @@ To prevent multiple devs from claiming the same task:
 Breakdown:
 - BA Agent: 1
 - Architect Agent: 1
-- PM Agent: 1
+- Ops Agent: 1
 - Dev Agents: 1-5 (your choice)
 - Reviewer Agent: 1
 

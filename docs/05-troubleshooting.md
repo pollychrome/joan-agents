@@ -75,7 +75,7 @@ Solutions for common issues with the Joan Multi-Agent System.
    - Architect watches: Analyse (Ready, Plan-Pending-Approval)
    - Dev watches: Development (Planned, Rework-Requested)
    - Reviewer watches: Review (completion tags present)
-   - PM watches: Review (@approve), Deploy
+   - Ops watches: Review (@approve), Deploy
 
 2. **Verify tags are correct:**
    - Ready tasks need `Ready` tag for Architect
@@ -122,7 +122,7 @@ Solutions for common issues with the Joan Multi-Agent System.
 ### Merge Conflicts
 
 **Symptoms:**
-- PM agent reports conflict
+- Ops agent reports conflict
 - Agent comments asking @developer to resolve
 
 **Solutions:**
@@ -137,7 +137,7 @@ Solutions for common issues with the Joan Multi-Agent System.
    git push
    ```
 
-2. **PM will retry on next cycle**
+2. **Ops will retry on next cycle**
 
 ### Feature Branch Doesn't Exist
 
@@ -431,7 +431,7 @@ If automation is stuck, progress task manually:
 4. **Review → Deploy:**
    - Merge develop into feature branch (resolve any conflicts)
    - Comment `@approve` on the task
-   - PM will merge PR to develop and move to Deploy
+   - Ops will merge PR to develop and move to Deploy
    - Or manually: merge PR to develop, then move to Deploy
 
 5. **Deploy → Done:**

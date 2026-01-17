@@ -121,7 +121,7 @@ After global installation:
 │   ├── architect.md
 │   ├── business-analyst.md
 │   ├── developer.md
-│   ├── project-manager.md
+│   ├── ops.md
 │   └── reviewer.md
 └── commands/
     └── agents/ -> ~/joan-agents/.claude/commands/agents/
@@ -129,15 +129,10 @@ After global installation:
         ├── start.md
         ├── model.md
         ├── ba.md
-        ├── ba-loop.md
         ├── architect.md
-        ├── architect-loop.md
         ├── dev.md
-        ├── dev-loop.md
         ├── reviewer.md
-        ├── reviewer-loop.md
-        ├── pm.md
-        └── pm-loop.md
+        └── ops.md
 
 ~/joan-agents/                   # Source repository
 ├── .claude/

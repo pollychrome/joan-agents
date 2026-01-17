@@ -209,7 +209,7 @@ After merging to main:
 1. Monitor CI/CD pipeline
 2. Check production for errors
 3. Verify feature works as expected
-4. PM will move to Done automatically
+4. Ops will move to Done automatically
 
 ---
 

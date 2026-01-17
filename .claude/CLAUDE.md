@@ -14,14 +14,14 @@ This system uses git worktrees for true parallel feature development, with intel
 /agents:dev                # Implement one task
 /agents:dev 2              # Dev #2
 /agents:reviewer           # Code review completed tasks
-/agents:pm                 # Merge PRs, track deploys
+/agents:ops                # Merge PRs, resolve conflicts, track deploys
 
 # 3. Run agents in loop mode (continuous until idle)
 /agents:ba --loop
 /agents:architect --loop
 /agents:dev 1 --loop
 /agents:reviewer --loop
-/agents:pm --loop
+/agents:ops --loop
 
 # 4. Start all agents at once
 /agents:start all                # Single pass
@@ -45,7 +45,7 @@ Agents read from `.joan-agents.json` in project root:
     "businessAnalyst": { "enabled": true },
     "architect": { "enabled": true },
     "reviewer": { "enabled": true },
-    "projectManager": { "enabled": true },
+    "ops": { "enabled": true },
     "devs": { "enabled": true, "count": 2 }
   }
 }
@@ -85,7 +85,7 @@ All agent commands support both modes via the `--loop` flag:
 /agents:architect
 /agents:dev [id]
 /agents:reviewer
-/agents:pm
+/agents:ops
 /agents:start all
 ```
 - Process all available tasks once
@@ -98,7 +98,7 @@ All agent commands support both modes via the `--loop` flag:
 /agents:architect --loop
 /agents:dev [id] --loop
 /agents:reviewer --loop
-/agents:pm --loop
+/agents:ops --loop
 /agents:start all --loop
 ```
 - Poll continuously until max idle reached
@@ -137,7 +137,7 @@ All agents communicate through Joan MCP and task comments/tags.
 | `Test-Complete` | All TEST sub-tasks pass | Dev | Reviewer (on reject) |
 | `Review-In-Progress` | Reviewer is actively reviewing | Reviewer | Reviewer |
 | `Rework-Requested` | Reviewer found issues, needs fixes | Reviewer | Dev |
-| `Merge-Conflict` | Late conflict detected during PM merge | PM | Dev |
+| `Merge-Conflict` | Late conflict detected during Ops merge (fallback) | Ops | Dev |
 | `Implementation-Failed` | Dev couldn't complete (manual recovery) | Dev | Human |
 | `Worktree-Failed` | Worktree creation failed (manual recovery) | Dev | Human |
 
@@ -177,8 +177,8 @@ This creates an auditable back-and-forth trail in task comments.
 | Mention | Created By | Consumed By | Effect |
 |---------|------------|-------------|--------|
 | `@approve-plan` | Human | Architect | Approves plan |
-| `@approve` | Reviewer | PM | Authorizes PM to merge |
-| `@rework` | Reviewer, PM | Dev, PM | Dev reads feedback and fixes; PM moves task back |
+| `@approve` | Reviewer | Ops | Authorizes Ops to merge |
+| `@rework` | Reviewer, Ops | Dev, Ops | Dev reads feedback and fixes; Ops moves task back |
 | `@rework-requested` | Reviewer | Dev | Alias for @rework |
 | `@business-analyst` | Any | BA | Escalates requirement questions |
 
@@ -186,7 +186,7 @@ This creates an auditable back-and-forth trail in task comments.
 
 | Response | Created By | Consumed By | Effect |
 |----------|------------|-------------|--------|
-| `## rework-complete` | Dev | Reviewer, PM | Signals rework is done, task ready for re-review |
+| `## rework-complete` | Dev | Reviewer, Ops | Signals rework is done, task ready for re-review |
 
 ### Rework Detection Logic
 
@@ -198,26 +198,31 @@ Agents check if `@rework` is "resolved" before acting:
 
 This allows multiple rework cycles while maintaining a clear audit trail.
 
-### Merge Conflict Handling
+### Merge Conflict Handling (AI-Assisted)
 
-When PM detects a merge conflict during final merge to `develop`:
+When Ops detects a merge conflict during final merge to `develop`:
 
-1. **PM** adds `Merge-Conflict` tag to the task
-2. **PM** comments with `@rework` including conflict details:
-   ```
-   @rework Merge conflict detected when merging to develop.
-   Conflicting files: [list of files]
-   Please rebase/merge from develop and resolve conflicts.
-   ```
-3. **PM** moves task back to Development column
-4. **Dev** claims the task (has `Planned` + `Merge-Conflict` tags)
-5. **Dev** resolves conflicts, pushes, comments `## rework-complete`
-6. **Dev** removes `Merge-Conflict` tag when resolved
+1. **Ops** first attempts AI-assisted conflict resolution:
+   - Read each conflicting file with conflict markers
+   - Analyze both develop and feature versions
+   - Resolve conflicts preserving intent from both branches
+   - Run verification tests if available
 
-The `@rework` trigger is reused (rather than a new trigger) because:
-- Dev already knows to check for `@rework` comments
-- PM already moves tasks back on `@rework`
-- The `Merge-Conflict` tag differentiates it from code quality rework
+2. **If AI resolution succeeds**:
+   - Ops commits the resolution with a descriptive message
+   - Ops pushes to develop
+   - Ops comments with resolution details
+   - Task proceeds to Deploy
+
+3. **If AI resolution fails** (tests fail, complex conflicts):
+   - Ops adds `Merge-Conflict` tag to the task
+   - Ops adds `Rework-Requested` tag
+   - Ops comments with `@rework` including conflict details
+   - Ops moves task back to Development column
+   - Dev claims and manually resolves conflicts
+   - Dev removes `Merge-Conflict` tag when resolved
+
+The `@rework` trigger is reused for consistency with code quality rework flows.
 
 ## Worktree Management
 
@@ -276,7 +281,7 @@ This ensures agents don't run indefinitely when there's no work, while staying a
 ```
 To Do → Analyse → Development → Review → Deploy → Done
   │        │          │           │        │
-  BA    Architect    Dev      Reviewer    PM
+  BA    Architect    Dev      Reviewer   Ops
 ```
 
 ### Detailed Flow
@@ -289,8 +294,8 @@ To Do → Analyse → Development → Review → Deploy → Done
 6. **Review** → Dev removes `Planned` + `Claimed-Dev-N`, adds completion tags, moves task
 7. **Review** → Reviewer validates, merges develop into feature (conflict check)
 8. **Review** → Reviewer comments `@approve` or `@rework`
-9. **Review** (on @approve) → PM merges to develop, moves to Deploy
-10. **Development** (on @rework) → Reviewer removes completion tags, adds `Rework-Requested` + `Planned`
+9. **Review** (on @approve) → Ops merges to develop (with AI conflict resolution if needed), moves to Deploy
+10. **Development** (on @rework) → Reviewer removes completion tags, adds `Rework-Requested` + `Planned`, moves to Development
 11. **Done** (when deployed to production) → Task complete
 
 ### Quality Gates
@@ -298,8 +303,8 @@ To Do → Analyse → Development → Review → Deploy → Done
 - **BA → Architect**: Requirements must be clear and complete
 - **Architect → Dev**: Plan must be approved by human
 - **Dev → Reviewer**: All sub-tasks must be checked off
-- **Reviewer → PM**: Must pass code review, tests, and merge conflict check
-- **PM → Done**: Must be deployed to production
+- **Reviewer → Ops**: Must pass code review, tests, and merge conflict check
+- **Ops → Done**: Must be deployed to production
 
 ## Agent Responsibilities
 
@@ -309,7 +314,7 @@ To Do → Analyse → Development → Review → Deploy → Done
 | **Architect** | Technical planning | Analyzes codebase, creates implementation plans with sub-tasks |
 | **Dev** | Implementation | Claims tasks, implements in worktrees, creates PRs, handles rework |
 | **Reviewer** | Quality gate | Merges develop into feature, deep code review, approves or rejects |
-| **PM** | Integration & deployment | Merges to develop, tracks deployment, handles late conflicts |
+| **Ops** | Integration & deployment | Merges to develop with AI conflict resolution, tracks deployment |
 
 ### Reviewer Deep Dive
 
@@ -322,5 +327,5 @@ The Reviewer agent performs comprehensive validation:
 5. **Testing** - Tests exist and pass, CI green
 6. **Design** - UI matches design system (if applicable)
 
-On **approval**: Comments `@approve`, PM merges to develop
-On **rejection**: Removes completion tags, adds `Rework-Requested` + `Planned`, comments `@rework`
+On **approval**: Comments `@approve`, Ops merges to develop
+On **rejection**: Removes completion tags, adds `Rework-Requested` + `Planned`, comments `@rework`, moves to Development

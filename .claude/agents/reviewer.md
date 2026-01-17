@@ -228,6 +228,8 @@ git checkout develop || git checkout main
 @rework {concise 1-line summary of required changes}
 ```
 
+6. Move task to "Development" column (use sync_column: false)
+
 ### On Approval (no BLOCKERS)
 
 **Tag updates MUST happen BEFORE the @approve comment**

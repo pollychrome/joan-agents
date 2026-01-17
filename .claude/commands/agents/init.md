@@ -58,7 +58,7 @@ Create `.joan-agents.json` in project root with the user's selections:
     "businessAnalyst": { "enabled": {true/false} },
     "architect": { "enabled": {true/false} },
     "reviewer": { "enabled": {true/false} },
-    "projectManager": { "enabled": {true/false} },
+    "ops": { "enabled": {true/false} },
     "devs": { "enabled": {true/false}, "count": {user-choice} }
   }
 }
@@ -80,14 +80,14 @@ Enabled Agents:
 - Business Analyst: {enabled/disabled}
 - Architect: {enabled/disabled}
 - Code Reviewer: {enabled/disabled}
-- Project Manager: {enabled/disabled}
+- Ops: {enabled/disabled}
 - Devs: {enabled/disabled} (x{count})
 
 Start agents with:
   /agents:start ba         - Start Business Analyst
   /agents:start architect  - Start Architect
   /agents:start reviewer   - Start Code Reviewer
-  /agents:start pm         - Start Project Manager
+  /agents:start ops        - Start Ops
   /agents:start dev 1      - Start Dev #1
   /agents:start all        - Start all enabled agents
 

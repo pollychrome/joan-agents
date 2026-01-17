@@ -17,7 +17,7 @@ print_usage() {
     echo "  architect   Software Architect"
     echo "  dev         Dev agent (specify dev-id)"
     echo "  reviewer    Code Reviewer"
-    echo "  pm          Project Manager"
+    echo "  ops         Ops"
     echo ""
     echo "Examples:"
     echo "  ./start-agent.sh ba my-project"
@@ -36,29 +36,29 @@ mkdir -p "$LOG_DIR"
 
 case "$AGENT" in
     ba|business-analyst)
-        COMMAND="/agents:ba-loop $PROJECT"
+        COMMAND="/agents:ba --loop"
         LABEL="🔍 Business Analyst"
         LOG_FILE="ba.log"
         ;;
     architect|arch)
-        COMMAND="/agents:architect-loop $PROJECT"
+        COMMAND="/agents:architect --loop"
         LABEL="📐 Architect"
         LOG_FILE="architect.log"
         ;;
     dev|d)
-        COMMAND="/agents:dev-loop $PROJECT $DEV_ID"
+        COMMAND="/agents:dev $DEV_ID --loop"
         LABEL="⚙️  Dev #$DEV_ID"
         LOG_FILE="dev-$DEV_ID.log"
         ;;
     reviewer|review|r)
-        COMMAND="/agents:reviewer-loop $PROJECT"
-        LABEL="🔍 Code Reviewer"
+        COMMAND="/agents:reviewer --loop"
+        LABEL="🔬 Code Reviewer"
         LOG_FILE="reviewer.log"
         ;;
-    pm|project-manager)
-        COMMAND="/agents:pm-loop $PROJECT"
-        LABEL="📊 Project Manager"
-        LOG_FILE="pm.log"
+    ops)
+        COMMAND="/agents:ops --loop"
+        LABEL="🔧 Ops"
+        LOG_FILE="ops.log"
         ;;
     *)
         echo "❌ Unknown agent type: $AGENT"

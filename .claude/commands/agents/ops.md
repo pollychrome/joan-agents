@@ -1,12 +1,12 @@
 ---
-description: Run Project Manager agent (single pass or loop)
+description: Run Ops agent (single pass or loop)
 argument-hint: [--loop] [--max-idle=N]
-allowed-tools: mcp__joan__*, mcp__github__*, Read, Bash, Grep, Task
+allowed-tools: mcp__joan__*, mcp__github__*, Read, Bash, Grep, Glob, Task, Edit
 ---
 
-# Project Manager Agent
+# Ops Agent
 
-Merge approved PRs to develop, track deployments, handle late merge conflicts.
+Merge approved PRs to develop, track deployments, resolve merge conflicts with AI assistance.
 
 ## Arguments
 
@@ -67,7 +67,7 @@ IF TASK_QUEUE is empty:
          Report: "Idle poll #{IDLE_COUNT}/{MAX_IDLE} - no tasks in Review/Deploy"
 
          IF IDLE_COUNT >= MAX_IDLE:
-           Report: "Max idle polls reached. Shutting down PM agent."
+           Report: "Max idle polls reached. Shutting down Ops agent."
            EXIT
 
          Wait POLL_INTERVAL minutes
@@ -89,7 +89,7 @@ current_task = TASK_QUEUE.shift()  # Take first task
    - Check task hasn't moved to "Done"
 
    IF not valid:
-     Report: "Task '{title}' no longer needs PM attention, skipping"
+     Report: "Task '{title}' no longer needs Ops attention, skipping"
      Continue to Phase 1
 
 2. Determine task type:
@@ -189,25 +189,7 @@ Reviewer may have already updated tags - check before modifying!
    git merge --no-ff {feature-branch} -m "Merge: {task-title}"
 
    IF MERGE CONFLICTS:
-     a. Abort the merge:
-        git merge --abort
-
-     b. Update task with DEFENSIVE tag operations:
-        - Remove "Dev-Complete" IF present
-        - Remove "Design-Complete" IF present
-        - Remove "Test-Complete" IF present
-        - Add "Merge-Conflict" tag (color: #EF4444 red)
-        - Add "Planned" tag IF NOT present
-
-     c. Move to "Development" column (use sync_column: false)
-
-     d. Comment:
-        "@rework Merge conflict detected when merging to develop.
-        Conflicting files: {list from git diff --name-only --diff-filter=U}
-        Please rebase/merge from develop and resolve conflicts."
-
-     e. Report: "Task '{title}' has merge conflicts, sent back to Development"
-        Continue to Phase 1
+     Go to AI-Assisted Conflict Resolution
 
    IF MERGE SUCCEEDS:
      git push origin develop
@@ -217,6 +199,98 @@ Reviewer may have already updated tags - check before modifying!
    - Comment: "✅ Merged to develop. Branch: {branch}, PR: {url}"
 
 6. Report: "Merged '{title}' to develop"
+   Continue to Phase 1
+```
+
+### AI-Assisted Conflict Resolution (CRITICAL)
+
+```
+When merge conflicts are detected, Ops attempts to resolve them using AI assistance
+before falling back to rework.
+
+1. Get list of conflicting files:
+   CONFLICT_FILES = $(git diff --name-only --diff-filter=U)
+   Report: "Merge conflicts detected in {CONFLICT_FILES.length} files. Attempting AI resolution..."
+
+2. For EACH conflicting file:
+   a. Read the file with conflict markers:
+      - Identify <<<<<<< HEAD (develop version)
+      - Identify ======= (separator)
+      - Identify >>>>>>> {feature-branch} (feature version)
+
+   b. Analyze both versions:
+      - Understand what develop changed (context from recent commits)
+      - Understand what feature changed (from task description/PR)
+      - Determine if changes are:
+        * Non-overlapping (different sections) → combine both
+        * Additive (both add to same area) → merge additions
+        * Conflicting (incompatible changes) → use feature version, verify develop intent preserved
+
+   c. Resolve the conflict:
+      - Use Edit tool to replace conflict markers with resolved code
+      - Ensure syntactic correctness
+      - Preserve functionality from both branches
+
+   d. Stage the resolution:
+      git add {file}
+
+3. After all files resolved:
+   git commit -m "Merge {feature-branch} into develop (Ops resolved conflicts)
+
+   Resolved conflicts in:
+   {list of files}
+
+   Resolution strategy: AI-assisted merge preserving both develop and feature changes."
+
+4. Run verification (best effort):
+   - If tests available: npm test 2>/dev/null || pytest 2>/dev/null || true
+   - If linter available: npm run lint 2>/dev/null || true
+
+   IF verification fails:
+     Go to Fallback: Rework Request
+
+5. Push the resolution:
+   git push origin develop
+
+   IF push fails:
+     Go to Fallback: Rework Request
+
+6. Comment on task:
+   "✅ Ops resolved merge conflicts:
+   - Files: {CONFLICT_FILES}
+   - Strategy: AI-assisted merge
+   - Verification: {pass/skipped}
+
+   Proceeding with merge to develop."
+
+7. Continue to step 5 (Update task → Deploy)
+```
+
+### Fallback: Rework Request
+
+```
+If AI-assisted resolution fails (tests fail, complex conflicts, etc.):
+
+1. Abort any pending changes:
+   git merge --abort 2>/dev/null || git reset --hard HEAD
+
+2. Update task with DEFENSIVE tag operations:
+   - Remove "Dev-Complete" IF present
+   - Remove "Design-Complete" IF present
+   - Remove "Test-Complete" IF present
+   - Add "Merge-Conflict" tag (color: #EF4444 red)
+   - Add "Rework-Requested" tag
+   - Add "Planned" tag IF NOT present
+
+3. Move to "Development" column (use sync_column: false)
+
+4. Comment:
+   "@rework Merge conflict could not be auto-resolved.
+   Conflicting files: {CONFLICT_FILES}
+   Reason: {verification failure details or 'complex conflict requiring manual review'}
+   Please rebase/merge from develop and resolve conflicts manually."
+
+5. Report: "Task '{title}' has unresolvable merge conflicts, sent back to Development"
    Continue to Phase 1
 ```
 
@@ -243,10 +317,10 @@ Continue to Phase 1
 ```
 IF MODE == "single" AND TASK_QUEUE is empty:
   Report summary:
-    "PM single pass complete:
+    "Ops single pass complete:
     - Merged to develop: N
+    - Conflicts resolved: N
     - Sent for rework: N
-    - Merge conflicts: N
     - Deployed to production: N
     - Awaiting action: N"
   EXIT
@@ -261,7 +335,7 @@ ELSE:
 
 | Trigger | Action | Effect |
 |---------|--------|--------|
-| `@approve` | Merge to develop | Task moves Review → Deploy |
+| `@approve` | Merge to develop (with AI conflict resolution if needed) | Task moves Review → Deploy |
 | `@rework [reason]` | Send back for fixes | Task moves Review → Development |
 
 ## Merge Safety Rules
@@ -278,4 +352,4 @@ ALWAYS:
 - Comment actions on tasks
 - Use sync_column: false when moving tasks
 
-Begin PM now.
+Begin Ops now.

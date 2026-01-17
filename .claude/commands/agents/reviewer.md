@@ -319,7 +319,9 @@ ELSE:
 ---
 @rework {concise 1-line summary of required changes}
 
-6. Report: "Task '{title}' requires rework"
+6. Move task to "Development" column (use sync_column: false)
+
+7. Report: "Task '{title}' requires rework"
 ```
 
 ### Handle Approval (TAG OPERATIONS BEFORE COMMENT)

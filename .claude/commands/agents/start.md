@@ -10,7 +10,7 @@ Start an agent using the configuration from `.joan-agents.json`.
 
 ## Arguments
 
-- `$1` - Agent type: `ba`, `architect`, `pm`, `reviewer`, `dev`, or `all`
+- `$1` - Agent type: `ba`, `architect`, `ops`, `reviewer`, `dev`, or `all`
 - `--loop` - Run in continuous loop mode (poll until idle threshold)
 - `--max-idle=N` - Override idle threshold (only applies in loop mode)
 - Dev ID - For dev type only, specify which dev (1, 2, 3...)
@@ -30,7 +30,7 @@ And exit.
 Agent type from `$1`:
 - `ba` or `business-analyst` → Business Analyst
 - `architect` or `arch` → Architect
-- `pm` or `project-manager` → Project Manager
+- `ops` → Ops
 - `reviewer` or `review` → Code Reviewer
 - `dev` → Dev agent (specify ID or defaults to 1)
 - `all` → Start all enabled agents in separate terminal windows
@@ -60,7 +60,7 @@ Set these variables from config:
 - `LOOP_MODE` = true if --loop flag present
 - `DEV_COUNT` = config.agents.devs.count (for `all`)
 
-### For Single Agent (`ba`, `architect`, `pm`, `reviewer`, `dev`)
+### For Single Agent (`ba`, `architect`, `ops`, `reviewer`, `dev`)
 
 Launch the Task tool with the appropriate subagent.
 
@@ -76,7 +76,7 @@ Task tool call:
 Agent type mapping:
 - `ba` → subagent_type: "business-analyst"
 - `architect` → subagent_type: "architect"
-- `pm` → subagent_type: "project-manager"
+- `ops` → subagent_type: "ops"
 - `reviewer` → subagent_type: "code-reviewer"
 - `dev` → subagent_type: "implementation-worker"
 
@@ -111,8 +111,8 @@ osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claud
 # Reviewer Agent
 osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claude /agents:reviewer '"$LOOP_FLAG"'"'
 
-# PM Agent
-osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claude /agents:pm '"$LOOP_FLAG"'"'
+# Ops Agent
+osascript -e 'tell application "Terminal" to do script "cd \"'$(pwd)'\" && claude /agents:ops '"$LOOP_FLAG"'"'
 
 # Dev Agents (based on config.agents.devs.count)
 for i in 1..DEV_COUNT:
@@ -130,7 +130,7 @@ Launched in separate terminals:
 - 🔍 Business Analyst
 - 📐 Architect
 - 🔬 Code Reviewer
-- 📊 Project Manager
+- 🔧 Ops
 - ⚙️  Dev #1
 - ⚙️  Dev #2
 ...
