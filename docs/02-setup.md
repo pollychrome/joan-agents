@@ -195,53 +195,39 @@ Edit `.claude/CLAUDE.md` to include your project-specific configuration:
 
 ### Step 7: Verify Installation
 
-Run a single agent to test:
+Run the coordinator in this terminal to test:
 
 ```bash
-cd joan-agents
-./start-agent.sh ba your-project-name
+cd /path/to/your/project
+./joan-agents/start-agent.sh
 ```
 
 You should see:
 1. Claude Code starts
-2. Agent announces itself
-3. Agent polls Joan for tasks
-4. Agent reports status (even if no tasks found)
+2. Coordinator announces itself
+3. Coordinator polls Joan for tasks
+4. Coordinator reports status (even if no tasks found)
 
 Press `Ctrl+C` to stop the test.
 
 ## Configuration Options
 
-### Environment Variables
+### .joan-agents.json
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `JOAN_PROJECT` | (required) | Project name passed to agents |
-| `CLAUDE_MODEL` | claude-sonnet-4-5 | Model for agent operations |
-| `POLL_INTERVAL` | 30 | Seconds between polls |
-| `MAX_CONCURRENT` | 5 | Max tasks per agent |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `settings.model` | `opus` | Claude model for all agents |
+| `settings.pollingIntervalMinutes` | `10` | Minutes between idle polls |
+| `settings.maxIdlePolls` | `6` | Idle polls before shutdown |
+| `agents.devs.count` | `2` | Parallel dev workers |
 
 ### Customizing Poll Interval
 
-Edit each loop command in `.claude/commands/agents/*.md`:
-
-```markdown
-5. **Wait 30 seconds** before next iteration
-```
-
-Change `30` to your preferred interval.
+Edit `settings.pollingIntervalMinutes` in `.joan-agents.json`.
 
 ### Customizing Concurrent Tasks
 
-Edit each agent definition in `.claude/agents/*.md`:
-
-```markdown
-## Constraints
-
-- Max 5 tasks in active evaluation at once
-```
-
-Change `5` to your preferred limit.
+Edit `agents.devs.count` in `.joan-agents.json`.
 
 ## Post-Installation
 
@@ -262,19 +248,23 @@ Create these tags in your Joan project:
 
 | Tag | Color | Purpose |
 |-----|-------|---------|
-| `Needs-Clarification` | Yellow | Task has unanswered questions |
+| `Needs-Clarification` | Amber | Task has unanswered questions |
+| `Clarification-Answered` | Emerald | Human answered BA questions |
 | `Ready` | Green | Requirements complete, ready for Architect |
-| `Plan-Pending-Approval` | Orange | Plan awaits human `@approve-plan` |
-| `Planned` | Blue | Plan approved, available for Dev to claim |
+| `Plan-Pending-Approval` | Purple | Plan awaits human approval |
+| `Plan-Approved` | Indigo | Plan approved, ready to finalize |
+| `Planned` | Blue | Plan finalized, available for Dev to claim |
 | `Claimed-Dev-1` through `Claimed-Dev-N` | Gray | Dev N is implementing this task |
-| `Dev-Complete` | Purple | All DEV sub-tasks done |
-| `Design-Complete` | Pink | All DES sub-tasks done |
-| `Test-Complete` | Cyan | All TEST sub-tasks pass |
-| `Review-In-Progress` | Teal | Reviewer is actively reviewing |
-| `Rework-Requested` | Orange | Reviewer found issues, Dev needs to fix |
-| `Merge-Conflict` | Red | Late conflict detected during PM merge |
-| `Implementation-Failed` | Red | Dev couldn't complete (needs manual recovery) |
-| `Worktree-Failed` | Red | Worktree creation failed (needs manual recovery) |
+| `Dev-Complete` | Green | All DEV sub-tasks done |
+| `Design-Complete` | Blue | All DES sub-tasks done |
+| `Test-Complete` | Purple | All TEST sub-tasks pass |
+| `Review-In-Progress` | Amber | Reviewer is actively reviewing |
+| `Review-Approved` | Teal | Review approved, ready for Ops |
+| `Rework-Requested` | Red | Reviewer found issues, Dev needs to fix |
+| `Rework-Complete` | Lime | Rework done, ready for review |
+| `Merge-Conflict` | Orange | Late conflict detected during Ops merge |
+| `Implementation-Failed` | Rose | Dev couldn't complete (needs manual recovery) |
+| `Worktree-Failed` | Pink | Worktree creation failed (needs manual recovery) |
 
 ### Set Up Git Branches
 
@@ -286,36 +276,34 @@ git push -u origin develop
 
 ## Launching the System
 
-### Full Launch (All Agents)
+### Full Launch (Coordinator)
 
 ```bash
 # For iTerm2 (recommended)
-./joan-agents/start-agents-iterm.sh your-project-name
+cd /path/to/your/project
+./joan-agents/start-agents-iterm.sh
 
 # For Terminal.app
-./joan-agents/start-agents.sh your-project-name
+cd /path/to/your/project
+./joan-agents/start-agents.sh
 ```
 
-### Selective Launch
-
-Run only specific agents:
+### Single Terminal Launch
 
 ```bash
-# Terminal 1: Just BA and Architect
-./joan-agents/start-agent.sh ba your-project-name
-
-# Terminal 2
-./joan-agents/start-agent.sh architect your-project-name
+cd /path/to/your/project
+./joan-agents/start-agent.sh
 ```
 
 ### Verification Checklist
 
 After launching, verify:
 
-- [ ] All 6 terminal tabs/windows opened
-- [ ] Each agent reports "Starting loop for project: X"
+- [ ] Coordinator terminal is running without errors
+- [ ] Coordinator reports polling and dispatching
+- [ ] Worker logs appear when tasks are available
 - [ ] No MCP connection errors
-- [ ] Agents successfully poll Joan (check logs)
+- [ ] Tags and comments update in Joan as expected
 
 ## Upgrading
 

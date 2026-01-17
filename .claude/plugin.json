@@ -1,28 +1,25 @@
 {
   "name": "joan-agents",
-  "version": "3.0.0",
-  "description": "Multi-agent orchestration system for Joan projects with task queuing, parallel workers, and auto-shutdown",
+  "version": "4.0.0",
+  "description": "Tag-driven multi-agent orchestration for Joan projects with coordinator pattern, single-pass workers, and deterministic state transitions",
   "author": "Alex Benson",
   "commands": [
     "commands/agents/init.md",
     "commands/agents/start.md",
+    "commands/agents/dispatch.md",
     "commands/agents/model.md",
-    "commands/agents/ba.md",
-    "commands/agents/architect.md",
-    "commands/agents/reviewer.md",
-    "commands/agents/pm.md",
-    "commands/agents/dev.md",
-    "commands/agents/ba-loop.md",
-    "commands/agents/architect-loop.md",
-    "commands/agents/reviewer-loop.md",
-    "commands/agents/pm-loop.md",
-    "commands/agents/dev-loop.md"
+    "commands/agents/ba-worker.md",
+    "commands/agents/architect-worker.md",
+    "commands/agents/dev-worker.md",
+    "commands/agents/reviewer-worker.md",
+    "commands/agents/ops-worker.md"
   ],
   "agents": [
+    "agents/coordinator.md",
     "agents/business-analyst.md",
     "agents/architect.md",
     "agents/reviewer.md",
-    "agents/project-manager.md",
+    "agents/ops.md",
     "agents/developer.md"
   ],
   "schemas": [

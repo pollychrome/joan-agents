@@ -54,6 +54,12 @@ Agents process tasks by priority. Use consistently:
 ### Answer Questions Promptly
 
 The faster you answer, the faster development starts.
+After answering, add the `Clarification-Answered` tag so BA re-checks the task.
+
+### Use ALS for Comments
+
+When commenting manually, use the ALS block format so humans and agents can parse intent.
+See `docs/09-als-spec.md`.
 
 ### Be Specific
 
@@ -109,15 +115,15 @@ Before approving, please adjust:
 
 3. TEST-2 should include error scenarios
 
-@approve-plan please revise
+Please revise before approval. (Do not add Plan-Approved yet.)
 ```
 
 ### Approve Explicitly
 
-Use the exact trigger: `@approve-plan`
+Add the `Plan-Approved` tag to approve a plan.
 
 ```markdown
-Plan looks good, approved. @approve-plan
+Plan looks good, approved. Adding Plan-Approved tag.
 ```
 
 ---
@@ -182,9 +188,9 @@ Looks wrong, please fix
 
 ### Use Review Column Appropriately
 
-- Move to Deploy = Approved
-- Move back to Development = Changes needed
-- Comment without moving = Discussion (agents won't act)
+- Add `Review-Approved` tag = Approved for Ops merge
+- Add `Rework-Requested` tag = Changes needed, back to Development
+- Comment without tags = Discussion only (agents will not act)
 
 ---
 
@@ -228,7 +234,7 @@ Long-running sessions can accumulate issues:
 
 ```bash
 # Daily restart (add to crontab)
-0 6 * * * /path/to/joan-agents/stop-agents.sh && sleep 30 && /path/to/joan-agents/start-agents-iterm.sh my-project
+0 6 * * * /path/to/joan-agents/stop-agents.sh && sleep 30 && cd /path/to/your/project && /path/to/joan-agents/start-agents-iterm.sh
 ```
 
 ### Keep Claude Code Updated
@@ -246,21 +252,13 @@ claude update
 
 If agents are slow or system is overloaded:
 
-1. Reduce max concurrent tasks (default: 5)
-2. Reduce number of active agents
-3. Increase poll interval
+1. Reduce `agents.devs.count` in `.joan-agents.json`
+2. Increase `settings.pollingIntervalMinutes`
+3. Disable unused agents in `.joan-agents.json`
 
 ### Use Appropriate Model
 
-For cost/speed optimization, edit agent definitions:
-
-```yaml
-# Faster, cheaper (for simple tasks)
-model: claude-sonnet-4-5-20250929
-
-# Smarter (for complex planning)
-model: claude-opus-4-5-20250929
-```
+Use `/agents:model` or edit `.joan-agents.json` → `settings.model` to switch between `opus`, `sonnet`, and `haiku`.
 
 ### Optimize Task Granularity
 
@@ -294,10 +292,12 @@ Run separate agent swarms per project:
 
 ```bash
 # Terminal window 1: Project A
-./start-agents-iterm.sh project-a
+cd /path/to/project-a
+./start-agents-iterm.sh
 
 # Terminal window 2: Project B
-./start-agents-iterm.sh project-b
+cd /path/to/project-b
+./start-agents-iterm.sh
 ```
 
 ### Handoffs
@@ -313,7 +313,7 @@ When going offline:
 
 ### Don't Edit While Agents Work
 
-Agents poll and update every 30 seconds. Manual edits during this can cause:
+Agents poll based on `settings.pollingIntervalMinutes` (default: 10 minutes). Manual edits during active work can cause:
 - Lost updates
 - Conflicting states
 - Confused agents

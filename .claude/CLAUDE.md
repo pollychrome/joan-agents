@@ -1,6 +1,6 @@
-# Joan Multi-Agent System (v3 - Task Queue Edition)
+# Joan Multi-Agent System (v4 - Tag-Triggered Orchestration)
 
-This system uses git worktrees for true parallel feature development, with intelligent task queuing and automatic idle shutdown.
+This system uses **tag-based state transitions** (no comment parsing), a **single coordinator** that dispatches workers, and git worktrees for parallel development.
 
 ## Quick Start
 
@@ -8,24 +8,30 @@ This system uses git worktrees for true parallel feature development, with intel
 # 1. Initialize configuration (interactive)
 /agents:init
 
-# 2. Run agents (single pass - process once and exit)
-/agents:ba                 # Process To Do → Analyse
-/agents:architect          # Create/approve plans
-/agents:dev                # Implement one task
-/agents:dev 2              # Dev #2
-/agents:reviewer           # Code review completed tasks
-/agents:ops                # Merge PRs, resolve conflicts, track deploys
+# 2. Run coordinator
+/agents:start              # Single pass
+/agents:start --loop       # Continuous operation (recommended)
 
-# 3. Run agents in loop mode (continuous until idle)
-/agents:ba --loop
-/agents:architect --loop
-/agents:dev 1 --loop
-/agents:reviewer --loop
-/agents:ops --loop
+# Or equivalently:
+/agents:dispatch --loop
+```
 
-# 4. Start all agents at once
-/agents:start all                # Single pass
-/agents:start all --loop         # Continuous loop mode
+## Architecture
+
+```
+Coordinator + Single-Pass Workers
+──────────────────────────────────────────────────────
+  Coordinator ────► poll once ────► dispatch workers ────► sleep ────► repeat
+       │
+       ├──► spawn BA-worker (task X)
+       ├──► spawn Architect-worker (task Y)
+       ├──► claim then spawn Dev-worker (task Z)
+       ├──► spawn Reviewer-worker (task W)
+       └──► spawn Ops-worker (task V)
+
+  • Single polling point (not N agents polling independently)
+  • Workers are single-pass: process one task, then exit
+  • Tags drive all state transitions (no comment parsing)
 ```
 
 ## Configuration
@@ -72,21 +78,17 @@ With defaults: agents auto-shutdown after 1 hour of inactivity (6 polls × 10 mi
 
 Override per-run with `--max-idle=N`:
 ```bash
-/agents:dev --loop --max-idle=12  # Shutdown after 2 hours idle
+/agents:start --loop --max-idle=12  # Shutdown after 2 hours idle
 ```
 
 ## Invocation Modes
 
-All agent commands support both modes via the `--loop` flag:
+The coordinator supports two modes via the `--loop` flag:
 
 ### Single Pass (default)
 ```bash
-/agents:ba
-/agents:architect
-/agents:dev [id]
-/agents:reviewer
-/agents:ops
-/agents:start all
+/agents:start
+/agents:dispatch
 ```
 - Process all available tasks once
 - Exit when queue is empty
@@ -94,30 +96,25 @@ All agent commands support both modes via the `--loop` flag:
 
 ### Loop Mode (--loop)
 ```bash
-/agents:ba --loop
-/agents:architect --loop
-/agents:dev [id] --loop
-/agents:reviewer --loop
-/agents:ops --loop
-/agents:start all --loop
+/agents:start --loop
+/agents:dispatch --loop
 ```
 - Poll continuously until max idle reached
 - Auto-shutdown after N empty polls
 - Best for: autonomous operation, overnight runs
 
-**Note:** Each command is a single unified file supporting both modes. There are no separate `-loop` commands.
+## Coordinator Workflow
 
-## Task Queue Pattern
+The coordinator uses a smart polling pattern:
 
-Agents use a smart polling pattern:
+1. **Poll** - Fetch all tasks from Joan (once per interval)
+2. **Queue** - Build priority queues based on tags
+3. **Dispatch** - Spawn single-pass workers for available tasks
+4. **Claim** - For dev tasks, atomically claim before dispatch
+5. **Sleep** - Wait for poll interval (in loop mode)
+6. **Repeat** - Continue until idle threshold reached
 
-1. **Poll** - Fetch all available tasks from Joan
-2. **Queue** - Build local queue of tasks to process
-3. **Validate** - Before each task, verify it's still available
-4. **Process** - Work on valid tasks without waiting
-5. **Repeat** - Only poll again when queue is empty
-
-This reduces Joan API calls while ensuring no tasks are missed or duplicated.
+This reduces Joan API calls to 1 poll per interval (vs N agents polling independently).
 
 ## Agent Communication Protocol
 
@@ -125,32 +122,45 @@ All agents communicate through Joan MCP and task comments/tags.
 
 ### Tag Conventions
 
+**State Tags (set by agents):**
+
 | Tag | Meaning | Set By | Removed By |
 |-----|---------|--------|------------|
 | `Needs-Clarification` | Task has unanswered questions | BA | BA |
-| `Ready` | Requirements complete | BA | Architect (when creating plan) |
-| `Plan-Pending-Approval` | Plan created, awaiting @approve-plan | Architect | Architect (on approval) |
-| `Planned` | Plan approved, available for devs | Architect, Reviewer (on reject) | Dev (on completion) |
-| `Claimed-Dev-N` | Dev N is implementing this task | Dev | Dev (on completion or failure) |
-| `Dev-Complete` | All DEV sub-tasks done | Dev | Reviewer (on reject) |
-| `Design-Complete` | All DES sub-tasks done | Dev | Reviewer (on reject) |
-| `Test-Complete` | All TEST sub-tasks pass | Dev | Reviewer (on reject) |
+| `Ready` | Requirements complete | BA | Architect |
+| `Plan-Pending-Approval` | Plan created, awaiting approval | Architect | Architect |
+| `Planned` | Plan approved, available for devs | Architect, Reviewer | Dev |
+| `Claimed-Dev-N` | Dev N is implementing this task | Coordinator | Dev |
+| `Dev-Complete` | All DEV sub-tasks done | Dev | Reviewer |
+| `Design-Complete` | All DES sub-tasks done | Dev | Reviewer |
+| `Test-Complete` | All TEST sub-tasks pass | Dev | Reviewer |
 | `Review-In-Progress` | Reviewer is actively reviewing | Reviewer | Reviewer |
-| `Rework-Requested` | Reviewer found issues, needs fixes | Reviewer | Dev |
-| `Merge-Conflict` | Late conflict detected during Ops merge (fallback) | Ops | Dev |
-| `Implementation-Failed` | Dev couldn't complete (manual recovery) | Dev | Human |
-| `Worktree-Failed` | Worktree creation failed (manual recovery) | Dev | Human |
+| `Rework-Requested` | Reviewer found issues, needs fixes | Reviewer, Ops | Dev |
+| `Merge-Conflict` | Merge conflict with develop | Ops | Dev |
+| `Implementation-Failed` | Dev couldn't complete (manual) | Dev | Human |
+| `Worktree-Failed` | Worktree creation failed (manual) | Dev | Human |
 
-### Claim Protocol
+**Trigger Tags (set by humans or agents to trigger next action):**
 
-Devs use atomic tagging to claim tasks:
-1. Find task with (`Planned` OR `Rework-Requested`) tag and NO `Claimed-Dev-*` tag
-2. Rework tasks get priority over new tasks (finish what's started)
-3. Immediately add `Claimed-Dev-{N}` tag
-4. Re-fetch and verify claim succeeded (no race condition)
-5. On completion: Remove `Claimed-Dev-{N}`, remove `Planned`, add completion tags
-6. On failure: Remove `Claimed-Dev-{N}`, add `Implementation-Failed` or `Worktree-Failed`
-7. For rework: Remove `Rework-Requested` tag, read `@rework` comment for feedback
+| Tag | Meaning | Set By | Triggers |
+|-----|---------|--------|----------|
+| `Clarification-Answered` | Human answered BA questions | Human | BA re-evaluates |
+| `Plan-Approved` | Human approved the plan | Human | Architect finalizes |
+| `Review-Approved` | Reviewer approved for merge | Reviewer | Ops merges |
+| `Rework-Complete` | Dev finished rework | Dev | Reviewer re-reviews |
+
+### Claim Protocol (Coordinator-Managed)
+
+The **Coordinator** handles task claiming (not individual devs):
+
+1. Coordinator finds task with (`Planned` OR `Rework-Requested` OR `Merge-Conflict`) tag and NO `Claimed-Dev-*` tag
+2. Rework/conflict tasks get priority (finish what's started)
+3. Coordinator adds `Claimed-Dev-{N}` tag atomically
+4. Coordinator verifies claim succeeded (no race condition)
+5. Coordinator dispatches Dev worker with task assignment
+6. Dev worker processes and on completion: removes `Claimed-Dev-{N}`, removes `Planned`, adds completion tags
+7. On failure: Dev removes `Claimed-Dev-{N}`, adds `Implementation-Failed`
+8. For rework: Dev reads feedback from ALS review comment (stored by Reviewer)
 
 ### Recovering Failed Tasks
 
@@ -161,42 +171,24 @@ Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual in
 4. Human ensures `Planned` tag is present
 5. Task becomes available for devs to claim again
 
-### Comment Convention
+### Comment Convention (ALS Breadcrumbs)
 
-Comments follow an `@` / `##` convention:
+**IMPORTANT:** In v4, comments are WRITE-ONLY breadcrumbs. Agents never parse comments to determine state - they use tags exclusively.
 
-| Prefix | Meaning | Usage |
-|--------|---------|-------|
-| `@` | **Request/Trigger** | Agent or human requesting action |
-| `##` | **Response/Completion** | Agent responding that action is complete |
+All comments use ALS (Agentic Language Syntax) blocks for auditability.
+See `docs/09-als-spec.md` for the full format and examples.
 
-This creates an auditable back-and-forth trail in task comments.
+### Human Actions (Tag-Based)
 
-### Comment Triggers (Requests)
+Instead of comment mentions, humans add tags in Joan UI:
 
-| Mention | Created By | Consumed By | Effect |
-|---------|------------|-------------|--------|
-| `@approve-plan` | Human | Architect | Approves plan |
-| `@approve` | Reviewer | Ops | Authorizes Ops to merge |
-| `@rework` | Reviewer, Ops | Dev, Ops | Dev reads feedback and fixes; Ops moves task back |
-| `@rework-requested` | Reviewer | Dev | Alias for @rework |
-| `@business-analyst` | Any | BA | Escalates requirement questions |
+| Action | Add This Tag | Result |
+|--------|--------------|--------|
+| Approve a plan | `Plan-Approved` | Architect finalizes, moves to Development |
+| Answer clarification | `Clarification-Answered` | BA re-evaluates requirements |
+| Handle failed task | Remove `Implementation-Failed` | Task becomes claimable again |
 
-### Comment Responses
-
-| Response | Created By | Consumed By | Effect |
-|----------|------------|-------------|--------|
-| `## rework-complete` | Dev | Reviewer, Ops | Signals rework is done, task ready for re-review |
-
-### Rework Detection Logic
-
-Agents check if `@rework` is "resolved" before acting:
-
-1. Find the MOST RECENT `@rework` comment
-2. Find the MOST RECENT `## rework-complete` comment
-3. If `## rework-complete` timestamp > `@rework` timestamp → rework is complete
-
-This allows multiple rework cycles while maintaining a clear audit trail.
+**Legacy comment triggers (`@approve-plan`, `@approve`, `@rework`) are no longer parsed.**
 
 ### Merge Conflict Handling (AI-Assisted)
 
@@ -217,12 +209,11 @@ When Ops detects a merge conflict during final merge to `develop`:
 3. **If AI resolution fails** (tests fail, complex conflicts):
    - Ops adds `Merge-Conflict` tag to the task
    - Ops adds `Rework-Requested` tag
-   - Ops comments with `@rework` including conflict details
+   - Ops adds `Planned` tag (makes task claimable)
+   - Ops stores conflict details in task description
    - Ops moves task back to Development column
    - Dev claims and manually resolves conflicts
-   - Dev removes `Merge-Conflict` tag when resolved
-
-The `@rework` trigger is reused for consistency with code quality rework flows.
+   - Dev removes `Merge-Conflict` tag, adds `Rework-Complete` when resolved
 
 ## Worktree Management
 
@@ -284,19 +275,20 @@ To Do → Analyse → Development → Review → Deploy → Done
   BA    Architect    Dev      Reviewer   Ops
 ```
 
-### Detailed Flow
+### Detailed Flow (Tag-Based)
 
-1. **To Do** → BA evaluates requirements, adds `Ready` tag
-2. **Analyse** (Ready) → Architect creates plan, removes `Ready`, adds `Plan-Pending-Approval`
-3. **Analyse** (Plan-Pending-Approval) → Human approves with `@approve-plan`
-4. **Development** (Planned) → Architect removes `Plan-Pending-Approval`, adds `Planned`, moves task
-5. **Development** → Dev claims with `Claimed-Dev-N`, implements, commits, creates PR
-6. **Review** → Dev removes `Planned` + `Claimed-Dev-N`, adds completion tags, moves task
-7. **Review** → Reviewer validates, merges develop into feature (conflict check)
-8. **Review** → Reviewer comments `@approve` or `@rework`
-9. **Review** (on @approve) → Ops merges to develop (with AI conflict resolution if needed), moves to Deploy
-10. **Development** (on @rework) → Reviewer removes completion tags, adds `Rework-Requested` + `Planned`, moves to Development
-11. **Done** (when deployed to production) → Task complete
+1. **To Do** → BA evaluates → adds `Ready` tag → moves to Analyse
+2. **Analyse** (Ready) → Architect creates plan → removes `Ready`, adds `Plan-Pending-Approval`
+3. **Analyse** (Plan-Pending-Approval) → **Human adds `Plan-Approved` tag**
+4. **Analyse** (Plan-Approved) → Architect finalizes → removes `Plan-Pending-Approval` + `Plan-Approved`, adds `Planned` → moves to Development
+5. **Development** (Planned) → Coordinator claims with `Claimed-Dev-N` → dispatches Dev worker
+6. **Development** → Dev implements → PR → removes `Claimed-Dev-N` + `Planned`, adds completion tags → moves to Review
+7. **Review** → Reviewer validates → merges develop into feature (conflict check)
+8. **Review** (approved) → Reviewer adds `Review-Approved` tag
+9. **Review** (Review-Approved) → Ops merges to develop → removes `Review-Approved` → moves to Deploy
+10. **Development** (rejected) → Reviewer removes completion tags, adds `Rework-Requested` + `Planned`, stores feedback → moves to Development
+11. **Development** (Rework-Requested) → Dev addresses feedback → adds `Rework-Complete` → back to Review
+12. **Done** (when deployed to production) → Task complete
 
 ### Quality Gates
 
@@ -327,5 +319,5 @@ The Reviewer agent performs comprehensive validation:
 5. **Testing** - Tests exist and pass, CI green
 6. **Design** - UI matches design system (if applicable)
 
-On **approval**: Comments `@approve`, Ops merges to develop
-On **rejection**: Removes completion tags, adds `Rework-Requested` + `Planned`, comments `@rework`, moves to Development
+On **approval**: Adds `Review-Approved` tag → Ops merges to develop
+On **rejection**: Removes completion tags, adds `Rework-Requested` + `Planned`, stores feedback in description → moves to Development

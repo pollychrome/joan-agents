@@ -1,15 +1,10 @@
 #!/bin/bash
 
-# Joan Multi-Agent Orchestration Launcher (Worktree Edition)
-# Usage: ./start-agents.sh [num-devs]
+# Joan Coordinator Launcher (v4 - Single Coordinator Pattern)
+# Usage: ./start-agents.sh [--max-idle=N]
 #
-# This script launches agents for parallel feature development using git worktrees.
+# This script launches a SINGLE coordinator that dispatches workers.
 # Reads configuration from .joan-agents.json
-# - 1 BA Agent
-# - 1 Architect Agent
-# - N Dev agents (from config or argument)
-# - 1 Reviewer Agent
-# - 1 PM Agent
 
 set -e
 
@@ -26,18 +21,23 @@ if [ -z "$PROJECT_NAME" ]; then
     PROJECT_NAME="joan-project"
 fi
 
-# Get dev count from argument or config
-NUM_DEVS="${1:-}"
+# Read dev count from config
+NUM_DEVS=$(cat .joan-agents.json | grep -o '"count"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*')
 if [ -z "$NUM_DEVS" ]; then
-    NUM_DEVS=$(cat .joan-agents.json | grep -o '"count"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*')
-    if [ -z "$NUM_DEVS" ]; then
-        NUM_DEVS=2
-    fi
+    NUM_DEVS=2
 fi
 
-echo "🚀 Starting Joan Multi-Agent Orchestration"
+# Parse optional --max-idle argument
+MAX_IDLE_ARG=""
+for arg in "$@"; do
+    if [[ "$arg" == --max-idle=* ]]; then
+        MAX_IDLE_ARG="$arg"
+    fi
+done
+
+echo "🚀 Starting Joan Coordinator (v4)"
 echo "   Project: $PROJECT_NAME"
-echo "   Devs: $NUM_DEVS"
+echo "   Dev workers available: $NUM_DEVS"
 echo ""
 
 # Configuration
@@ -53,58 +53,41 @@ echo "📁 Log directory: $LOG_DIR"
 echo "📁 Worktree directory: $WORKTREE_DIR"
 echo ""
 
-# Function to launch agent in new Terminal window
-launch_agent() {
-    local agent_name="$1"
-    local command="$2"
-    local log_name="$3"
+# Build the command
+COMMAND="/agents:start --loop"
+if [ -n "$MAX_IDLE_ARG" ]; then
+    COMMAND="$COMMAND $MAX_IDLE_ARG"
+fi
 
-    echo "  Starting $agent_name..."
+echo "📋 Launching coordinator..."
+echo "   Command: $COMMAND"
+echo ""
 
-    # Use 'script' command to capture full terminal output including control codes
-    osascript <<EOF
+# Launch coordinator in new Terminal window
+osascript <<EOF
 tell application "Terminal"
     activate
-    do script "cd '$(pwd)' && echo '🤖 $agent_name' && script -q '$LOG_DIR/${log_name}.log' claude --dangerously-skip-permissions '$command'"
+    do script "cd '$(pwd)' && echo '🤖 Joan Coordinator' && script -q '$LOG_DIR/coordinator.log' claude --dangerously-skip-permissions '$COMMAND'"
 end tell
 EOF
-    sleep 1
-}
-
-echo "📋 Launching agents..."
-echo ""
-
-# Launch core agents (using unified commands with --loop flag)
-launch_agent "🔍 Business Analyst" "/agents:ba --loop" "ba"
-launch_agent "📐 Architect" "/agents:architect --loop" "architect"
-
-# Launch devs
-for i in $(seq 1 $NUM_DEVS); do
-    launch_agent "⚙️  Dev #$i" "/agents:dev $i --loop" "dev-$i"
-done
-
-# Launch Reviewer
-launch_agent "🔬 Code Reviewer" "/agents:reviewer --loop" "reviewer"
-
-# Launch Ops
-launch_agent "🔧 Ops" "/agents:ops --loop" "ops"
 
 echo ""
-echo "✅ All agents launched!"
+echo "✅ Coordinator launched!"
 echo ""
 echo "┌─────────────────────────────────────────────────────────────┐"
-echo "│                    Agent Overview                          │"
+echo "│                    Coordinator Architecture                │"
 echo "├─────────────────────────────────────────────────────────────┤"
-echo "│  🔍 BA Agent        - Evaluating requirements              │"
-echo "│  📐 Architect       - Creating implementation plans        │"
-for i in $(seq 1 $NUM_DEVS); do
-echo "│  ⚙️  Dev #$i          - Ready for parallel development      │"
-done
-echo "│  🔬 Reviewer        - Code review and quality gate         │"
-echo "│  🔧 Ops Agent       - Merging & conflict resolution         │"
+echo "│  🎯 Coordinator     - Single polling point                 │"
+echo "│       └─► Dispatches workers as needed:                    │"
+echo "│           • BA Worker (requirements validation)            │"
+echo "│           • Architect Worker (planning)                    │"
+echo "│           • Dev Worker x$NUM_DEVS (parallel implementation)    │"
+echo "│           • Reviewer Worker (code review)                  │"
+echo "│           • Ops Worker (merge & deploy)                    │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
+echo "Workers are single-pass: they process one task and exit."
 echo "Worktrees will be created in: $WORKTREE_DIR"
 echo ""
-echo "To stop: ./stop-agents.sh"
-echo "To view logs: tail -f $LOG_DIR/*.log"
+echo "To stop: ./stop-agents.sh or Ctrl+C in the coordinator terminal"
+echo "To view logs: tail -f $LOG_DIR/coordinator.log"

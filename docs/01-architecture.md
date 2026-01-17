@@ -1,6 +1,7 @@
-# Revised Architecture: Worktree-Based Parallelism
+# Revised Architecture: Tag-Triggered Dispatch
 
-This document describes the updated architecture using git worktrees for true parallel feature development.
+This document describes the updated architecture using git worktrees for true parallel feature development,
+with a single dispatcher coordinating tag-driven state transitions.
 
 ## Architecture Overview
 
@@ -31,6 +32,8 @@ WT = Git Worktree (isolated working directory)
 |--------|----------|---------|
 | Development agents | 3 (Dev, Design, Test) | N Devs (configurable) |
 | Parallelism | Time-sliced within one repo | True parallel via worktrees |
+| Orchestration | N/A | Single dispatcher with tag triggers |
+| Worker lifetime | Continuous loops | Single-pass workers |
 | Task assignment | Agents pick tasks by type | Devs claim entire tasks |
 | Working directory | Single shared repo | One worktree per active task |
 | Throughput | 1 feature at a time | N features simultaneously |
@@ -57,7 +60,7 @@ WT = Git Worktree (isolated working directory)
 ### 1. Task Enters Development
 
 ```
-Architect approves plan
+Human adds Plan-Approved tag
         │
         ▼
 Task moves to Development (tagged "Planned")
@@ -66,13 +69,16 @@ Task moves to Development (tagged "Planned")
 Task enters the "Available Work" pool
 ```
 
-### 2. Dev Claims Task
+### 2. Coordinator Claims Task
 
 ```
-Dev #1 polls Joan ──▶ Finds unclaimed "Planned" task
+Dispatcher polls once ──▶ Finds unclaimed "Planned" task
         │
         ▼
-Dev tags task "Claimed-Dev-1" (prevents others from claiming)
+Dispatcher tags task "Claimed-Dev-1" (prevents others from claiming)
+        │
+        ▼
+Dispatcher dispatches Dev worker with task assignment
         │
         ▼
 Dev extracts branch name from plan: feature/user-auth
@@ -122,7 +128,7 @@ Dev #1 finishes task
         │
         ├──▶ Removes worktree: git worktree remove ../worktrees/user-auth
         │
-        └──▶ Polls for next available task
+        └──▶ Dev worker exits; coordinator dispatches next task
 ```
 
 ## Parallel Execution Example
@@ -180,21 +186,22 @@ All worktrees share the same `.git` directory (via symlink), so:
 To prevent multiple devs from claiming the same task:
 
 ```
-1. Dev polls Joan for tasks:
+1. Coordinator polls Joan for tasks:
    - Column: Development
    - Tag: Planned
    - NOT tagged: Claimed-Dev-*
 
-2. Dev finds candidate task
+2. Coordinator finds candidate task
 
-3. Dev IMMEDIATELY tags: "Claimed-Dev-{N}"
+3. Coordinator IMMEDIATELY tags: "Claimed-Dev-{N}"
    (This is atomic - first writer wins)
 
-4. Dev verifies claim stuck
+4. Coordinator verifies claim stuck
    - If yes: proceed
    - If no (race condition): skip, poll again
 
-5. When done, Dev removes claim tag and moves task
+5. Coordinator dispatches Dev worker with task assignment
+6. When done, Dev removes claim tag and moves task
 ```
 
 ## Resource Usage

@@ -19,6 +19,12 @@
       "type": "object",
       "required": ["pollingIntervalMinutes", "maxIdlePolls"],
       "properties": {
+        "model": {
+          "type": "string",
+          "enum": ["opus", "sonnet", "haiku"],
+          "default": "opus",
+          "description": "Claude model to use for all agents"
+        },
         "pollingIntervalMinutes": {
           "type": "integer",
           "minimum": 1,

@@ -3,6 +3,7 @@
   "projectId": "YOUR_PROJECT_UUID_HERE",
   "projectName": "Your Project Name",
   "settings": {
+    "model": "opus",
     "pollingIntervalMinutes": 10,
     "maxIdlePolls": 6
   },
@@ -13,7 +14,7 @@
     "architect": {
       "enabled": true
     },
-    "projectManager": {
+    "ops": {
       "enabled": true
     },
     "reviewer": {

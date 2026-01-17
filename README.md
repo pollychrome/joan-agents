@@ -1,8 +1,18 @@
-# Joan Multi-Agent Orchestration System (v3)
+# Joan Multi-Agent Orchestration System (v4)
 
-## True Parallel Feature Development with Git Worktrees
+## Tag-Driven Orchestration with Single Coordinator
 
-This version uses **git worktrees** for genuine parallel development, **intelligent task queuing** for efficient polling, and **automatic idle shutdown** for resource management. Each Dev agent operates in an isolated worktree, allowing multiple features to be developed simultaneously.
+This version introduces **tag-based state transitions** (no comment parsing), a **single coordinator** that dispatches workers, and **10x lower polling overhead**. Combined with git worktrees for parallel development and automatic idle shutdown.
+
+### What's New in v4
+
+| Feature | v3 | v4 |
+|---------|-----|-----|
+| Orchestration | N agents poll independently | Single coordinator dispatches workers |
+| State triggers | Comment parsing (@approve-plan) | Tag-based (Plan-Approved tag) |
+| Human workflow | Add comments | Add tags in Joan UI |
+| Polling overhead | N polls per interval | 1 poll per interval |
+| Worker lifetime | Continuous loops | Single-pass (exit after task) |
 
 ## Architecture
 
@@ -27,14 +37,14 @@ This version uses **git worktrees** for genuine parallel development, **intellig
 
 ## What Changed
 
-| Aspect | v1 | v2 | v3 |
-|--------|-----|-----|-----|
-| Development agents | 3 (Dev, Design, Test) | N Workers | N Devs + Reviewer |
-| Parallelism | Time-sliced | True parallel | True parallel |
-| Working directory | Single repo | One worktree per task | One worktree per task |
-| Task polling | Continuous | Continuous | Smart queue with idle shutdown |
-| Code review | Manual | Manual | Automated Reviewer agent |
-| Configuration | Hardcoded | Script args | `.joan-agents.json` config file |
+| Aspect | v1-v2 | v3 | v4 |
+|--------|-------|-----|-----|
+| Development agents | Varied | N Devs + Reviewer | N Devs + Reviewer |
+| Orchestration | N/A | N independent loops | Single coordinator |
+| State triggers | Manual | Comment parsing | Tag-based |
+| Polling | N agents polling | N agents polling | 1 coordinator polls |
+| Worker lifetime | Continuous | Continuous | Single-pass |
+| Token usage | High | High | ~10x lower |
 
 ## Agents
 
@@ -44,7 +54,7 @@ This version uses **git worktrees** for genuine parallel development, **intellig
 | Architect | 1 | Creates implementation plans |
 | **Dev** | **N** | Claims task → creates worktree → implements everything → creates PR → cleans up |
 | **Reviewer** | **1** | Code review, quality gate, approves or requests rework |
-| Project Manager | 1 | Merges approved PRs to develop, tracks deploys |
+| Ops | 1 | Merges approved PRs to develop, tracks deploys |
 
 ## Quick Start
 
@@ -65,10 +75,10 @@ ln -sf ~/joan-agents/.claude/CLAUDE.md ~/.claude/CLAUDE.md
 # 3. Initialize any project
 cd ~/your-project
 claude
-> /agents:init    # Creates .joan-agents.json config
+> /agents:init    # Creates .joan-agents.json config and tags
 
 # 4. Run agents
-> /agents:start all
+> /agents:start --loop
 ```
 
 See [docs/03-global-installation.md](docs/03-global-installation.md) for detailed instructions.
@@ -85,7 +95,7 @@ cp joan-agents/.claude/CLAUDE.md your-project/.claude/CLAUDE.md
 cd your-project
 claude
 > /agents:init
-> /agents:start all
+> /agents:start --loop
 ```
 
 ### Shell Scripts (iTerm2)
@@ -94,22 +104,23 @@ For launching agents in separate terminal tabs:
 
 ```bash
 chmod +x ~/joan-agents/*.sh
-~/joan-agents/start-agents-iterm.sh my-project 4
+~/joan-agents/start-agents-iterm.sh
 ```
 
 ## How Devs Operate
 
-Each Dev agent follows this cycle:
+The coordinator dispatches Dev workers, each following this cycle:
 
 ```
-1. POLL     → Find unclaimed "Planned" task
-2. CLAIM    → Tag task to prevent others from taking it
-3. WORKTREE → git worktree add ../worktrees/{task-id} {branch}
-4. IMPLEMENT → Execute DES-*, DEV-*, TEST-* in order
-5. PR       → Create pull request
-6. CLEANUP  → Remove worktree, move task to Review
-7. REPEAT   → Go back to step 1
+1. RECEIVE  → Coordinator assigns task (already claimed)
+2. WORKTREE → git worktree add ../worktrees/{task-id} {branch}
+3. IMPLEMENT → Execute DES-*, DEV-*, TEST-* in order
+4. PR       → Create pull request
+5. CLEANUP  → Remove worktree, move task to Review
+6. EXIT     → Worker exits, coordinator dispatches next
 ```
+
+Devs are single-pass workers: they process one task and exit.
 
 ## Directory Structure
 
@@ -117,25 +128,28 @@ Each Dev agent follows this cycle:
 your-project/                    # Main repo
 ├── .claude/
 │   ├── agents/
-│   │   ├── business-analyst.md
-│   │   ├── architect.md
-│   │   ├── developer.md
-│   │   ├── reviewer.md
-│   │   └── project-manager.md
+│   │   ├── coordinator.md       # Central orchestrator
+│   │   ├── business-analyst.md  # BA subagent
+│   │   ├── architect.md         # Architect subagent
+│   │   ├── developer.md         # Dev subagent
+│   │   ├── reviewer.md          # Reviewer subagent
+│   │   └── ops.md               # Ops subagent
 │   └── commands/agents/
-│       ├── ba-loop.md
-│       ├── architect-loop.md
-│       ├── dev-loop.md
-│       ├── reviewer-loop.md
-│       └── pm-loop.md
+│       ├── init.md              # Initialize project
+│       ├── start.md             # Start coordinator
+│       ├── dispatch.md          # Alias for start
+│       ├── ba-worker.md         # BA single-pass worker
+│       ├── architect-worker.md  # Architect single-pass worker
+│       ├── dev-worker.md        # Dev single-pass worker
+│       ├── reviewer-worker.md   # Reviewer single-pass worker
+│       └── ops-worker.md        # Ops single-pass worker
 ├── src/
 └── ...
 
 ../worktrees/                    # Created automatically
-├── task-123/                    # Dev 1's workspace
-├── task-456/                    # Dev 2's workspace
-├── task-789/                    # Dev 3's workspace
-└── task-012/                    # Dev 4's workspace
+├── {task-id-1}/                 # Dev 1's workspace
+├── {task-id-2}/                 # Dev 2's workspace
+└── ...
 ```
 
 ## Resource Recommendations
@@ -146,31 +160,50 @@ your-project/                    # Main repo
 | 4 | 8 | 6-10 GB | Standard (recommended) |
 | 6 | 10 | 10-14 GB | Heavy workload |
 
-## Workflow
+## Workflow (Tag-Based)
 
-1. **To Do** → BA evaluates, asks questions
-2. **Analyse** → Architect creates plan, you approve with `@approve-plan`
-3. **Development** → Devs claim tasks, create worktrees, implement, create PRs
-4. **Review** → Reviewer validates code, merges develop into feature, comments `@approve` or `@rework`
-5. **Review** (on @approve) → PM merges to develop, moves task to Deploy
-6. **Deploy** → Tracking only - awaits production deployment
-7. **Done** → PM moves after production deploy
+1. **To Do** → BA evaluates, asks questions if unclear
+2. **Analyse** → Architect creates plan → **you add `Plan-Approved` tag**
+3. **Development** → Coordinator assigns devs, they implement in worktrees, create PRs
+4. **Review** → Reviewer validates code, merges develop into feature
+5. **Review** (approved) → Reviewer adds `Review-Approved` tag → Ops merges to develop
+6. **Review** (rejected) → Reviewer adds `Rework-Requested` tag → back to Development
+7. **Deploy** → Tracking only - awaits production deployment
+8. **Done** → Ops moves after production deploy
+
+### Human Actions (Tag-Based)
+
+| When | Add This Tag |
+|------|--------------|
+| To approve a plan | `Plan-Approved` |
+| After answering BA questions | `Clarification-Answered` |
+| To recover a failed task | Remove `Implementation-Failed`, ensure `Planned` exists |
+
+### ALS Comments (Breadcrumbs)
+
+All manual comments should use ALS blocks for consistency. Tags still drive behavior.
+See `docs/09-als-spec.md` for the format.
 
 ## Commands
 
 ```bash
-# Launch all agents
-./start-agents-iterm.sh my-project [num-devs]
+# Run coordinator (single pass)
+/agents:start
+/agents:dispatch
 
-# Launch single agent
-./start-agent.sh ba my-project
-./start-agent.sh architect my-project
-./start-agent.sh dev my-project 1
-./start-agent.sh dev my-project 2
-./start-agent.sh reviewer my-project
-./start-agent.sh pm my-project
+# Run coordinator (continuous - recommended)
+/agents:start --loop
+/agents:dispatch --loop
 
-# Stop all agents
+# Extended idle threshold (2 hours at 10-min intervals)
+/agents:start --loop --max-idle=12
+```
+
+### Shell Scripts
+
+```bash
+./start-agents-iterm.sh [--max-idle=N]
+./start-agents.sh [--max-idle=N]
 ./stop-agents.sh
 ```
 
@@ -182,12 +215,17 @@ See `docs/` folder for:
 - [Global Installation](docs/03-global-installation.md) - Install once, use everywhere
 - [Troubleshooting](docs/05-troubleshooting.md) - Common issues and solutions
 - [Best Practices](docs/06-best-practices.md) - Tips for effective usage
+- [Orchestration Spec](docs/07-orchestration-spec.md) - Tag-driven dispatcher workflow
+- [Human Inbox Spec](docs/08-human-inbox-spec.md) - Unified human input queue
+- [ALS Spec](docs/09-als-spec.md) - Agentic Language Syntax for breadcrumbs
+- [Shared Specs](shared/joan-shared-specs) - Cross-repo agentic workflow alignment
 
 ## Key Benefits
 
-✅ **True Parallelism** - N features developed simultaneously
+✅ **Tag-Based Orchestration** - Deterministic state machine, no comment parsing
+✅ **10x Lower Overhead** - Single coordinator vs N independent polling agents
+✅ **True Parallelism** - N features developed simultaneously in worktrees
 ✅ **No Conflicts** - Each dev has isolated workspace
-✅ **Efficient** - Single dev handles entire task lifecycle
-✅ **Scalable** - Add more devs for more throughput
+✅ **Single-Pass Workers** - Stateless workers, easy to retry on failure
 ✅ **Quality Gate** - Automated code review before merge
 ✅ **Clean** - Worktrees auto-created and auto-removed

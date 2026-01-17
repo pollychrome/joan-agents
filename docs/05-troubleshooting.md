@@ -51,10 +51,10 @@ Solutions for common issues with the Joan Multi-Agent System.
    tail -f joan-agents/logs/{project}/*.log
    ```
 
-2. **Run manually to see errors:**
+2. **Run coordinator manually to see errors:**
    ```bash
-   cd joan-agents
-   claude --dangerously-skip-permissions "/agents:ba-loop your-project"
+   cd your-project
+   claude --dangerously-skip-permissions "/agents:start --loop"
    ```
 
 3. **Common causes:**
@@ -74,8 +74,8 @@ Solutions for common issues with the Joan Multi-Agent System.
    - BA watches: To Do, Analyse (Needs-Clarification)
    - Architect watches: Analyse (Ready, Plan-Pending-Approval)
    - Dev watches: Development (Planned, Rework-Requested)
-   - Reviewer watches: Review (completion tags present)
-   - Ops watches: Review (@approve), Deploy
+   - Reviewer watches: Review (completion tags present, no Rework-Requested)
+   - Ops watches: Review (Review-Approved), Deploy
 
 2. **Verify tags are correct:**
    - Ready tasks need `Ready` tag for Architect
@@ -271,15 +271,15 @@ Solutions for common issues with the Joan Multi-Agent System.
 
 **Solutions:**
 
-1. **Reduce number of agents:**
-   - Run fewer agents simultaneously
-   - Start with BA + Architect, add others as needed
+1. **Reduce concurrent devs:**
+   - Lower `agents.devs.count` in `.joan-agents.json`
+   - Disable unused agents in `.joan-agents.json`
 
 2. **Increase poll interval:**
-   - Edit loop commands to use 60s instead of 30s
+   - Edit `settings.pollingIntervalMinutes` in `.joan-agents.json`
 
 3. **Check for infinite loops:**
-   - Agent may be stuck processing same task
+   - Coordinator may be stuck processing the same task
 
 ### High Memory Usage
 
@@ -294,13 +294,10 @@ Solutions for common issues with the Joan Multi-Agent System.
    - Schedule daily restarts
 
 2. **Use Sonnet instead of Opus:**
-   - Edit agent definitions to use lighter model
-   ```yaml
-   model: claude-sonnet-4-5-20250929
-   ```
+   - Use `/agents:model` or edit `.joan-agents.json` → `settings.model`
 
-3. **Reduce max concurrent tasks:**
-   - Lower from 5 to 3 in agent definitions
+3. **Reduce concurrent devs:**
+   - Lower `agents.devs.count` in `.joan-agents.json`
 
 ### Logs Growing Too Large
 
@@ -359,10 +356,10 @@ Solutions for common issues with the Joan Multi-Agent System.
 
 ## Recovery Procedures
 
-### Restart All Agents
+### Restart Coordinator
 
 ```bash
-# Stop all
+# Stop coordinator
 ./joan-agents/stop-agents.sh
 
 # Wait for graceful shutdown
@@ -371,8 +368,11 @@ sleep 10
 # Force kill if needed
 pkill -9 -f "claude.*agents"
 
-# Restart
-./joan-agents/start-agents-iterm.sh your-project
+# Restart (from your project directory)
+cd your-project
+./joan-agents/start-agents.sh          # Terminal.app
+# or
+./joan-agents/start-agents-iterm.sh    # iTerm2
 ```
 
 ### Reset a Stuck Task
@@ -395,19 +395,20 @@ pkill -9 -f "claude.*agents"
 3. Move task back to To Do
 4. BA will re-evaluate from scratch
 
-### Clear Agent State
+### Clear Coordinator State
 
-Agents don't maintain local state beyond the current iteration, but to fully reset:
+The coordinator doesn't maintain local state beyond the current iteration, but to fully reset:
 
 ```bash
-# Stop agents
+# Stop coordinator
 ./joan-agents/stop-agents.sh
 
 # Clear logs
 rm -rf joan-agents/logs/*
 
-# Restart
-./joan-agents/start-agents-iterm.sh your-project
+# Restart (from your project directory)
+cd your-project
+./joan-agents/start-agents.sh
 ```
 
 ### Manual Task Progression
@@ -430,7 +431,7 @@ If automation is stuck, progress task manually:
 
 4. **Review → Deploy:**
    - Merge develop into feature branch (resolve any conflicts)
-   - Comment `@approve` on the task
+   - Add `Review-Approved` tag on the task
    - Ops will merge PR to develop and move to Deploy
    - Or manually: merge PR to develop, then move to Deploy
 
@@ -444,12 +445,13 @@ If automation is stuck, progress task manually:
 
 1. **Check logs first:**
    ```bash
-   tail -100 joan-agents/logs/{project}/{agent}-loop.log
+   tail -100 joan-agents/logs/{project}/coordinator.log
    ```
 
-2. **Run agent interactively:**
+2. **Run coordinator interactively:**
    ```bash
-   claude --dangerously-skip-permissions "/agents:{agent}-loop {project}"
+   cd your-project
+   claude --dangerously-skip-permissions "/agents:start --loop"
    ```
 
 3. **Test MCP separately:**
@@ -460,6 +462,6 @@ If automation is stuck, progress task manually:
    ```
 
 4. **Simplify to isolate:**
-   - Run only one agent
+   - Run coordinator in single-pass mode (without --loop)
    - Test with a single simple task
    - Verify each step manually

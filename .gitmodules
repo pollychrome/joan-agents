@@ -1,0 +1,3 @@
+[submodule "shared/joan-shared-specs"]
+	path = shared/joan-shared-specs
+	url = git@github.com:pollychrome/joan-shared-specs.git

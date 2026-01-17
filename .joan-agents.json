@@ -17,7 +17,7 @@
     "reviewer": {
       "enabled": true
     },
-    "projectManager": {
+    "ops": {
       "enabled": true
     },
     "devs": {

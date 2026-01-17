@@ -1,79 +1,58 @@
 #!/bin/bash
 
-# Joan Single Agent Launcher
-# Usage: ./start-agent.sh <agent-type> <project-name> [dev-id]
+# Joan Coordinator Launcher (current terminal)
+# Usage: ./start-agent.sh [--max-idle=N]
+#
+# Runs the coordinator in this terminal using .joan-agents.json.
 
 set -e
 
-AGENT="${1:-}"
-PROJECT="${2:-}"
-DEV_ID="${3:-1}"
-
 print_usage() {
-    echo "Usage: ./start-agent.sh <agent-type> <project-name> [dev-id]"
-    echo ""
-    echo "Agent types:"
-    echo "  ba          Business Analyst"
-    echo "  architect   Software Architect"
-    echo "  dev         Dev agent (specify dev-id)"
-    echo "  reviewer    Code Reviewer"
-    echo "  ops         Ops"
+    echo "Usage: ./start-agent.sh [--max-idle=N]"
     echo ""
     echo "Examples:"
-    echo "  ./start-agent.sh ba my-project"
-    echo "  ./start-agent.sh dev my-project 1"
-    echo "  ./start-agent.sh dev my-project 2"
+    echo "  ./start-agent.sh"
+    echo "  ./start-agent.sh --max-idle=12"
 }
 
-if [ -z "$AGENT" ] || [ -z "$PROJECT" ]; then
-    print_usage
+for arg in "$@"; do
+    if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
+        print_usage
+        exit 0
+    fi
+done
+
+if [ ! -f ".joan-agents.json" ]; then
+    echo "Error: .joan-agents.json not found."
+    echo "Run '/agents:init' first to set up your Joan project."
     exit 1
 fi
 
+PROJECT_NAME=$(cat .joan-agents.json | grep -o '"projectName"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+if [ -z "$PROJECT_NAME" ]; then
+    PROJECT_NAME="joan-project"
+fi
+
+MAX_IDLE_ARG=""
+for arg in "$@"; do
+    if [[ "$arg" == --max-idle=* ]]; then
+        MAX_IDLE_ARG="$arg"
+    fi
+done
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="$SCRIPT_DIR/logs/$PROJECT"
+LOG_DIR="$SCRIPT_DIR/logs/$PROJECT_NAME"
 mkdir -p "$LOG_DIR"
 
-case "$AGENT" in
-    ba|business-analyst)
-        COMMAND="/agents:ba --loop"
-        LABEL="🔍 Business Analyst"
-        LOG_FILE="ba.log"
-        ;;
-    architect|arch)
-        COMMAND="/agents:architect --loop"
-        LABEL="📐 Architect"
-        LOG_FILE="architect.log"
-        ;;
-    dev|d)
-        COMMAND="/agents:dev $DEV_ID --loop"
-        LABEL="⚙️  Dev #$DEV_ID"
-        LOG_FILE="dev-$DEV_ID.log"
-        ;;
-    reviewer|review|r)
-        COMMAND="/agents:reviewer --loop"
-        LABEL="🔬 Code Reviewer"
-        LOG_FILE="reviewer.log"
-        ;;
-    ops)
-        COMMAND="/agents:ops --loop"
-        LABEL="🔧 Ops"
-        LOG_FILE="ops.log"
-        ;;
-    *)
-        echo "❌ Unknown agent type: $AGENT"
-        echo ""
-        print_usage
-        exit 1
-        ;;
-esac
+COMMAND="/agents:start --loop"
+if [ -n "$MAX_IDLE_ARG" ]; then
+    COMMAND="$COMMAND $MAX_IDLE_ARG"
+fi
 
-echo "$LABEL"
-echo "Project: $PROJECT"
-echo "═══════════════════════════════════════"
-echo ""
-echo "Log: $LOG_DIR/$LOG_FILE"
+echo "🎯 Joan Coordinator"
+echo "Project: $PROJECT_NAME"
+echo "Log: $LOG_DIR/coordinator.log"
 echo "Press Ctrl+C to stop"
 echo ""
 
-claude --dangerously-skip-permissions "$COMMAND" 2>&1 | tee "$LOG_DIR/$LOG_FILE"
+claude --dangerously-skip-permissions "$COMMAND" 2>&1 | tee "$LOG_DIR/coordinator.log"

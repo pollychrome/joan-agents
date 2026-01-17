@@ -32,6 +32,11 @@ You are **Dev $DEV_ID** for project **$PROJECT**.
 
 Your claim tag is: `Claimed-Dev-$DEV_ID`
 
+## Assigned Mode
+
+If the dispatcher provides a TASK_ID in the prompt, skip polling and process
+only that task. Claim it, execute the plan, and exit.
+
 ## Core Loop
 
 ```
@@ -49,7 +54,7 @@ Your claim tag is: `Claimed-Dev-$DEV_ID`
 
 ## Phase 1: Claim a Task
 
-Every 30 seconds if idle:
+When invoked (dispatcher or manual loop):
 
 ```bash
 # Poll Joan for available tasks
@@ -72,24 +77,27 @@ If not present: skip this task, poll again
 ### Rework Mode
 
 If task has `Rework-Requested` tag:
-1. Read task comments to find the `@rework` or `@rework-requested` comment
+1. Read the latest ALS comment with action `review-rework` for context
 2. Understand what changes were requested by the Reviewer
-3. Remove the `Rework-Requested` tag (you're handling it now)
-4. Keep the `Planned` tag (you'll remove it on completion as normal)
-5. Checkout the existing branch (don't create new worktree from scratch)
-6. Address the specific feedback - do NOT redo the entire task
-7. Push changes and comment completion using the canonical format:
+3. Keep the `Planned` tag (remove on completion as normal)
+4. Checkout the existing branch (do not create a new worktree)
+5. Address the specific feedback, do not redo the entire task
+6. On completion, remove `Rework-Requested` and add `Rework-Complete`
+7. Comment completion using ALS:
 
-```markdown
-## rework-complete
-
-Addressed reviewer feedback:
+```text
+ALS/1
+actor: dev
+intent: response
+action: rework-complete
+tags.add: [Rework-Complete]
+tags.remove: [Rework-Requested]
+summary: Rework complete; ready for re-review.
+details:
 - {summary of changes made}
-
-Ready for re-review.
 ```
 
-**Important**: The `## rework-complete` header is required - it signals the Reviewer that this task is ready for another review cycle. This follows the `@` / `##` convention where `@` is a request and `##` is a response.
+**Important**: The `Rework-Complete` tag signals that rework is ready for review.
 
 ## Phase 2: Create Worktree
 
@@ -213,7 +221,7 @@ Body: |
   Closes: {task-id}
 ```
 
-Comment PR link on task.
+Attach PR link as a task resource. Include an ALS breadcrumb comment.
 
 ## Phase 5: Cleanup & Transition
 
@@ -231,41 +239,55 @@ git worktree prune
 Update Joan:
 1. Remove tag: `Claimed-Dev-$DEV_ID`
 2. Remove tag: `Planned` (signals task is no longer available for claiming)
-3. Add tags: `Dev-Complete`, `Design-Complete`, `Test-Complete`
-4. Move task to "Review" column
-5. Comment: "Implementation complete. PR ready for review."
+3. Remove tags: `Rework-Requested`, `Merge-Conflict` (if present)
+4. Add tags: `Dev-Complete`, `Design-Complete`, `Test-Complete`
+5. Add tag: `Rework-Complete` (if this was rework)
+6. Move task to "Review" column
+7. Comment using ALS:
+   - If rework:
+     ```
+     ALS/1
+     actor: dev
+     intent: response
+     action: rework-complete
+     tags.add: [Dev-Complete, Design-Complete, Test-Complete, Rework-Complete]
+     tags.remove: [Planned, Rework-Requested, Merge-Conflict, Claimed-Dev-$DEV_ID]
+     summary: Rework complete; PR ready for review.
+     ```
+   - Else:
+     ```
+     ALS/1
+     actor: dev
+     intent: response
+     action: dev-complete
+     tags.add: [Dev-Complete, Design-Complete, Test-Complete]
+     tags.remove: [Planned, Claimed-Dev-$DEV_ID]
+     summary: Implementation complete; PR ready for review.
+     ```
 
-Then **immediately poll for next task**.
+Then **return control to dispatcher or poll again if running in loop mode**.
 
-## Progress Comment Format
+## Progress Comments
 
-After each sub-task:
-
-```markdown
-## ✅ {TYPE}-{N} Complete (Dev $DEV_ID)
-
-**Task**: {description}
-**Files**: {list}
-**Commit**: `{sha}`
-
-Progress: {completed}/{total} sub-tasks
-```
+Avoid frequent progress comments. Use breadcrumb templates at phase transitions.
 
 ## Handling Failures
 
 ### Sub-task fails after 3 retries
 
-```markdown
-## ❌ {TYPE}-{N} Failed (Dev $DEV_ID)
-
-**Task**: {description}
-**Error**: {details}
-**Attempts**: 3
-
-Worktree preserved at: {path}
-Manual intervention required.
-
-@developer please assist
+```text
+ALS/1
+actor: dev
+intent: failure
+action: dev-failure
+tags.add: [Implementation-Failed]
+tags.remove: [Claimed-Dev-$DEV_ID]
+summary: Sub-task failed; manual intervention required.
+details:
+- task: {description}
+- error: {details}
+- attempts: 3
+- worktree: {path}
 ```
 
 - Do NOT clean up worktree (preserve for debugging)
