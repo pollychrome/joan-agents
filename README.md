@@ -81,7 +81,7 @@ claude
 > /agents:start --loop
 ```
 
-See [docs/03-global-installation.md](docs/03-global-installation.md) for detailed instructions.
+See `shared/joan-shared-specs/docs/joan-agents/global-installation.md` for detailed instructions.
 
 ### Per-Project Installation
 
@@ -182,7 +182,7 @@ your-project/                    # Main repo
 ### ALS Comments (Breadcrumbs)
 
 All manual comments should use ALS blocks for consistency. Tags still drive behavior.
-See `docs/09-als-spec.md` for the format.
+See `shared/joan-shared-specs/docs/als-spec.md` for the format.
 
 ## Commands
 
@@ -209,15 +209,15 @@ See `docs/09-als-spec.md` for the format.
 
 ## Documentation
 
-See `docs/` folder for:
-- [Architecture](docs/01-architecture.md) - System design and agent roles
-- [Setup Guide](docs/02-setup.md) - Per-project configuration
-- [Global Installation](docs/03-global-installation.md) - Install once, use everywhere
-- [Troubleshooting](docs/05-troubleshooting.md) - Common issues and solutions
-- [Best Practices](docs/06-best-practices.md) - Tips for effective usage
-- [Orchestration Spec](docs/07-orchestration-spec.md) - Tag-driven dispatcher workflow
-- [Human Inbox Spec](docs/08-human-inbox-spec.md) - Unified human input queue
-- [ALS Spec](docs/09-als-spec.md) - Agentic Language Syntax for breadcrumbs
+See `shared/joan-shared-specs/docs/joan-agents/README.md` for:
+- Architecture - `shared/joan-shared-specs/docs/joan-agents/architecture.md`
+- Setup Guide - `shared/joan-shared-specs/docs/joan-agents/setup.md`
+- Global Installation - `shared/joan-shared-specs/docs/joan-agents/global-installation.md`
+- Troubleshooting - `shared/joan-shared-specs/docs/joan-agents/troubleshooting.md`
+- Best Practices - `shared/joan-shared-specs/docs/joan-agents/best-practices.md`
+- Orchestration Spec - `shared/joan-shared-specs/docs/orchestration-spec.md`
+- Human Inbox Spec - `shared/joan-shared-specs/docs/human-inbox.md`
+- ALS Spec - `shared/joan-shared-specs/docs/als-spec.md`
 - [Shared Specs](shared/joan-shared-specs) - Cross-repo agentic workflow alignment
 
 ## Key Benefits

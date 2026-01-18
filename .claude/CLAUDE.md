@@ -176,7 +176,7 @@ Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual in
 **IMPORTANT:** In v4, comments are WRITE-ONLY breadcrumbs. Agents never parse comments to determine state - they use tags exclusively.
 
 All comments use ALS (Agentic Language Syntax) blocks for auditability.
-See `docs/09-als-spec.md` for the full format and examples.
+See `shared/joan-shared-specs/docs/als-spec.md` for the full format and examples.
 
 ### Human Actions (Tag-Based)
 
