@@ -44,34 +44,51 @@ Ask the user for their preferences using AskUserQuestion:
 
 After the user selects a project, configure it for the agentic workflow.
 
-### 4a: Verify Kanban Columns
+### 4a: Configure Kanban Columns
 
-The workflow requires these columns in order:
-1. **To Do** - New tasks awaiting BA evaluation
-2. **Analyse** - Tasks being planned by Architect
-3. **Development** - Tasks being implemented by Devs
-4. **Review** - Tasks awaiting code review
-5. **Deploy** - Tasks approved and ready for deployment
-6. **Done** - Completed tasks
+The workflow requires these columns in order. Automatically create any that are missing.
 
-Fetch existing columns:
+**Required Columns:**
+
+| Column | Default Status | Color | Position |
+|--------|---------------|-------|----------|
+| To Do | todo | #6B7280 (gray) | 0 |
+| Analyse | analyse | #8B5CF6 (purple) | 1 |
+| Development | in_progress | #3B82F6 (blue) | 2 |
+| Review | review | #F59E0B (amber) | 3 |
+| Deploy | deploy | #10B981 (emerald) | 4 |
+| Done | done | #22C55E (green) | 5 |
+
+**Step 1: Fetch existing columns**
 ```
-mcp__joan__list_columns(project_id)
+columns = mcp__joan__list_columns(project_id)
 ```
 
-Compare against required columns. If any are missing, inform the user:
+**Step 2: Check and create missing columns**
+
+For each required column (in order):
+1. Check if it exists (case-insensitive match on name)
+2. If missing, create it:
+   ```
+   mcp__joan__create_column(project_id, name, default_status, color, position)
+   ```
+3. Track which columns were created vs already existed
+
+**Step 3: Report column configuration**
 
 ```
-⚠️  Missing Kanban Columns Detected
+✓ Kanban Columns Configured
 
-Your project needs these columns for the agent workflow:
-  ✓ To Do (exists)
-  ✗ Analyse (missing)
-  ✓ Development (exists)
-  ...
+Created: Analyse, Deploy
+Existing: To Do, Development, Review, Done
+Total: 6 workflow columns ready
+```
 
-Please create the missing columns in Joan before running agents.
-The columns should be ordered: To Do → Analyse → Development → Review → Deploy → Done
+If all columns already existed:
+```
+✓ Kanban Columns Configured
+
+All 6 workflow columns already exist.
 ```
 
 ### 4b: Create Workflow Tags
