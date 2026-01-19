@@ -162,22 +162,27 @@ your-project/                    # Main repo
 
 ## Workflow (Tag-Based)
 
+Canonical workflow specs live in `shared/joan-shared-specs/docs/workflow/agentic-workflow.md`
+and `shared/joan-shared-specs/docs/human-interface/human-inbox.md`.
+
 1. **To Do** → BA evaluates, asks questions if unclear
 2. **Analyse** → Architect creates plan → **you add `Plan-Approved` tag**
 3. **Development** → Coordinator assigns devs, they implement in worktrees, create PRs
 4. **Review** → Reviewer validates code, merges develop into feature
-5. **Review** (approved) → Reviewer adds `Review-Approved` tag → Ops merges to develop
+5. **Review** (approved) → Reviewer adds `Review-Approved` tag → **you add `Ops-Ready`** → Ops merges to develop
 6. **Review** (rejected) → Reviewer adds `Rework-Requested` tag → back to Development
 7. **Deploy** → Tracking only - awaits production deployment
 8. **Done** → Ops moves after production deploy
 
 ### Human Actions (Tag-Based)
 
-| When | Add This Tag |
-|------|--------------|
-| To approve a plan | `Plan-Approved` |
-| After answering BA questions | `Clarification-Answered` |
-| To recover a failed task | Remove `Implementation-Failed`, ensure `Planned` exists |
+| When | Action |
+|------|--------|
+| To approve a plan | Add `Plan-Approved` |
+| To reject a plan | Add `Plan-Rejected` |
+| After answering BA questions | Add `Clarification-Answered` |
+| To approve a merge | Add `Ops-Ready` |
+| To recover a failed task | Remove `Implementation-Failed`/`Worktree-Failed`, ensure `Planned` exists |
 
 ### ALS Comments (Breadcrumbs)
 
