@@ -141,7 +141,71 @@ Existing: Dev-Complete, Test-Complete, ...
 Total: 16 workflow tags ready
 ```
 
-## Step 5: Write Configuration
+## Step 5: Configure Bash Permissions
+
+The agents need permission to run git, npm, and test commands without prompting during the loop.
+
+**Create or update `.claude/settings.local.json`** in the project root:
+
+```
+1. Check if .claude/settings.local.json exists
+2. If exists, read current permissions
+3. Merge required permissions (don't overwrite existing)
+4. Write back the file
+```
+
+**Required permissions for autonomous operation:**
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git worktree:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git reset:*)",
+      "Bash(npm install:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run:*)",
+      "Bash(pip install:*)",
+      "Bash(pytest:*)",
+      "Bash(mkdir:*)",
+      "Bash(cd:*)",
+      "mcp__joan__*",
+      "mcp__github__*"
+    ]
+  }
+}
+```
+
+**Report the configuration:**
+
+```
+✓ Bash Permissions Configured
+
+Added {N} permission rules to .claude/settings.local.json
+Agents can now run git, npm, and test commands autonomously.
+```
+
+If permissions already existed:
+```
+✓ Bash Permissions Configured
+
+All required permissions already present.
+```
+
+---
+
+## Step 6: Write Configuration
 
 Create `.joan-agents.json` in project root with the user's selections:
 
@@ -165,7 +229,7 @@ Create `.joan-agents.json` in project root with the user's selections:
 }
 ```
 
-## Step 6: Confirm Setup & Offer Tutorial
+## Step 7: Confirm Setup & Offer Tutorial
 
 Report the configuration summary:
 
@@ -187,8 +251,9 @@ Enabled Agents:
   • Devs: {enabled/disabled} (x{count})
 
 Project Structure:
-  • Columns: {status - all present or list missing}
+  • Columns: {N} workflow columns configured
   • Tags: {N} workflow tags configured
+  • Permissions: {N} bash rules configured for autonomous operation
 ═══════════════════════════════════════════════════════════════
 ```
 
@@ -201,9 +266,9 @@ Options:
   - "No, I'm ready to start"
 ```
 
-If user selects tutorial, proceed to Step 7. Otherwise, show quick start commands and finish.
+If user selects tutorial, proceed to Step 8. Otherwise, show quick start commands and finish.
 
-## Step 7: Interactive Workflow Tutorial (Optional)
+## Step 8: Interactive Workflow Tutorial (Optional)
 
 Present the tutorial in interactive sections, pausing between each for questions.
 

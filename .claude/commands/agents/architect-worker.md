@@ -1,7 +1,7 @@
 ---
 description: Single-pass Architect worker dispatched by coordinator
 argument-hint: --task=<task-id> --mode=<plan|finalize|revise>
-allowed-tools: mcp__joan__*, Read, Write, Grep, Glob, View
+allowed-tools: mcp__joan__*, Read, Write, Grep, Glob, View, Task
 ---
 
 # Architect Worker (Single-Pass)

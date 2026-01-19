@@ -1,7 +1,7 @@
 ---
 description: Single-pass Reviewer worker dispatched by coordinator
 argument-hint: --task=<task-id>
-allowed-tools: mcp__joan__*, mcp__github__*, Read, Bash, Grep, Glob
+allowed-tools: mcp__joan__*, mcp__github__*, Read, Bash, Grep, Glob, Task
 ---
 
 # Reviewer Worker (Single-Pass)

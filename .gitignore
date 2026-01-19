@@ -1,3 +1,6 @@
 logs/
 *.log
 .DS_Store
+
+# Claude Code local settings (user-specific permissions)
+.claude/settings.local.json

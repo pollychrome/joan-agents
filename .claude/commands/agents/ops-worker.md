@@ -1,7 +1,7 @@
 ---
 description: Single-pass Ops worker dispatched by coordinator
 argument-hint: --task=<task-id> --mode=<merge|rework>
-allowed-tools: mcp__joan__*, mcp__github__*, Read, Bash, Grep, Glob
+allowed-tools: mcp__joan__*, mcp__github__*, Read, Bash, Grep, Glob, Task, Edit
 ---
 
 # Ops Worker (Single-Pass)

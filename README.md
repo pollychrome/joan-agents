@@ -1,20 +1,268 @@
 # Joan Multi-Agent Orchestration System (v4)
 
-## Tag-Driven Orchestration with Single Coordinator
+A multi-agent system that automates software development workflows using Claude Code. Agents handle requirements analysis, architecture planning, implementation, code review, and deployment—all orchestrated through your Joan project board.
 
-This version introduces **tag-based state transitions** (no comment parsing), a **single coordinator** that dispatches workers, and **10x lower polling overhead**. Combined with git worktrees for parallel development and automatic idle shutdown.
+---
 
-### What's New in v4
+## 🚀 Quick Start (5 Minutes)
 
-| Feature | v3 | v4 |
-|---------|-----|-----|
-| Orchestration | N agents poll independently | Single coordinator dispatches workers |
-| State triggers | Comment parsing (@approve-plan) | Tag-based (Plan-Approved tag) |
-| Human workflow | Add comments | Add tags in Joan UI |
-| Polling overhead | N polls per interval | 1 poll per interval |
-| Worker lifetime | Continuous loops | Single-pass (exit after task) |
+### Prerequisites
 
-## Architecture
+| Requirement | Notes |
+|-------------|-------|
+| **Claude Code** | Latest version ([install guide](https://docs.anthropic.com/claude-code)) |
+| **Git** | 2.x+ with push access to your repository |
+| **Joan Account** | With a project created and Joan MCP server configured |
+
+> **Joan MCP**: The agents communicate with Joan via MCP. Ensure your Joan MCP server is configured in `~/.claude/mcp.json` before proceeding.
+
+### Step 1: Clone the Repository
+
+```bash
+git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
+```
+
+### Step 2: Create Symlinks (Global Installation)
+
+```bash
+# Create Claude Code directories
+mkdir -p ~/.claude/commands
+
+# Link agent definitions and commands
+ln -s ~/joan-agents/.claude/commands/agents ~/.claude/commands/agents
+ln -s ~/joan-agents/.claude/agents ~/.claude/agents
+
+# Link system instructions (choose one):
+
+# Option A: Symlink if you don't have an existing CLAUDE.md
+ln -sf ~/joan-agents/.claude/CLAUDE.md ~/.claude/CLAUDE.md
+
+# Option B: Include in existing CLAUDE.md (add this line to your file)
+# {{~/joan-agents/.claude/CLAUDE.md}}
+```
+
+### Step 3: Initialize Your Project
+
+```bash
+cd ~/your-project
+claude
+
+# In Claude Code:
+> /agents:init
+```
+
+The initialization wizard will:
+- ✅ Connect to your Joan project
+- ✅ Configure agent settings (model, polling interval, dev count)
+- ✅ Auto-create required Kanban columns
+- ✅ Auto-create all workflow tags
+- ✅ **Configure bash permissions** for autonomous operation
+- ✅ Generate `.joan-agents.json` in your project
+
+### Step 4: Ensure `develop` Branch Exists
+
+```bash
+git checkout -b develop main
+git push -u origin develop
+```
+
+### Step 5: Launch Agents
+
+```bash
+# In Claude Code:
+> /agents:start --loop    # Continuous operation (recommended)
+> /agents:status          # Check status anytime
+```
+
+**That's it!** Your agents are now monitoring your Joan board.
+
+---
+
+## 📋 Setup Checklist
+
+```
+☐ Claude Code installed
+☐ Git installed with push access
+☐ Joan account with project created
+☐ Joan MCP server configured in ~/.claude/mcp.json
+
+☐ Repository cloned to ~/joan-agents
+☐ Symlinks created in ~/.claude/
+☐ /agents:init completed for your project
+☐ develop branch exists and pushed
+☐ /agents:start --loop running
+```
+
+---
+
+## 📖 Detailed Setup Guide
+
+For comprehensive setup instructions, see:
+- **[Global Installation Guide](shared/joan-shared-specs/docs/joan-agents/global-installation.md)** - Recommended approach
+- **[Full Setup Guide](shared/joan-shared-specs/docs/joan-agents/setup.md)** - All configuration options
+- **[Troubleshooting](shared/joan-shared-specs/docs/joan-agents/troubleshooting.md)** - Common issues
+
+### Alternative: Per-Project Installation
+
+If you prefer to copy files instead of symlinking:
+
+```bash
+cd /path/to/your/project
+
+# Copy agent definitions
+cp -r ~/joan-agents/.claude/agents .claude/agents
+cp -r ~/joan-agents/.claude/commands .claude/commands
+cp ~/joan-agents/.claude/CLAUDE.md .claude/CLAUDE.md
+
+# Initialize and run
+claude
+> /agents:init
+> /agents:start --loop
+```
+
+### Joan MCP Configuration
+
+Add to `~/.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "joan": {
+      "command": "node",
+      "args": ["/path/to/joan-mcp-server/index.js"],
+      "env": {
+        "JOAN_API_URL": "https://your-joan-instance.com/api",
+        "JOAN_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+### Configuration File: `.joan-agents.json`
+
+Created by `/agents:init`, this file controls agent behavior:
+
+```json
+{
+  "projectId": "uuid-from-joan",
+  "projectName": "My Project",
+  "settings": {
+    "model": "opus",
+    "pollingIntervalMinutes": 10,
+    "maxIdlePolls": 6
+  },
+  "agents": {
+    "businessAnalyst": { "enabled": true },
+    "architect": { "enabled": true },
+    "reviewer": { "enabled": true },
+    "ops": { "enabled": true },
+    "devs": { "enabled": true, "count": 2 }
+  }
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `model` | `opus` | Claude model: `opus`, `sonnet`, or `haiku` |
+| `pollingIntervalMinutes` | `10` | Minutes between polls when idle |
+| `maxIdlePolls` | `6` | Idle polls before auto-shutdown (~1 hour) |
+| `devs.count` | `2` | Number of parallel dev workers |
+
+### Bash Permissions (Auto-Configured)
+
+`/agents:init` creates `.claude/settings.local.json` with permissions for autonomous operation:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git worktree:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(git push:*)",
+      "Bash(npm install:*)",
+      "Bash(npm test:*)",
+      "mcp__joan__*",
+      "mcp__github__*"
+    ]
+  }
+}
+```
+
+This prevents permission prompts from interrupting the agent loop. The file is git-ignored and local to your machine.
+
+---
+
+## 🔧 Commands
+
+```bash
+# Initialize project configuration
+/agents:init
+
+# Run coordinator (single pass)
+/agents:start
+/agents:dispatch
+
+# Run coordinator (continuous - recommended)
+/agents:start --loop
+/agents:dispatch --loop
+
+# Extended idle threshold (e.g., 2 hours)
+/agents:start --loop --max-idle=12
+
+# Check agent status
+/agents:status
+
+# Change model for all agents
+/agents:model
+```
+
+### Shell Scripts (macOS)
+
+```bash
+chmod +x ~/joan-agents/*.sh
+
+# iTerm2 (opens tabs)
+~/joan-agents/start-agents-iterm.sh [--max-idle=N]
+
+# Terminal.app
+~/joan-agents/start-agents.sh [--max-idle=N]
+
+# Stop agents
+~/joan-agents/stop-agents.sh
+```
+
+---
+
+## 🏗️ Architecture
+
+### Tag-Driven Orchestration
+
+v4 uses **tag-based state transitions** instead of comment parsing. A single coordinator polls Joan once per interval and dispatches single-pass workers.
+
+```
+Coordinator ────► poll Joan ────► dispatch workers ────► sleep ────► repeat
+     │
+     ├──► spawn BA-worker (task X)
+     ├──► spawn Architect-worker (task Y)
+     ├──► spawn Dev-worker (task Z)
+     ├──► spawn Reviewer-worker (task W)
+     └──► spawn Ops-worker (task V)
+```
+
+### Agents
+
+| Agent | Role |
+|-------|------|
+| **Business Analyst** | Evaluates requirements, asks clarifying questions |
+| **Architect** | Creates implementation plans with sub-tasks |
+| **Dev** (×N) | Claims tasks, implements in worktrees, creates PRs |
+| **Reviewer** | Code review, quality gate, approves or requests rework |
+| **Ops** | Merges to develop, tracks deployments |
+
+### Parallel Development with Worktrees
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -35,202 +283,122 @@ This version introduces **tag-based state transitions** (no comment parsing), a 
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## What Changed
+---
 
-| Aspect | v1-v2 | v3 | v4 |
-|--------|-------|-----|-----|
-| Development agents | Varied | N Devs + Reviewer | N Devs + Reviewer |
-| Orchestration | N/A | N independent loops | Single coordinator |
-| State triggers | Manual | Comment parsing | Tag-based |
-| Polling | N agents polling | N agents polling | 1 coordinator polls |
-| Worker lifetime | Continuous | Continuous | Single-pass |
-| Token usage | High | High | ~10x lower |
+## 📊 Workflow
 
-## Agents
-
-| Agent | Count | Role |
-|-------|-------|------|
-| Business Analyst | 1 | Evaluates requirements |
-| Architect | 1 | Creates implementation plans |
-| **Dev** | **N** | Claims task → creates worktree → implements everything → creates PR → cleans up |
-| **Reviewer** | **1** | Code review, quality gate, approves or requests rework |
-| Ops | 1 | Merges approved PRs to develop, tracks deploys |
-
-## Quick Start
-
-### Global Installation (Recommended)
-
-Install once, use in all projects. Updates via `git pull`.
-
-```bash
-# 1. Clone to a permanent location
-git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
-
-# 2. Create symlinks to global Claude Code config
-mkdir -p ~/.claude/commands
-ln -s ~/joan-agents/.claude/commands/agents ~/.claude/commands/agents
-ln -s ~/joan-agents/.claude/agents ~/.claude/agents
-ln -sf ~/joan-agents/.claude/CLAUDE.md ~/.claude/CLAUDE.md
-
-# 3. Initialize any project
-cd ~/your-project
-claude
-> /agents:init    # Creates .joan-agents.json config and tags
-
-# 4. Run agents
-> /agents:start --loop
-```
-
-See `shared/joan-shared-specs/docs/joan-agents/global-installation.md` for detailed instructions.
-
-### Per-Project Installation
-
-Copy files to each project individually:
-
-```bash
-cp -r joan-agents/.claude/agents/ your-project/.claude/agents/
-cp -r joan-agents/.claude/commands/ your-project/.claude/commands/
-cp joan-agents/.claude/CLAUDE.md your-project/.claude/CLAUDE.md
-
-cd your-project
-claude
-> /agents:init
-> /agents:start --loop
-```
-
-### Shell Scripts (iTerm2)
-
-For launching agents in separate terminal tabs:
-
-```bash
-chmod +x ~/joan-agents/*.sh
-~/joan-agents/start-agents-iterm.sh
-```
-
-## How Devs Operate
-
-The coordinator dispatches Dev workers, each following this cycle:
+Tasks flow through these columns (auto-created by `/agents:init`):
 
 ```
-1. RECEIVE  → Coordinator assigns task (already claimed)
-2. WORKTREE → git worktree add ../worktrees/{task-id} {branch}
-3. IMPLEMENT → Execute DES-*, DEV-*, TEST-* in order
-4. PR       → Create pull request
-5. CLEANUP  → Remove worktree, move task to Review
-6. EXIT     → Worker exits, coordinator dispatches next
+To Do → Analyse → Development → Review → Deploy → Done
+  │        │          │           │        │
+  BA    Architect    Dev      Reviewer   Ops
 ```
-
-Devs are single-pass workers: they process one task and exit.
-
-## Directory Structure
-
-```
-your-project/                    # Main repo
-├── .claude/
-│   ├── agents/
-│   │   ├── coordinator.md       # Central orchestrator
-│   │   ├── business-analyst.md  # BA subagent
-│   │   ├── architect.md         # Architect subagent
-│   │   ├── developer.md         # Dev subagent
-│   │   ├── reviewer.md          # Reviewer subagent
-│   │   └── ops.md               # Ops subagent
-│   └── commands/agents/
-│       ├── init.md              # Initialize project
-│       ├── start.md             # Start coordinator
-│       ├── dispatch.md          # Alias for start
-│       ├── ba-worker.md         # BA single-pass worker
-│       ├── architect-worker.md  # Architect single-pass worker
-│       ├── dev-worker.md        # Dev single-pass worker
-│       ├── reviewer-worker.md   # Reviewer single-pass worker
-│       └── ops-worker.md        # Ops single-pass worker
-├── src/
-└── ...
-
-../worktrees/                    # Created automatically
-├── {task-id-1}/                 # Dev 1's workspace
-├── {task-id-2}/                 # Dev 2's workspace
-└── ...
-```
-
-## Resource Recommendations
-
-| Devs | Terminal Windows | RAM | Use Case |
-|------|------------------|-----|----------|
-| 2 | 6 | 4-6 GB | Light workload |
-| 4 | 8 | 6-10 GB | Standard (recommended) |
-| 6 | 10 | 10-14 GB | Heavy workload |
-
-## Workflow (Tag-Based)
-
-Canonical workflow specs live in `shared/joan-shared-specs/docs/workflow/agentic-workflow.md`
-and `shared/joan-shared-specs/docs/human-interface/human-inbox.md`.
-
-1. **To Do** → BA evaluates, asks questions if unclear
-2. **Analyse** → Architect creates plan → **you add `Plan-Approved` tag**
-3. **Development** → Coordinator assigns devs, they implement in worktrees, create PRs
-4. **Review** → Reviewer validates code, merges develop into feature
-5. **Review** (approved) → Reviewer adds `Review-Approved` tag → **you add `Ops-Ready`** → Ops merges to develop
-6. **Review** (rejected) → Reviewer adds `Rework-Requested` tag → back to Development
-7. **Deploy** → Tracking only - awaits production deployment
-8. **Done** → Ops moves after production deploy
 
 ### Human Actions (Tag-Based)
 
-| When | Action |
-|------|--------|
-| To approve a plan | Add `Plan-Approved` |
-| To reject a plan | Add `Plan-Rejected` |
-| After answering BA questions | Add `Clarification-Answered` |
-| To approve a merge | Add `Ops-Ready` |
-| To recover a failed task | Remove `Implementation-Failed`/`Worktree-Failed`, ensure `Planned` exists |
+| When | Add This Tag |
+|------|--------------|
+| Approve a plan | `Plan-Approved` |
+| Reject a plan | `Plan-Rejected` |
+| Answer BA questions | `Clarification-Answered` |
+| Approve merge to develop | `Ops-Ready` |
+| Recover failed task | Remove `Implementation-Failed`, ensure `Planned` exists |
 
-### ALS Comments (Breadcrumbs)
+### Quality Gates
 
-All manual comments should use ALS blocks for consistency. Tags still drive behavior.
-See `shared/joan-shared-specs/docs/workflow/als-spec.md` for the format.
+- **BA → Architect**: Requirements must be clear
+- **Architect → Dev**: Plan must be approved by human
+- **Dev → Reviewer**: All sub-tasks checked off
+- **Reviewer → Ops**: Code review passed, tests green
+- **Ops → Done**: Deployed to production
 
-## Commands
+---
 
-```bash
-# Run coordinator (single pass)
-/agents:start
-/agents:dispatch
+## 📁 Directory Structure
 
-# Run coordinator (continuous - recommended)
-/agents:start --loop
-/agents:dispatch --loop
+```
+~/.claude/
+├── CLAUDE.md                    # Global instructions
+├── agents/ → ~/joan-agents/.claude/agents/
+└── commands/
+    └── agents/ → ~/joan-agents/.claude/commands/agents/
 
-# Extended idle threshold (2 hours at 10-min intervals)
-/agents:start --loop --max-idle=12
+~/joan-agents/                   # Source repository
+├── .claude/
+│   ├── agents/                  # Agent definitions
+│   ├── commands/agents/         # Slash commands
+│   └── CLAUDE.md                # System documentation
+├── shared/
+│   └── joan-shared-specs/       # Shared specifications
+└── README.md
+
+~/your-project/                  # Any project using agents
+├── .joan-agents.json            # Project config (created by /agents:init)
+└── ...
+
+../worktrees/                    # Created automatically by devs
+├── {task-id-1}/
+├── {task-id-2}/
+└── ...
 ```
 
-### Shell Scripts
+---
+
+## 💾 Resource Recommendations
+
+| Dev Workers | RAM | Use Case |
+|-------------|-----|----------|
+| 2 | 4-6 GB | Light workload |
+| 4 | 6-10 GB | Standard (recommended) |
+| 6 | 10-14 GB | Heavy workload |
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Setup Guide](shared/joan-shared-specs/docs/joan-agents/setup.md) | Full installation walkthrough |
+| [Global Installation](shared/joan-shared-specs/docs/joan-agents/global-installation.md) | Symlink-based setup |
+| [Troubleshooting](shared/joan-shared-specs/docs/joan-agents/troubleshooting.md) | Common issues and fixes |
+| [Best Practices](shared/joan-shared-specs/docs/joan-agents/best-practices.md) | Workflow optimization tips |
+| [Architecture](shared/joan-shared-specs/docs/joan-agents/architecture.md) | System design details |
+| [Agentic Workflow](shared/joan-shared-specs/docs/workflow/agentic-workflow.md) | Task lifecycle spec |
+| [ALS Syntax](shared/joan-shared-specs/docs/workflow/als-spec.md) | Comment format for agents |
+| [Human Inbox](shared/joan-shared-specs/docs/human-interface/human-inbox.md) | Human interaction patterns |
+
+---
+
+## ✨ Key Benefits
+
+- **Tag-Based Orchestration** - Deterministic state machine, no comment parsing
+- **10x Lower Overhead** - Single coordinator vs N independent polling agents
+- **True Parallelism** - N features developed simultaneously in worktrees
+- **No Conflicts** - Each dev has isolated workspace
+- **Single-Pass Workers** - Stateless workers, easy to retry on failure
+- **Quality Gate** - Automated code review before merge
+- **Auto-Cleanup** - Worktrees created and removed automatically
+
+---
+
+## 🔄 Updating
 
 ```bash
-./start-agents-iterm.sh [--max-idle=N]
-./start-agents.sh [--max-idle=N]
-./stop-agents.sh
+cd ~/joan-agents
+git pull
 ```
 
-## Documentation
+Changes are immediately available in all projects via symlinks.
 
-See `shared/joan-shared-specs/docs/joan-agents/README.md` for:
-- Architecture - `shared/joan-shared-specs/docs/joan-agents/architecture.md`
-- Setup Guide - `shared/joan-shared-specs/docs/joan-agents/setup.md`
-- Global Installation - `shared/joan-shared-specs/docs/joan-agents/global-installation.md`
-- Troubleshooting - `shared/joan-shared-specs/docs/joan-agents/troubleshooting.md`
-- Best Practices - `shared/joan-shared-specs/docs/joan-agents/best-practices.md`
-- Orchestration Spec - `shared/joan-shared-specs/docs/orchestration-spec.md`
-- Human Inbox Spec - `shared/joan-shared-specs/docs/human-interface/human-inbox.md`
-- ALS Spec - `shared/joan-shared-specs/docs/workflow/als-spec.md`
-- [Shared Specs](shared/joan-shared-specs) - Cross-repo agentic workflow alignment
+---
 
-## Key Benefits
+## What's New in v4
 
-✅ **Tag-Based Orchestration** - Deterministic state machine, no comment parsing
-✅ **10x Lower Overhead** - Single coordinator vs N independent polling agents
-✅ **True Parallelism** - N features developed simultaneously in worktrees
-✅ **No Conflicts** - Each dev has isolated workspace
-✅ **Single-Pass Workers** - Stateless workers, easy to retry on failure
-✅ **Quality Gate** - Automated code review before merge
-✅ **Clean** - Worktrees auto-created and auto-removed
+| Feature | v3 | v4 |
+|---------|-----|-----|
+| Orchestration | N agents poll independently | Single coordinator dispatches workers |
+| State triggers | Comment parsing (@approve-plan) | Tag-based (Plan-Approved tag) |
+| Human workflow | Add comments | Add tags in Joan UI |
+| Polling overhead | N polls per interval | 1 poll per interval |
+| Worker lifetime | Continuous loops | Single-pass (exit after task) |

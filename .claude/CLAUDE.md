@@ -8,7 +8,10 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 # 1. Initialize configuration (interactive)
 /agents:init
 
-# 2. Run coordinator
+# 2. Check current status
+/agents:status             # Dashboard view of queues and workers
+
+# 3. Run coordinator
 /agents:start              # Single pass
 /agents:start --loop       # Continuous operation (recommended)
 

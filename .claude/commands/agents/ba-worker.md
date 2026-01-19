@@ -1,7 +1,7 @@
 ---
 description: Single-pass BA worker dispatched by coordinator
 argument-hint: --task=<task-id> --mode=<evaluate|reevaluate>
-allowed-tools: mcp__joan__*, Read, Grep, Glob
+allowed-tools: mcp__joan__*, Read, Grep, Glob, Task
 ---
 
 # BA Worker (Single-Pass)
