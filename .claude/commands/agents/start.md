@@ -43,6 +43,13 @@ Set these variables from config:
 - `LOOP_MODE` = true if --loop flag present
 - `DEV_COUNT` = config.agents.devs.count
 
+Enabled flags (all default to true):
+- `BA_ENABLED` = config.agents.businessAnalyst.enabled
+- `ARCHITECT_ENABLED` = config.agents.architect.enabled
+- `REVIEWER_ENABLED` = config.agents.reviewer.enabled
+- `OPS_ENABLED` = config.agents.ops.enabled
+- `DEVS_ENABLED` = config.agents.devs.enabled
+
 Launch the coordinator using the Task tool:
 
 ```
@@ -60,6 +67,13 @@ Task tool call:
     - LOOP_MODE: {LOOP_MODE}
     - DEV_COUNT: {DEV_COUNT}
     - MODEL: {MODEL}
+
+    Enabled Agents:
+    - BA_ENABLED: {BA_ENABLED}
+    - ARCHITECT_ENABLED: {ARCHITECT_ENABLED}
+    - REVIEWER_ENABLED: {REVIEWER_ENABLED}
+    - OPS_ENABLED: {OPS_ENABLED}
+    - DEVS_ENABLED: {DEVS_ENABLED}
 
     Begin coordination now.
 ```

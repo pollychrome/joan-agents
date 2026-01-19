@@ -30,6 +30,13 @@ MAX_IDLE        - Consecutive empty polls before shutdown
 LOOP_MODE       - true = poll continuously, false = single pass
 DEV_COUNT       - Number of dev workers available
 MODEL           - Claude model for subagent calls
+
+# Enabled flags (skip dispatch for disabled agents)
+BA_ENABLED       - Whether to dispatch BA workers
+ARCHITECT_ENABLED - Whether to dispatch Architect workers
+REVIEWER_ENABLED  - Whether to dispatch Reviewer workers
+OPS_ENABLED       - Whether to dispatch Ops workers
+DEVS_ENABLED      - Whether to dispatch Dev workers
 ```
 
 ## Initialization
@@ -38,6 +45,10 @@ MODEL           - Claude model for subagent calls
 1. Report: "Coordinator started for {PROJECT_NAME}"
    Report: "Mode: {LOOP_MODE ? 'Loop' : 'Single pass'}"
    Report: "Dev workers available: {DEV_COUNT}"
+   Report: "Enabled agents: {list enabled agents}"
+
+   # Example: "Enabled agents: BA, Architect, Reviewer, Ops, Devs"
+   # Or if some disabled: "Enabled agents: Architect, Devs (BA, Reviewer, Ops disabled)"
 
 2. Initialize state:
    IDLE_COUNT = 0
@@ -239,7 +250,7 @@ Report queue sizes:
 DISPATCHED = 0
 
 # 4a: Dispatch BA worker (one task)
-IF BA_QUEUE.length > 0:
+IF BA_ENABLED AND BA_QUEUE.length > 0:
   item = BA_QUEUE.shift()
   Dispatch BA worker:
     Task tool call:
@@ -249,7 +260,7 @@ IF BA_QUEUE.length > 0:
   DISPATCHED++
 
 # 4b: Dispatch Architect worker (one task)
-IF ARCHITECT_QUEUE.length > 0:
+IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
   item = ARCHITECT_QUEUE.shift()
   Dispatch Architect worker:
     Task tool call:
@@ -259,9 +270,10 @@ IF ARCHITECT_QUEUE.length > 0:
   DISPATCHED++
 
 # 4c: Dispatch Dev workers (one per available dev)
-available_devs = find_available_devs()  # Devs 1..DEV_COUNT not currently claimed
+IF DEVS_ENABLED:
+  available_devs = find_available_devs()  # Devs 1..DEV_COUNT not currently claimed
 
-FOR EACH dev_id IN available_devs:
+  FOR EACH dev_id IN available_devs:
   IF DEV_QUEUE.length > 0:
     item = DEV_QUEUE.shift()
 
@@ -285,7 +297,7 @@ FOR EACH dev_id IN available_devs:
       Continue to next task
 
 # 4d: Dispatch Reviewer worker (one task)
-IF REVIEWER_QUEUE.length > 0:
+IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
   item = REVIEWER_QUEUE.shift()
   Dispatch Reviewer worker:
     Task tool call:
@@ -295,7 +307,7 @@ IF REVIEWER_QUEUE.length > 0:
   DISPATCHED++
 
 # 4e: Dispatch Ops worker (one task)
-IF OPS_QUEUE.length > 0:
+IF OPS_ENABLED AND OPS_QUEUE.length > 0:
   item = OPS_QUEUE.shift()
   Dispatch Ops worker:
     Task tool call:

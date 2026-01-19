@@ -28,6 +28,13 @@ POLL_INTERVAL = config.settings.pollingIntervalMinutes (default: 10)
 MAX_IDLE = --max-idle override or config.settings.maxIdlePolls (default: 6)
 MODEL = config.settings.model (default: "opus")
 DEV_COUNT = config.agents.devs.count (default: 2)
+
+# Enabled flags (all default to true)
+BA_ENABLED = config.agents.businessAnalyst.enabled
+ARCHITECT_ENABLED = config.agents.architect.enabled
+REVIEWER_ENABLED = config.agents.reviewer.enabled
+OPS_ENABLED = config.agents.ops.enabled
+DEVS_ENABLED = config.agents.devs.enabled
 ```
 
 If config missing, report error and exit.
@@ -56,6 +63,13 @@ Task tool call:
     - LOOP_MODE: {LOOP_MODE}
     - DEV_COUNT: {DEV_COUNT}
     - MODEL: {MODEL}
+
+    Enabled Agents:
+    - BA_ENABLED: {BA_ENABLED}
+    - ARCHITECT_ENABLED: {ARCHITECT_ENABLED}
+    - REVIEWER_ENABLED: {REVIEWER_ENABLED}
+    - OPS_ENABLED: {OPS_ENABLED}
+    - DEVS_ENABLED: {DEVS_ENABLED}
 
     Begin coordination now.
 ```
