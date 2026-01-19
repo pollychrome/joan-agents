@@ -178,7 +178,7 @@ Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual in
 **IMPORTANT:** In v4, comments are WRITE-ONLY breadcrumbs. Agents never parse comments to determine state - they use tags exclusively.
 
 All comments use ALS (Agentic Language Syntax) blocks for auditability.
-See `shared/joan-shared-specs/docs/als-spec.md` for the full format and examples.
+See `shared/joan-shared-specs/docs/workflow/als-spec.md` for the full format and examples.
 
 ### Human Actions (Tag-Based)
 
@@ -284,7 +284,7 @@ To Do → Analyse → Development → Review → Deploy → Done
 1. **To Do** → BA evaluates → adds `Ready` tag → moves to Analyse
 2. **Analyse** (Ready) → Architect creates plan → removes `Ready`, adds `Plan-Pending-Approval`
 3. **Analyse** (Plan-Pending-Approval) → **Human adds `Plan-Approved` tag** OR **Human adds `Plan-Rejected` tag**
-4. **Analyse** (Plan-Approved) → Architect finalizes → removes `Plan-Pending-Approval` + `Plan-Approved`, adds `Planned` → moves to Development
+4. **Analyse** (Plan-Pending-Approval + Plan-Approved) → Architect finalizes → removes `Plan-Pending-Approval` + `Plan-Approved`, adds `Planned` → moves to Development
 4b. **Analyse** (Plan-Rejected) → Architect revises plan → removes `Plan-Rejected`, keeps `Plan-Pending-Approval` → awaits re-approval
 5. **Development** (Planned) → Coordinator claims with `Claimed-Dev-N` → dispatches Dev worker
 6. **Development** → Dev implements → PR → removes `Claimed-Dev-N` + `Planned`, adds completion tags → moves to Review

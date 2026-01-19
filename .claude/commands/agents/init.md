@@ -103,12 +103,14 @@ The workflow uses tags for agent communication. Create any missing tags:
 | `Clarification-Answered` | #10B981 (emerald) | Human answered BA questions (tag-trigger) |
 | `Plan-Pending-Approval` | #8B5CF6 (purple) | Plan created, awaiting human approval |
 | `Plan-Approved` | #6366F1 (indigo) | Human approved plan (tag-trigger) |
+| `Plan-Rejected` | #F43F5E (rose) | Human rejected plan (tag-trigger) |
 | `Planned` | #3B82F6 (blue) | Plan approved, available for devs |
 | `Dev-Complete` | #22C55E (green) | All DEV sub-tasks done |
 | `Design-Complete` | #3B82F6 (blue) | All DES sub-tasks done |
 | `Test-Complete` | #8B5CF6 (purple) | All TEST sub-tasks pass |
 | `Review-In-Progress` | #F59E0B (amber) | Reviewer is actively reviewing |
 | `Review-Approved` | #14B8A6 (teal) | Reviewer approved for merge (tag-trigger) |
+| `Ops-Ready` | #06B6D4 (cyan) | Human approved merge to develop (tag-trigger) |
 | `Rework-Requested` | #EF4444 (red) | Reviewer found issues, needs fixes |
 | `Rework-Complete` | #84CC16 (lime) | Dev finished rework (tag-trigger) |
 | `Merge-Conflict` | #F97316 (orange) | Merge conflict detected |
@@ -285,36 +287,39 @@ Ask: "Ready to learn how to run agents? (Continue / Ask a question)"
 
 ```
 ╔═══════════════════════════════════════════════════════════════╗
-║  RUNNING AGENTS                                               ║
+║  RUNNING AGENTS (Coordinator Mode)                            ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-SINGLE PASS (process once, then exit):
-─────────────────────────────────────
-  /agents:ba              Run BA once
-  /agents:architect       Run Architect once
-  /agents:dev             Run Dev #1 once
-  /agents:dev 2           Run Dev #2 once
-  /agents:reviewer        Run Reviewer once
-  /agents:ops             Run Ops once
-  /agents:start all       Run all agents once
+The coordinator polls Joan ONCE per interval and dispatches
+single-pass workers as needed. Much more efficient than
+running agents independently.
 
-LOOP MODE (continuous until idle):
+RECOMMENDED - DISPATCHER MODE:
 ─────────────────────────────────────
-  /agents:ba --loop       BA polls continuously
-  /agents:dev 1 --loop    Dev #1 polls continuously
-  /agents:start all --loop  All agents poll continuously
+  /agents:dispatch           Single pass (dispatch once, exit)
+  /agents:dispatch --loop    Continuous (recommended for production)
+  /agents:start --loop       Equivalent to dispatch --loop
+
+WHAT HAPPENS:
+─────────────────────────────────────
+  1. Coordinator polls Joan (one API call)
+  2. Builds priority queues from task tags
+  3. Dispatches workers for available tasks:
+     - BA-worker for To Do tasks
+     - Architect-worker for Ready tasks
+     - Dev-worker for Planned tasks (claims atomically)
+     - Reviewer-worker for Review tasks
+     - Ops-worker for approved merges
+  4. Workers complete and exit
+  5. Coordinator sleeps, then repeats (in loop mode)
 
 Loop mode auto-shuts down after {maxIdlePolls} empty polls
 (configured to {calculated time} with current settings)
 
 PARALLEL DEVELOPMENT:
 ─────────────────────────────────────
-Run multiple dev agents in separate terminals:
-
-  Terminal 1: /agents:dev 1 --loop
-  Terminal 2: /agents:dev 2 --loop
-
-Each dev works in isolated git worktrees - no conflicts!
+The coordinator automatically manages {dev_count} dev workers.
+Each works in isolated git worktrees - no conflicts!
 ```
 
 Ask: "Ready to see the human touchpoints? (Continue / Ask a question)"
@@ -351,15 +356,21 @@ All human actions are done via TAGS in Joan UI (not comments):
 TAG QUICK REFERENCE (your actions):
 ─────────────────────────────────────
   Plan-Approved         Add to approve architect's plan
+  Plan-Rejected         Add to reject architect's plan (revise)
   Clarification-Answered Add after answering BA questions
+  Ops-Ready             Add to approve merge to develop
 
 AGENT-MANAGED TAGS (for your awareness):
 ─────────────────────────────────────
   Ready                 BA validated requirements
   Planned               Plan approved, ready for devs
-  Review-Approved       Reviewer approved code (→ Ops merges)
+  Review-Approved       Reviewer approved code
   Rework-Complete       Dev finished rework (→ re-review)
   Rework-Requested      Reviewer found issues
+
+MERGE REQUIRES BOTH (dual-tag gate):
+─────────────────────────────────────
+  Review-Approved (agent) + Ops-Ready (you) → Ops merges
 ```
 
 ### Section 5: Quick Start
@@ -374,14 +385,15 @@ Ready to go! Here's your workflow:
 1. Create tasks in Joan's "To Do" column
 
 2. Start agents:
-   /agents:start all --loop    (or run individually)
+   /agents:dispatch --loop    (recommended)
 
 3. Watch tasks flow:
    To Do → BA adds "Ready" tag
    Analyse → Architect creates plan → YOU add "Plan-Approved" tag
    Development → Dev implements in worktree → creates PR
-   Review → Reviewer checks code → adds Review-Approved or Rework-Requested
-   Deploy → Ops merges to develop
+   Review → Reviewer checks code → adds "Review-Approved"
+   Review → YOU add "Ops-Ready" tag to approve merge
+   Deploy → Ops merges to develop (requires BOTH tags)
    Done!
 
 4. Stop agents:
@@ -399,16 +411,13 @@ After tutorial (or if skipped), show:
 
 ```
 Start agents with:
-  /agents:ba              - Business Analyst
-  /agents:architect       - Architect
-  /agents:dev [N]         - Dev worker N
-  /agents:reviewer        - Code Reviewer
-  /agents:ops             - Ops
-  /agents:start all       - All enabled agents
-
-Add --loop for continuous operation.
+  /agents:dispatch --loop   - Recommended: continuous coordinator
+  /agents:dispatch          - Single pass (dispatch once, exit)
+  /agents:start --loop      - Equivalent to dispatch --loop
 
 Change model anytime with: /agents:model
+
+Onboard existing backlog: /agents:clean-project
 ```
 
 Begin the initialization now.

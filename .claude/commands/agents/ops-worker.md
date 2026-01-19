@@ -15,7 +15,7 @@ Handle integration operations for a single task, then exit.
   - `merge`: Task has Review-Approved + Ops-Ready, merge PR to develop
   - `rework`: Task has Rework-Requested in Review column, move back to Development
 
-Human approve merge adds Ops-Ready and keeps Review-Approved; both tags should be present.
+Human approve merge adds Ops-Ready and keeps Review-Approved. BOTH tags are REQUIRED to trigger merge.
 
 ## Configuration
 

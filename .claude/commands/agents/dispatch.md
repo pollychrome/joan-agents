@@ -73,15 +73,16 @@ Task tool call:
 /agents:dispatch --loop --max-idle=12
 ```
 
-## Comparison with Legacy Mode
+## Why Coordinator Mode?
 
-| Aspect | Coordinator (dispatch) | Legacy (start all) |
-|--------|------------------------|-------------------|
-| Polling | 1 agent polls | N agents poll independently |
-| Token usage | Lower | Higher |
-| Comment parsing | None (tags only) | Parses @approve-plan, @rework |
-| State management | Tag-based | Comment-based |
-| Worker lifetime | Single-pass | Continuous per-agent loops |
+| Aspect | v4 Coordinator |
+|--------|----------------|
+| Polling | 1 agent polls (not N agents) |
+| Token usage | ~10x lower overhead |
+| State triggers | Tags only (deterministic) |
+| Worker lifetime | Single-pass (stateless, easy retry) |
+
+> **Note:** v4 is purely tag-based. Legacy comment parsing (`@approve-plan`, `@rework`) is no longer supported.
 
 **Recommendation:** Use `/agents:dispatch --loop` for production workflows.
 

@@ -182,7 +182,7 @@ your-project/                    # Main repo
 ### ALS Comments (Breadcrumbs)
 
 All manual comments should use ALS blocks for consistency. Tags still drive behavior.
-See `shared/joan-shared-specs/docs/als-spec.md` for the format.
+See `shared/joan-shared-specs/docs/workflow/als-spec.md` for the format.
 
 ## Commands
 
@@ -217,7 +217,7 @@ See `shared/joan-shared-specs/docs/joan-agents/README.md` for:
 - Best Practices - `shared/joan-shared-specs/docs/joan-agents/best-practices.md`
 - Orchestration Spec - `shared/joan-shared-specs/docs/orchestration-spec.md`
 - Human Inbox Spec - `shared/joan-shared-specs/docs/human-inbox.md`
-- ALS Spec - `shared/joan-shared-specs/docs/als-spec.md`
+- ALS Spec - `shared/joan-shared-specs/docs/workflow/als-spec.md`
 - [Shared Specs](shared/joan-shared-specs) - Cross-repo agentic workflow alignment
 
 ## Key Benefits

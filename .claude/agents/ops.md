@@ -54,7 +54,7 @@ If the dispatcher provides a TASK_ID in the prompt, process only that task and e
 ### Phase 2: Review Column - Merge on Review-Approved + Ops-Ready
 
 1. **Poll Joan**: Fetch all tasks in "Review" column for project `$PROJECT`
-2. **For each task with Review-Approved AND Ops-Ready tags**:
+2. **For each task with BOTH `Review-Approved` AND `Ops-Ready` tags** (both REQUIRED):
    - Verify all subtasks complete
    - Verify CI passes
    - Merge PR to develop branch
