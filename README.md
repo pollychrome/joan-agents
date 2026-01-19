@@ -216,7 +216,7 @@ See `shared/joan-shared-specs/docs/joan-agents/README.md` for:
 - Troubleshooting - `shared/joan-shared-specs/docs/joan-agents/troubleshooting.md`
 - Best Practices - `shared/joan-shared-specs/docs/joan-agents/best-practices.md`
 - Orchestration Spec - `shared/joan-shared-specs/docs/orchestration-spec.md`
-- Human Inbox Spec - `shared/joan-shared-specs/docs/human-inbox.md`
+- Human Inbox Spec - `shared/joan-shared-specs/docs/human-interface/human-inbox.md`
 - ALS Spec - `shared/joan-shared-specs/docs/workflow/als-spec.md`
 - [Shared Specs](shared/joan-shared-specs) - Cross-repo agentic workflow alignment
 
