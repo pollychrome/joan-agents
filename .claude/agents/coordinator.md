@@ -246,26 +246,32 @@ Report queue sizes:
 
 ## Step 4: Dispatch Workers
 
+**IMPORTANT:** All workers run in background so coordinator can:
+1. Dispatch multiple worker types concurrently (BA + Architect + Devs + Reviewer + Ops)
+2. Continue to next poll without waiting for workers to complete
+
 ```
 DISPATCHED = 0
 
 # 4a: Dispatch BA worker (one task)
 IF BA_ENABLED AND BA_QUEUE.length > 0:
   item = BA_QUEUE.shift()
-  Dispatch BA worker:
+  Dispatch BA worker IN BACKGROUND:
     Task tool call:
       subagent_type: "business-analyst"
       model: MODEL
+      run_in_background: true
       prompt: "/agents:ba-worker --task={item.task.id} --mode={item.mode}"
   DISPATCHED++
 
 # 4b: Dispatch Architect worker (one task)
 IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
   item = ARCHITECT_QUEUE.shift()
-  Dispatch Architect worker:
+  Dispatch Architect worker IN BACKGROUND:
     Task tool call:
       subagent_type: "architect"
       model: MODEL
+      run_in_background: true
       prompt: "/agents:architect-worker --task={item.task.id} --mode={item.mode}"
   DISPATCHED++
 
@@ -284,10 +290,11 @@ IF DEVS_ENABLED:
     4. Verify claim succeeded (your tag present, no other Claimed-Dev-* tags)
 
     IF claim succeeded:
-      Dispatch Dev worker:
+      Dispatch Dev worker IN BACKGROUND:
         Task tool call:
           subagent_type: "implementation-worker"
           model: MODEL
+          run_in_background: true
           prompt: "/agents:dev-worker --task={item.task.id} --dev={dev_id} --mode={item.mode}"
       DISPATCHED++
 
@@ -299,24 +306,26 @@ IF DEVS_ENABLED:
 # 4d: Dispatch Reviewer worker (one task)
 IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
   item = REVIEWER_QUEUE.shift()
-  Dispatch Reviewer worker:
+  Dispatch Reviewer worker IN BACKGROUND:
     Task tool call:
       subagent_type: "code-reviewer"
       model: MODEL
+      run_in_background: true
       prompt: "/agents:reviewer-worker --task={item.task.id}"
   DISPATCHED++
 
 # 4e: Dispatch Ops worker (one task)
 IF OPS_ENABLED AND OPS_QUEUE.length > 0:
   item = OPS_QUEUE.shift()
-  Dispatch Ops worker:
+  Dispatch Ops worker IN BACKGROUND:
     Task tool call:
       subagent_type: "ops"
       model: MODEL
+      run_in_background: true
       prompt: "/agents:ops-worker --task={item.task.id} --mode={item.mode}"
   DISPATCHED++
 
-Report: "Dispatched {DISPATCHED} workers"
+Report: "Dispatched {DISPATCHED} workers (running in background)"
 ```
 
 ### Helper: find_available_devs()
@@ -341,9 +350,20 @@ RETURN available
 ## Step 5: Handle Idle / Exit
 
 ```
+# Calculate pending work (tasks waiting for human tags, not actionable by agents)
+PENDING_HUMAN = count tasks with:
+  - Plan-Pending-Approval (no Plan-Approved) → waiting for human approval
+  - Review-Approved (no Ops-Ready) → waiting for human merge approval
+  - Implementation-Failed or Worktree-Failed → waiting for human fix
+
 IF DISPATCHED == 0:
   IDLE_COUNT++
-  Report: "Idle poll #{IDLE_COUNT}/{MAX_IDLE} - no actionable tasks"
+
+  # Report status (informational only - NO questions, NO prompts)
+  Report: "Poll complete: dispatched 0 workers"
+  IF PENDING_HUMAN > 0:
+    Report: "  {PENDING_HUMAN} tasks awaiting human action in Joan UI"
+  Report: "  Idle count: {IDLE_COUNT}/{MAX_IDLE}"
 
   IF NOT LOOP_MODE:
     Report: "Single pass complete. Exiting."
@@ -354,16 +374,24 @@ IF DISPATCHED == 0:
     EXIT
 
   Report: "Sleeping {POLL_INTERVAL} minutes..."
+  # IMPORTANT: Actually wait - do NOT prompt user or ask questions
   Wait POLL_INTERVAL minutes
 
 ELSE:
   IDLE_COUNT = 0  # Reset on activity
+  Report: "Poll complete: dispatched {DISPATCHED} workers (running in background)"
+
+  IF LOOP_MODE:
+    # Fast re-poll when work was dispatched (don't wait full interval)
+    # This allows processing queues quickly while workers run in background
+    Report: "Re-polling in 30 seconds..."
+    Wait 30 seconds
 
 IF NOT LOOP_MODE:
   Report: "Single pass complete. Exiting."
   EXIT
 
-# Continue to next iteration
+# Continue IMMEDIATELY to next iteration - NO user prompts
 ```
 
 ---
@@ -389,8 +417,19 @@ IF NOT LOOP_MODE:
 
 ## Constraints
 
+**CRITICAL - Autonomous Operation:**
+- NEVER ask the user questions or prompt for input
+- NEVER offer choices like "Would you like me to..." or "Should I..."
+- NEVER pause to wait for user confirmation
+- Human interaction happens via TAGS in Joan UI, not via conversation
+- In loop mode: poll → dispatch → sleep → repeat (no interruptions)
+- Only exit when: (a) single-pass mode completes, or (b) max idle polls reached
+
+**Operational Rules:**
 - NEVER parse comments for triggers (tags only)
 - ALWAYS claim dev tasks before dispatching
 - Dispatch at most ONE worker per type per cycle (except devs)
 - Workers are single-pass - they exit after completing their task
 - Report all queue sizes and dispatch actions for observability
+- If tasks need human action (e.g., Plan-Approved tag), report status and continue polling
+- Tasks waiting for human tags are NOT "actionable" - don't count toward idle reset
