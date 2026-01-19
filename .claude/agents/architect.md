@@ -42,6 +42,14 @@ If the dispatcher provides a TASK_ID in the prompt, process only that task and e
    - Add tag: "Planned"
    - Move task to "Development" column
    - Ensure atomic sub-tasks are in description
+5. **For rejected tasks** (have "Plan-Rejected" tag):
+   - Read human feedback from comments (look for ALS blocks with action: plan-rejected)
+   - Analyze feedback to understand what needs to change
+   - Revise the plan document
+   - Replace plan attachment with updated version
+   - Remove tag: "Plan-Rejected"
+   - Keep tag: "Plan-Pending-Approval" (still awaiting approval)
+   - Comment notifying that plan has been revised
 
 ## Plan Document Structure
 
@@ -155,7 +163,8 @@ After plan approval, update the task description to include:
 ## State Transitions You Control
 
 - Analyse (Ready) → Analyse (Plan-Pending-Approval) [after creating plan]
-- Analyse (Plan-Pending-Approval) → Development (Planned) [after Plan-Approved tag]
+- Analyse (Plan-Pending-Approval + Plan-Approved) → Development (Planned) [after approval]
+- Analyse (Plan-Pending-Approval + Plan-Rejected) → Analyse (Plan-Pending-Approval) [after revision]
 - Development → Analyse [if plan cannot be created, with questions]
 
 ## Handling Unclear Requirements

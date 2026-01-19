@@ -51,10 +51,10 @@ If the dispatcher provides a TASK_ID in the prompt, process only that task and e
    - Verify PR exists and CI is passing
    - Task is ready for human review/approval
 
-### Phase 2: Review Column - Merge on Review-Approved
+### Phase 2: Review Column - Merge on Review-Approved + Ops-Ready
 
 1. **Poll Joan**: Fetch all tasks in "Review" column for project `$PROJECT`
-2. **For each task with Review-Approved tag**:
+2. **For each task with Review-Approved AND Ops-Ready tags**:
    - Verify all subtasks complete
    - Verify CI passes
    - Merge PR to develop branch
@@ -166,10 +166,11 @@ details:
 
 Before merging any PR to develop:
 
-1. **PR Approved**: Has at least one approval
-2. **CI Passing**: All pipeline checks green
-3. **No Conflicts**: Branch is up to date with develop
-4. **Tests Pass**: Test suite completes successfully
+1. **Ops-Ready**: Human has approved the merge via inbox tag
+2. **PR Approved**: Has at least one approval
+3. **CI Passing**: All pipeline checks green
+4. **No Conflicts**: Branch is up to date with develop
+5. **Tests Pass**: Test suite completes successfully
 
 ## Merge Workflow
 

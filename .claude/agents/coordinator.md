@@ -76,16 +76,18 @@ WHILE true:
      "Clarification-Answered": "uuid-4",
      "Plan-Pending-Approval": "uuid-5",
      "Plan-Approved": "uuid-6",
-     "Dev-Complete": "uuid-7",
-     "Design-Complete": "uuid-8",
-     "Test-Complete": "uuid-9",
-     "Review-In-Progress": "uuid-10",
-     "Review-Approved": "uuid-11",
-     "Rework-Requested": "uuid-12",
-     "Rework-Complete": "uuid-13",
-     "Merge-Conflict": "uuid-14",
-     "Claimed-Dev-1": "uuid-15",
-     "Claimed-Dev-2": "uuid-16",
+     "Plan-Rejected": "uuid-7",
+     "Dev-Complete": "uuid-8",
+     "Design-Complete": "uuid-9",
+     "Test-Complete": "uuid-10",
+     "Review-In-Progress": "uuid-11",
+     "Review-Approved": "uuid-12",
+     "Ops-Ready": "uuid-13",
+     "Rework-Requested": "uuid-14",
+     "Rework-Complete": "uuid-15",
+     "Merge-Conflict": "uuid-16",
+     "Claimed-Dev-1": "uuid-17",
+     "Claimed-Dev-2": "uuid-18",
      ...
    }
 
@@ -158,8 +160,16 @@ For each task in tasks:
   # Priority 4: Architect tasks with Plan-Approved (finalize)
   IF task in "Analyse" column
      AND hasTag("Plan-Pending-Approval")
-     AND hasTag("Plan-Approved"):
+     AND hasTag("Plan-Approved")
+     AND NOT hasTag("Plan-Rejected"):
     ARCHITECT_QUEUE.push({task, mode: "finalize"})
+    CONTINUE
+
+  # Priority 4.5: Architect tasks with Plan-Rejected (revise plan)
+  IF task in "Analyse" column
+     AND hasTag("Plan-Pending-Approval")
+     AND hasTag("Plan-Rejected"):
+    ARCHITECT_QUEUE.push({task, mode: "revise"})
     CONTINUE
 
   # Priority 5: Architect tasks with Ready (create plan)
@@ -202,9 +212,10 @@ For each task in tasks:
     REVIEWER_QUEUE.push({task})
     CONTINUE
 
-  # Priority 9: Ops tasks with Review-Approved (merge)
+  # Priority 9: Ops tasks with Review-Approved AND Ops-Ready (merge)
   IF task in "Review" column
-     AND hasTag("Review-Approved"):
+     AND hasTag("Review-Approved")
+     AND hasTag("Ops-Ready"):
     OPS_QUEUE.push({task, mode: "merge"})
     CONTINUE
 
@@ -351,13 +362,14 @@ IF NOT LOOP_MODE:
 | BA (evaluate) | To Do | (none) | Ready |
 | BA (reevaluate) | Analyse | Needs-Clarification + Clarification-Answered | Ready |
 | Architect (plan) | Analyse | Ready | Plan-Pending-Approval |
-| Architect (finalize) | Analyse | Plan-Pending-Approval + Plan-Approved | Planned |
+| Architect (finalize) | Analyse | Plan-Pending-Approval + Plan-Approved | Planned, Plan-Rejected |
+| Architect (revise) | Analyse | Plan-Pending-Approval + Plan-Rejected | Planned |
 | Dev (implement) | Development | Planned | any Claimed-Dev-N, Implementation-Failed |
 | Dev (rework) | Development | Rework-Requested | any Claimed-Dev-N, Merge-Conflict |
 | Dev (conflict) | Development | Merge-Conflict | any Claimed-Dev-N |
 | Reviewer | Review | Dev-Complete + Design-Complete + Test-Complete | Review-In-Progress, Review-Approved |
 | Reviewer (re-review) | Review | Rework-Complete | Review-In-Progress, Review-Approved |
-| Ops (merge) | Review | Review-Approved | (none) |
+| Ops (merge) | Review | Review-Approved + Ops-Ready | (none) |
 | Ops (rework) | Review | Rework-Requested | Review-Approved |
 
 ---

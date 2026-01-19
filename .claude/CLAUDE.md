@@ -146,7 +146,9 @@ All agents communicate through Joan MCP and task comments/tags.
 |-----|---------|--------|----------|
 | `Clarification-Answered` | Human answered BA questions | Human | BA re-evaluates |
 | `Plan-Approved` | Human approved the plan | Human | Architect finalizes |
+| `Plan-Rejected` | Human rejected the plan | Human | Architect revises |
 | `Review-Approved` | Reviewer approved for merge | Reviewer | Ops merges |
+| `Ops-Ready` | Human approved merge to develop | Human | Ops merges |
 | `Rework-Complete` | Dev finished rework | Dev | Reviewer re-reviews |
 
 ### Claim Protocol (Coordinator-Managed)
@@ -185,7 +187,9 @@ Instead of comment mentions, humans add tags in Joan UI:
 | Action | Add This Tag | Result |
 |--------|--------------|--------|
 | Approve a plan | `Plan-Approved` | Architect finalizes, moves to Development |
+| Reject a plan | `Plan-Rejected` | Architect revises plan |
 | Answer clarification | `Clarification-Answered` | BA re-evaluates requirements |
+| Approve merge | `Ops-Ready` | Ops merges to develop |
 | Handle failed task | Remove `Implementation-Failed` | Task becomes claimable again |
 
 **Legacy comment triggers (`@approve-plan`, `@approve`, `@rework`) are no longer parsed.**
@@ -279,23 +283,26 @@ To Do → Analyse → Development → Review → Deploy → Done
 
 1. **To Do** → BA evaluates → adds `Ready` tag → moves to Analyse
 2. **Analyse** (Ready) → Architect creates plan → removes `Ready`, adds `Plan-Pending-Approval`
-3. **Analyse** (Plan-Pending-Approval) → **Human adds `Plan-Approved` tag**
+3. **Analyse** (Plan-Pending-Approval) → **Human adds `Plan-Approved` tag** OR **Human adds `Plan-Rejected` tag**
 4. **Analyse** (Plan-Approved) → Architect finalizes → removes `Plan-Pending-Approval` + `Plan-Approved`, adds `Planned` → moves to Development
+4b. **Analyse** (Plan-Rejected) → Architect revises plan → removes `Plan-Rejected`, keeps `Plan-Pending-Approval` → awaits re-approval
 5. **Development** (Planned) → Coordinator claims with `Claimed-Dev-N` → dispatches Dev worker
 6. **Development** → Dev implements → PR → removes `Claimed-Dev-N` + `Planned`, adds completion tags → moves to Review
 7. **Review** → Reviewer validates → merges develop into feature (conflict check)
 8. **Review** (approved) → Reviewer adds `Review-Approved` tag
-9. **Review** (Review-Approved) → Ops merges to develop → removes `Review-Approved` → moves to Deploy
-10. **Development** (rejected) → Reviewer removes completion tags, adds `Rework-Requested` + `Planned`, stores feedback → moves to Development
-11. **Development** (Rework-Requested) → Dev addresses feedback → adds `Rework-Complete` → back to Review
-12. **Done** (when deployed to production) → Task complete
+9. **Review** (Review-Approved) → **Human adds `Ops-Ready` tag**
+10. **Review** (Review-Approved + Ops-Ready) → Ops merges to develop → removes `Review-Approved` + `Ops-Ready` → moves to Deploy
+11. **Development** (rejected) → Reviewer removes completion tags, adds `Rework-Requested` + `Planned`, stores feedback → moves to Development
+12. **Development** (Rework-Requested) → Dev addresses feedback → adds `Rework-Complete` → back to Review
+13. **Done** (when deployed to production) → Task complete
 
 ### Quality Gates
 
 - **BA → Architect**: Requirements must be clear and complete
-- **Architect → Dev**: Plan must be approved by human
+- **Architect → Dev**: Plan must be approved by human (or revised if rejected)
 - **Dev → Reviewer**: All sub-tasks must be checked off
 - **Reviewer → Ops**: Must pass code review, tests, and merge conflict check
+- **Ops merge gate**: Human must add `Ops-Ready` tag to approve merge
 - **Ops → Done**: Must be deployed to production
 
 ## Agent Responsibilities

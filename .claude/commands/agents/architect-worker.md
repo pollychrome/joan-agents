@@ -1,6 +1,6 @@
 ---
 description: Single-pass Architect worker dispatched by coordinator
-argument-hint: --task=<task-id> --mode=<plan|finalize>
+argument-hint: --task=<task-id> --mode=<plan|finalize|revise>
 allowed-tools: mcp__joan__*, Read, Write, Grep, Glob, View
 ---
 
@@ -11,9 +11,10 @@ Process a single task assigned by the coordinator, then exit.
 ## Arguments
 
 - `--task=<ID>` - Task ID to process (REQUIRED)
-- `--mode=<plan|finalize>` - Processing mode (REQUIRED)
+- `--mode=<plan|finalize|revise>` - Processing mode (REQUIRED)
   - `plan`: Task has Ready tag, create implementation plan
   - `finalize`: Task has Plan-Approved tag, inject sub-tasks and move to Development
+  - `revise`: Task has Plan-Rejected tag, revise plan based on human feedback
 
 ## Configuration
 
@@ -51,6 +52,11 @@ If either argument missing, report error and exit.
      - Task should be in "Analyse" column
      - Task should have "Plan-Pending-Approval" tag
      - Task should have "Plan-Approved" tag
+
+   IF MODE == "revise":
+     - Task should be in "Analyse" column
+     - Task should have "Plan-Pending-Approval" tag
+     - Task should have "Plan-Rejected" tag
 
 3. IF validation fails:
    Report: "Task {TASK_ID} not actionable for mode {MODE}"
@@ -178,6 +184,51 @@ If either argument missing, report error and exit.
 7. Report: "Plan finalized for '{title}', moved to Development"
 ```
 
+### Mode: revise (plan rejected, revise based on feedback)
+
+```
+1. Read task comments to find rejection feedback:
+   - Look for recent ALS block with action: plan-rejected
+   - Extract the details/summary from that block
+   - This contains human's reason for rejection
+
+2. Retrieve the existing plan attachment:
+   - List attachments for task
+   - Find plan-{task-id}.md
+   - Download/read the current plan
+
+3. Analyze the plan vs feedback:
+   - Identify what needs to change
+   - May need to re-explore codebase if feedback requires different approach
+
+4. Revise the plan:
+   - Update the relevant sections
+   - Keep unchanged parts intact
+   - Ensure all sub-tasks still have proper dependencies
+
+5. Replace plan attachment:
+   - Delete old plan attachment
+   - Upload revised plan with same filename: plan-{task-id}.md
+
+6. Update tags:
+   - Remove "Plan-Rejected" tag
+   - Keep "Plan-Pending-Approval" tag (still awaiting approval)
+
+7. Comment (ALS breadcrumb):
+   "ALS/1
+   actor: architect
+   intent: response
+   action: plan-revised
+   tags.add: []
+   tags.remove: [Plan-Rejected]
+   summary: Plan revised based on feedback; awaiting re-approval.
+   details:
+   - Changes: {summary of what changed}
+   - Reason: {echo of rejection reason}"
+
+8. Report: "Plan revised for '{title}', awaiting re-approval"
+```
+
 ---
 
 ## Step 3: Exit
@@ -187,7 +238,7 @@ Report completion summary:
 "Architect Worker complete:
 - Task: {title}
 - Mode: {MODE}
-- Result: {Plan Created | Plan Finalized}"
+- Result: {Plan Created | Plan Finalized | Plan Revised}"
 
 EXIT
 ```

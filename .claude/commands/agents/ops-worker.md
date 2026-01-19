@@ -12,7 +12,7 @@ Handle integration operations for a single task, then exit.
 
 - `--task=<ID>` - Task ID to process (REQUIRED)
 - `--mode=<merge|rework>` - Processing mode (REQUIRED)
-  - `merge`: Task has Review-Approved, merge PR to develop
+  - `merge`: Task has Review-Approved + Ops-Ready, merge PR to develop
   - `rework`: Task has Rework-Requested in Review column, move back to Development
 
 ## Configuration
@@ -45,6 +45,7 @@ If either argument missing, report error and exit.
    IF MODE == "merge":
      - Task should be in "Review" column
      - Task should have "Review-Approved" tag
+     - Task should have "Ops-Ready" tag
 
    IF MODE == "rework":
      - Task should be in "Review" column
@@ -114,8 +115,9 @@ If either argument missing, report error and exit.
    - Add "Rework-Requested" tag
    - Add "Planned" tag
 
-8. Remove approval:
+8. Remove approvals:
    - Remove "Review-Approved" tag
+   - Remove "Ops-Ready" tag
 
 9. Move task to "Development" column
 
@@ -125,7 +127,7 @@ If either argument missing, report error and exit.
     intent: decision
     action: ops-conflict
     tags.add: [Merge-Conflict, Rework-Requested, Planned]
-    tags.remove: [Review-Approved]
+    tags.remove: [Review-Approved, Ops-Ready]
     summary: Merge failed; manual conflict resolution required.
     details:
     - conflicting files:
@@ -139,6 +141,7 @@ If either argument missing, report error and exit.
 
 7. Update tags:
    - Remove "Review-Approved" tag
+   - Remove "Ops-Ready" tag
 
 8. Move task to "Deploy" column
 
@@ -150,7 +153,7 @@ If either argument missing, report error and exit.
     intent: status
     action: ops-merge
     tags.add: []
-    tags.remove: [Review-Approved]
+    tags.remove: [Review-Approved, Ops-Ready]
     summary: Merged to develop; task moved to Deploy.
     details:
     - {IF conflicts were resolved} AI-assisted conflict resolution applied."
