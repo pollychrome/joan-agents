@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "joan": {
+      "command": "joan-mcp",
+      "args": ["serve"]
+    }
+  }
+}
