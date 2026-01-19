@@ -47,6 +47,7 @@ If the dispatcher provides a TASK_ID in the prompt, process only that task and e
    - Analyze feedback to understand what needs to change
    - Revise the plan document
    - Replace plan attachment with updated version
+   - If "Plan-Approved" is still present, remove it (reject clears approval)
    - Remove tag: "Plan-Rejected"
    - Keep tag: "Plan-Pending-Approval" (still awaiting approval)
    - Comment notifying that plan has been revised

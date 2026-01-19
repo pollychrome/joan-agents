@@ -171,6 +171,7 @@ For each task in tasks:
      AND hasTag("Plan-Rejected"):
     ARCHITECT_QUEUE.push({task, mode: "revise"})
     CONTINUE
+  # Note: If Plan-Approved and Plan-Rejected both exist, treat as revise; Architect clears Plan-Approved.
 
   # Priority 5: Architect tasks with Ready (create plan)
   IF task in "Analyse" column

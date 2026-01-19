@@ -60,6 +60,8 @@ If the dispatcher provides a TASK_ID in the prompt, process only that task and e
    - Merge PR to develop branch
    - Move task to "Deploy" column
    - Comment merge status
+
+Note: Human approve merge adds Ops-Ready and keeps Review-Approved; inbox hides items with both tags.
 3. **For tasks with Rework-Requested tag**:
    - Move task back to "Development" column
    - Add `Rework-Requested` tag

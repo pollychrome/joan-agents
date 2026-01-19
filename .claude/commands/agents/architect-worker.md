@@ -212,6 +212,7 @@ If either argument missing, report error and exit.
 
 6. Update tags:
    - Remove "Plan-Rejected" tag
+   - Remove "Plan-Approved" tag if present (reject clears approval)
    - Keep "Plan-Pending-Approval" tag (still awaiting approval)
 
 7. Comment (ALS breadcrumb):
@@ -225,6 +226,8 @@ If either argument missing, report error and exit.
    details:
    - Changes: {summary of what changed}
    - Reason: {echo of rejection reason}"
+
+   If "Plan-Approved" was removed, include it in tags.remove.
 
 8. Report: "Plan revised for '{title}', awaiting re-approval"
 ```
