@@ -259,6 +259,14 @@ Report queue sizes:
 **IMPORTANT:** Workers run in FOREGROUND (not background) to ensure MCP access if needed.
 Dispatch at most ONE worker per type per cycle (except devs which can be up to DEV_COUNT).
 
+**CRITICAL - USE EXACT COMMAND FORMAT:**
+- You MUST invoke worker commands EXACTLY as shown (e.g., `/agents:dev-worker --task=... --dev=... --mode=...`)
+- DO NOT create custom prompts or inline instructions
+- DO NOT write "checkout the branch" or any other custom task steps
+- The worker command files (dev-worker.md, etc.) contain all the logic including WORKTREE CREATION
+- If you write custom prompts, workers will NOT create worktrees and will cause branch conflicts
+- The "Task Details" section is ONLY for reference - the worker command handles everything
+
 ```
 DISPATCHED = 0
 
@@ -323,11 +331,12 @@ IF DEVS_ENABLED:
           prompt: |
             /agents:dev-worker --task={task.id} --dev={dev_id} --mode={item.mode}
 
-            Task Details (for reference):
+            Task Details (for reference only - worker command handles everything):
             - ID: {task.id}
             - Title: {task.title}
-            - Description: {task.description}
-            - Current Tags: {task.tags}
+
+            IMPORTANT: The dev-worker command creates a WORKTREE for isolated development.
+            Do NOT add custom instructions. The command file has all the logic.
       DISPATCHED++
 
     ELSE:
@@ -456,6 +465,13 @@ IF NOT LOOP_MODE:
 - Dispatch at most ONE worker per type per cycle (except devs)
 - Workers are single-pass - they exit after completing their task
 - Report all queue sizes and dispatch actions for observability
+
+**CRITICAL - Worker Dispatch Format:**
+- ALWAYS use the EXACT command format: `/agents:dev-worker --task=... --dev=... --mode=...`
+- NEVER create custom prompts with instructions like "checkout the branch" or task lists
+- The worker commands (dev-worker.md) contain ALL the logic including worktree creation
+- Custom prompts bypass worktree creation and cause branch conflicts between parallel workers
+- The "Task Details" section is ONLY contextual reference - do NOT expand it into instructions
 
 ---
 

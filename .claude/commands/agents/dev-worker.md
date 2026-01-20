@@ -8,6 +8,11 @@ allowed-tools: mcp__joan__*, mcp__github__*, Read, Write, Edit, Bash, Grep, Glob
 
 Implement a single task assigned by the coordinator. The coordinator has already claimed this task with your Claimed-Dev-N tag before dispatching.
 
+**CRITICAL: This command MUST be invoked by the dispatcher - not bypassed with custom prompts.**
+This command creates a WORKTREE for isolated development. Without worktrees, multiple dev workers
+will conflict by switching branches in the same directory. The dispatcher MUST call:
+`/agents:dev-worker --task=<id> --dev=<N> --mode=<mode>`
+
 ## Arguments
 
 - `--task=<ID>` - Task ID to process (REQUIRED)
