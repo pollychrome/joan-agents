@@ -3,6 +3,12 @@
   "version": "4.0.0",
   "description": "Tag-driven multi-agent orchestration for Joan projects with coordinator pattern, single-pass workers, and deterministic state transitions",
   "author": "Alex Benson",
+  "mcpServers": {
+    "joan": {
+      "command": "joan-mcp",
+      "args": ["serve"]
+    }
+  },
   "commands": [
     "commands/agents/init.md",
     "commands/agents/start.md",
