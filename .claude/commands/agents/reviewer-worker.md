@@ -1,79 +1,62 @@
 ---
 description: Single-pass Reviewer worker dispatched by coordinator
 argument-hint: --task=<task-id>
-allowed-tools: mcp__joan__*, mcp__github__*, Read, Bash, Grep, Glob, Task
+allowed-tools: Read, Bash, Grep, Glob, Task
 ---
 
-# Reviewer Worker (Single-Pass)
+# Reviewer Worker (Single-Pass, MCP Proxy Pattern)
 
-Review a single task assigned by the coordinator, then exit.
+Review a single task and return a structured JSON result.
+**You do NOT have MCP access** - return action requests for the coordinator to execute.
 
-## Arguments
+## Input: Work Package
 
-- `--task=<ID>` - Task ID to review (REQUIRED)
-
-## Configuration
-
-Load from `.joan-agents.json`:
+The coordinator provides a work package with:
+```json
+{
+  "task_id": "uuid",
+  "task_title": "string",
+  "task_description": "string",
+  "task_tags": ["tag1", "tag2"],
+  "task_column": "Review",
+  "task_comments": [...],
+  "project_id": "uuid",
+  "project_name": "string"
+}
 ```
-PROJECT_ID = config.projectId
-PROJECT_NAME = config.projectName
-```
-
-If config missing, report error and exit.
-
-Parse arguments:
-```
-TASK_ID = value from --task
-```
-
-If argument missing, report error and exit.
 
 ---
 
-## Step 1: Fetch and Validate Task
+## Step 1: Validate Work Package
 
 ```
-1. Fetch task using get_task(TASK_ID)
+1. Extract from work package:
+   TASK_ID = work_package.task_id
+   TASK_TITLE = work_package.task_title
+   DESCRIPTION = work_package.task_description
+   TAGS = work_package.task_tags
 
 2. Validate task is reviewable:
-   - Task is in "Review" column
-   - Task has ALL completion tags: Dev-Complete, Design-Complete, Test-Complete
-   - Task does NOT have Review-In-Progress tag
-   - Task does NOT have Review-Approved tag
+   - Task should have ALL completion tags: Dev-Complete, Design-Complete, Test-Complete
+   - Task should NOT have Review-In-Progress tag
+   - Task should NOT have Review-Approved tag
 
 3. IF task has Rework-Complete tag:
    - This is a re-review after rework
    - Note: REWORK_REVIEW = true
 
 4. IF validation fails:
-   Report: "Task {TASK_ID} not ready for review"
-   EXIT
+   Return VALIDATION_FAILURE result
 ```
 
 ---
 
-## Step 2: Claim Review
+## Step 2: Merge Develop Into Feature (Conflict Check)
 
 ```
-1. Add "Review-In-Progress" tag
-
-2. Comment (ALS breadcrumb):
-   "ALS/1
-   actor: reviewer
-   intent: status
-   action: review-start
-   tags.add: [Review-In-Progress]
-   tags.remove: []
-   summary: Review started."
-```
-
----
-
-## Step 3: Merge Develop Into Feature (Conflict Check)
-
-```
-1. Extract branch name from task description
+1. Extract branch name from task description:
+   - Find "**Branch:** `feature/{name}`" or "Branch: `feature/{name}`"
+   - BRANCH = extracted branch name
 
 2. Checkout the feature branch locally:
    git fetch origin
@@ -87,27 +70,27 @@ If argument missing, report error and exit.
 4. IF merge conflicts:
    - This is a blocking issue
    - Cannot review code with unresolved conflicts
-   - Go to CONFLICT REJECTION
+   - Return CONFLICT_REJECTION result
 
 5. IF merge clean:
    git push origin "$BRANCH"
-   Continue to Step 4
+   Continue to Step 3
 ```
 
 ---
 
-## Step 4: Deep Code Review
+## Step 3: Deep Code Review
 
 Perform comprehensive review:
 
-### 4a. Functional Completeness
+### 3a. Functional Completeness
 ```
 - All sub-tasks checked off in task description
 - PR changes match requirements
 - No missing functionality
 ```
 
-### 4b. Code Quality
+### 3b. Code Quality
 ```
 - Follows project conventions (check CLAUDE.md)
 - No obvious logic errors
@@ -116,7 +99,7 @@ Perform comprehensive review:
 - Clean, readable code
 ```
 
-### 4c. Security
+### 3c. Security
 ```
 - No hardcoded secrets
 - Proper input validation
@@ -124,7 +107,7 @@ Perform comprehensive review:
 - Secure authentication/authorization (if applicable)
 ```
 
-### 4d. Testing
+### 3d. Testing
 ```
 - Tests exist for new functionality
 - Test coverage is adequate
@@ -132,7 +115,7 @@ Perform comprehensive review:
 - Edge cases considered
 ```
 
-### 4e. Design (if UI changes)
+### 3e. Design (if UI changes)
 ```
 - Matches design system
 - Responsive/accessible
@@ -146,120 +129,104 @@ Build a list of issues found, categorized by severity:
 
 ---
 
-## Step 5: Make Decision
+## Step 4: Make Decision and Return Result
 
-### IF BLOCKERS exist → REJECT
-
-```
-1. Remove completion tags:
-   - Remove "Dev-Complete"
-   - Remove "Design-Complete"
-   - Remove "Test-Complete"
-   - Remove "Rework-Complete" (if present)
-
-2. Remove "Review-In-Progress" tag
-
-3. Add tags:
-   - Add "Rework-Requested"
-   - Add "Planned" (makes task claimable again)
-
-4. Move task to "Development" column
-
-5. Comment (ALS breadcrumb):
-   "ALS/1
-   actor: reviewer
-   intent: decision
-   action: review-rework
-   tags.add: [Rework-Requested, Planned]
-   tags.remove: [Review-In-Progress, Review-Approved, Rework-Complete, Dev-Complete, Design-Complete, Test-Complete]
-   summary: Changes requested; see details.
-   details:
-   - blockers:
-     - {issue 1}
-     - {issue 2}
-   - warnings:
-     - {warning 1}
-   - suggestions:
-     - {suggestion 1}"
-
-6. Report: "Review REJECTED - {N} blockers found"
-```
-
-### IF no BLOCKERS → APPROVE
-
-```
-1. Remove "Review-In-Progress" tag
-2. Remove "Rework-Complete" tag (if present)
-
-3. Add "Review-Approved" tag
-
-4. Comment (ALS breadcrumb):
-   "ALS/1
-   actor: reviewer
-   intent: decision
-   action: review-approve
-   tags.add: [Review-Approved]
-   tags.remove: [Review-In-Progress, Rework-Complete]
-   summary: Review approved; ready for merge.
-   details:
-   - {summary of review}
-   - warnings (non-blocking, if any):
-     - {warning 1}"
-
-5. Report: "Review APPROVED"
-```
+### IF BLOCKERS exist → Return REJECT result
+### IF no BLOCKERS → Return APPROVE result
 
 ---
 
-## Conflict Rejection
+## Required Output Format
 
-```
-IF merge conflicts detected:
+Return ONLY a JSON object (no markdown, no explanation before/after):
 
-1. Do NOT proceed with review (can't review conflicted code)
+### Review APPROVED
 
-2. Remove "Review-In-Progress" tag
-
-3. Remove completion tags:
-   - Remove "Dev-Complete"
-   - Remove "Design-Complete"
-   - Remove "Test-Complete"
-
-4. Add tags:
-   - Add "Merge-Conflict"
-   - Add "Rework-Requested"
-   - Add "Planned"
-
-5. Move task to "Development" column
-
-6. Comment (ALS breadcrumb):
-   "ALS/1
-   actor: reviewer
-   intent: decision
-   action: review-conflict
-   tags.add: [Merge-Conflict, Rework-Requested, Planned]
-   tags.remove: [Review-In-Progress, Review-Approved, Dev-Complete, Design-Complete, Test-Complete]
-   summary: Merge conflicts with develop; resolve and rework.
-   details:
-   - conflicting files:
-     - {file1}
-     - {file2}"
-
-7. Report: "Review BLOCKED - merge conflicts"
+```json
+{
+  "success": true,
+  "summary": "Review approved; ready for merge",
+  "joan_actions": {
+    "add_tags": ["Review-Approved"],
+    "remove_tags": ["Review-In-Progress", "Rework-Complete"],
+    "add_comment": "ALS/1\nactor: reviewer\nintent: decision\naction: review-approve\ntags.add: [Review-Approved]\ntags.remove: [Review-In-Progress, Rework-Complete]\nsummary: Review approved; ready for merge.\ndetails:\n- {summary of review}\n- warnings (non-blocking, if any):\n  - {warning 1}",
+    "move_to_column": null,
+    "update_description": null
+  },
+  "review_result": {
+    "decision": "APPROVED",
+    "blockers": [],
+    "warnings": ["Consider adding edge case test"],
+    "suggestions": ["Could improve variable naming in utils.ts"]
+  },
+  "worker_type": "reviewer",
+  "task_id": "{task_id from work package}"
+}
 ```
 
----
+### Review REJECTED (Blockers Found)
 
-## Step 6: Exit
-
+```json
+{
+  "success": true,
+  "summary": "Review rejected; 2 blockers found",
+  "joan_actions": {
+    "add_tags": ["Rework-Requested", "Planned"],
+    "remove_tags": ["Review-In-Progress", "Review-Approved", "Rework-Complete", "Dev-Complete", "Design-Complete", "Test-Complete"],
+    "add_comment": "ALS/1\nactor: reviewer\nintent: decision\naction: review-rework\ntags.add: [Rework-Requested, Planned]\ntags.remove: [Review-In-Progress, Review-Approved, Rework-Complete, Dev-Complete, Design-Complete, Test-Complete]\nsummary: Changes requested; see details.\ndetails:\n- blockers:\n  - {issue 1}\n  - {issue 2}\n- warnings:\n  - {warning 1}\n- suggestions:\n  - {suggestion 1}",
+    "move_to_column": "Development",
+    "update_description": null
+  },
+  "review_result": {
+    "decision": "REJECTED",
+    "blockers": ["Missing error handling in auth.ts", "Tests failing on CI"],
+    "warnings": ["Consider refactoring duplicate code"],
+    "suggestions": ["Add JSDoc comments"]
+  },
+  "worker_type": "reviewer",
+  "task_id": "{task_id from work package}"
+}
 ```
-Report completion summary:
-"Reviewer Worker complete:
-- Task: {title}
-- Result: {APPROVED | REJECTED | BLOCKED}
-- Issues: {N blockers, N warnings, N suggestions}"
 
-EXIT
+### Merge Conflict Detected
+
+```json
+{
+  "success": true,
+  "summary": "Review blocked; merge conflicts with develop",
+  "joan_actions": {
+    "add_tags": ["Merge-Conflict", "Rework-Requested", "Planned"],
+    "remove_tags": ["Review-In-Progress", "Review-Approved", "Dev-Complete", "Design-Complete", "Test-Complete"],
+    "add_comment": "ALS/1\nactor: reviewer\nintent: decision\naction: review-conflict\ntags.add: [Merge-Conflict, Rework-Requested, Planned]\ntags.remove: [Review-In-Progress, Review-Approved, Dev-Complete, Design-Complete, Test-Complete]\nsummary: Merge conflicts with develop; resolve and rework.\ndetails:\n- conflicting files:\n  - {file1}\n  - {file2}",
+    "move_to_column": "Development",
+    "update_description": null
+  },
+  "review_result": {
+    "decision": "BLOCKED",
+    "conflict_files": ["src/api/auth.ts", "src/utils/helpers.ts"]
+  },
+  "worker_type": "reviewer",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Validation Failure
+
+```json
+{
+  "success": false,
+  "summary": "Task validation failed: missing completion tags",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": [],
+    "add_comment": "ALS/1\nactor: reviewer\nintent: failure\naction: review-validation-failed\ntags.add: []\ntags.remove: []\nsummary: Task validation failed; cannot review.\ndetails:\n- reason: {specific validation failure}",
+    "move_to_column": null,
+    "update_description": null
+  },
+  "errors": ["Task missing required Dev-Complete tag"],
+  "worker_type": "reviewer",
+  "task_id": "{task_id from work package}"
+}
 ```
 
 ---
@@ -280,12 +247,17 @@ EXIT
 | **Testing** | Tests passing | BLOCKER |
 | **Design** | Matches design system | WARNING |
 
+---
+
 ## Constraints
 
+- **Return ONLY JSON** - No explanation text before or after
 - Single task only - review and exit
 - Always merge develop first (conflict check)
-- Store feedback in task description (not just comments)
 - Never merge PRs (Ops does that)
 - Be thorough but fair - focus on real issues
+- Note: Coordinator will add Review-In-Progress tag before dispatching
 
-Begin reviewing task: $TASK_ID
+---
+
+Now process the work package provided in the prompt and return your JSON result.

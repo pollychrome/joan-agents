@@ -1,77 +1,81 @@
 ---
 description: Single-pass Ops worker dispatched by coordinator
-argument-hint: --task=<task-id> --mode=<merge|rework>
-allowed-tools: mcp__joan__*, mcp__github__*, Read, Bash, Grep, Glob, Task, Edit
+argument-hint: --task=<task-id> --mode=<merge|cleanup>
+allowed-tools: Read, Bash, Grep, Glob, Task, Edit
 ---
 
-# Ops Worker (Single-Pass)
+# Ops Worker (Single-Pass, MCP Proxy Pattern)
 
-Handle integration operations for a single task, then exit.
+Handle integration operations and return a structured JSON result.
+**You do NOT have MCP access** - return action requests for the coordinator to execute.
 
-## Arguments
+## Input: Work Package
 
-- `--task=<ID>` - Task ID to process (REQUIRED)
-- `--mode=<merge|rework>` - Processing mode (REQUIRED)
-  - `merge`: Task has Review-Approved + Ops-Ready, merge PR to develop
-  - `rework`: Task has Rework-Requested in Review column, move back to Development
-
-Human approve merge adds Ops-Ready and keeps Review-Approved. BOTH tags are REQUIRED to trigger merge.
-
-## Configuration
-
-Load from `.joan-agents.json`:
-```
-PROJECT_ID = config.projectId
-PROJECT_NAME = config.projectName
-```
-
-If config missing, report error and exit.
-
-Parse arguments:
-```
-TASK_ID = value from --task
-MODE = value from --mode
+The coordinator provides a work package with:
+```json
+{
+  "task_id": "uuid",
+  "task_title": "string",
+  "task_description": "string",
+  "task_tags": ["tag1", "tag2"],
+  "task_column": "Review",
+  "task_comments": [...],
+  "mode": "merge" | "cleanup",
+  "project_id": "uuid",
+  "project_name": "string"
+}
 ```
 
-If either argument missing, report error and exit.
+**Modes:**
+- `merge`: Task has Review-Approved + Ops-Ready, merge PR to develop
+- `cleanup`: Task in Deploy/Done with stale workflow tags, clean them up
 
 ---
 
-## Step 1: Fetch and Validate Task
+## Step 1: Validate Work Package
 
 ```
-1. Fetch task using get_task(TASK_ID)
+1. Extract from work package:
+   TASK_ID = work_package.task_id
+   TASK_TITLE = work_package.task_title
+   DESCRIPTION = work_package.task_description
+   TAGS = work_package.task_tags
+   COLUMN = work_package.task_column
+   MODE = work_package.mode
 
 2. Validate task matches expected mode:
 
    IF MODE == "merge":
-     - Task should be in "Review" column
      - Task should have "Review-Approved" tag
      - Task should have "Ops-Ready" tag
 
-   IF MODE == "rework":
-     - Task should be in "Review" column
-     - Task should have "Rework-Requested" tag
+   IF MODE == "cleanup":
+     - Task should be in "Deploy" or "Done" column
+     - Task has stale workflow tags (coordinator already detected)
 
 3. IF validation fails:
-   Report: "Task {TASK_ID} not actionable for mode {MODE}"
-   EXIT
+   Return VALIDATION_FAILURE result
 ```
 
 ---
 
-## Step 2: Process Task
+## Step 2: Process Based on Mode
 
-### Mode: merge (merge approved PR to develop)
+### Mode: merge
 
 ```
-1. Extract branch name from task description
+1. Extract branch name from task description:
+   - Find "**Branch:** `feature/{name}`" or "Branch: `feature/{name}`"
+   - BRANCH = extracted branch name
 
-2. Find the PR for this branch:
-   - Use GitHub MCP to list PRs
-   - Find PR with head = BRANCH, base = develop
+2. IDEMPOTENCY CHECK - Verify work not already done:
+   git fetch origin
+   git log origin/develop --oneline | grep -i "{branch name or PR title}"
 
-3. Checkout develop and merge:
+   IF branch appears already merged to develop:
+     Return ALREADY_MERGED result (cleanup only)
+
+3. Checkout develop and attempt merge:
    git fetch origin
    git checkout develop
    git pull origin develop
@@ -82,18 +86,17 @@ If either argument missing, report error and exit.
 
 5. IF merge clean:
    git push origin develop
-   Continue to SUCCESS
+   Return MERGE_SUCCESS result
 
 --- AI CONFLICT RESOLUTION ---
 
-5a. IF merge conflicts detected:
-    For each conflicting file:
+5a. For each conflicting file:
     - Read the file with conflict markers
     - Analyze both versions (develop vs feature)
     - Make intelligent resolution preserving intent from both
+    - git add {resolved-file}
 
 5b. After resolving all conflicts:
-    git add .
     git commit -m "merge: {BRANCH} into develop - resolve conflicts"
 
 5c. Run verification (if test command available):
@@ -101,103 +104,153 @@ If either argument missing, report error and exit.
 
 5d. IF tests fail:
     - Conflict resolution was incorrect
-    - Go to CONFLICT FAILURE
+    - git merge --abort || git reset --hard origin/develop
+    - Return CONFLICT_FAILURE result
 
 5e. IF tests pass (or no tests):
     git push origin develop
-    Continue to SUCCESS
-
---- CONFLICT FAILURE (AI couldn't resolve) ---
-
-6. Reset the failed merge:
-   git merge --abort || git reset --hard origin/develop
-
-7. Add failure tags:
-   - Add "Merge-Conflict" tag
-   - Add "Rework-Requested" tag
-   - Add "Planned" tag
-
-8. Remove approvals:
-   - Remove "Review-Approved" tag
-   - Remove "Ops-Ready" tag
-
-9. Move task to "Development" column
-
-10. Comment (ALS breadcrumb):
-    "ALS/1
-    actor: ops
-    intent: decision
-    action: ops-conflict
-    tags.add: [Merge-Conflict, Rework-Requested, Planned]
-    tags.remove: [Review-Approved, Ops-Ready]
-    summary: Merge failed; manual conflict resolution required.
-    details:
-    - conflicting files:
-      - {file1}
-      - {file2}"
-
-11. Report: "Merge FAILED - conflicts too complex for AI"
-    EXIT
-
---- SUCCESS ---
-
-7. Update tags:
-   - Remove "Review-Approved" tag
-   - Remove "Ops-Ready" tag
-
-8. Move task to "Deploy" column
-
-9. Close or merge PR via GitHub MCP (if not auto-closed)
-
-10. Comment (ALS breadcrumb):
-    "ALS/1
-    actor: ops
-    intent: status
-    action: ops-merge
-    tags.add: []
-    tags.remove: [Review-Approved, Ops-Ready]
-    summary: Merged to develop; task moved to Deploy.
-    details:
-    - {IF conflicts were resolved} AI-assisted conflict resolution applied."
-
-11. Report: "Merged to develop successfully"
+    Return MERGE_SUCCESS result (with ai_resolved: true)
 ```
 
-### Mode: rework (move rejected task back)
+### Mode: cleanup
 
 ```
-This handles an edge case where Reviewer rejected but task stayed in Review.
-
-1. Verify tags:
-   - Should have "Rework-Requested"
-   - Should have "Planned" (if not, add it)
-
-2. Move task to "Development" column
-
-3. Comment (ALS breadcrumb):
-   "ALS/1
-   actor: ops
-   intent: status
-   action: ops-rework
-   tags.add: [Rework-Requested, Planned]
-   tags.remove: []
-   summary: Returned to Development for rework."
-
-4. Report: "Task moved back to Development"
+1. This is for anomaly detection - clean stale tags from completed tasks
+2. Return CLEANUP_SUCCESS result with tags to remove
 ```
 
 ---
 
-## Step 3: Exit
+## Required Output Format
 
+Return ONLY a JSON object (no markdown, no explanation before/after):
+
+### Merge Success
+
+```json
+{
+  "success": true,
+  "summary": "Merged to develop successfully",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": ["Review-Approved", "Ops-Ready"],
+    "add_comment": "ALS/1\nactor: ops\nintent: status\naction: ops-merge\ntags.add: []\ntags.remove: [Review-Approved, Ops-Ready]\nsummary: Merged to develop; task moved to Deploy.\ndetails:\n- commit: {commit_sha}",
+    "move_to_column": "Deploy",
+    "update_description": null
+  },
+  "git_actions": {
+    "branch_merged": "feature/task-name",
+    "commit_sha": "abc123def",
+    "ai_resolved": false
+  },
+  "worker_type": "ops",
+  "task_id": "{task_id from work package}"
+}
 ```
-Report completion summary:
-"Ops Worker complete:
-- Task: {title}
-- Mode: {MODE}
-- Result: {Merged | Conflict Failed | Moved to Development}"
 
-EXIT
+### Merge Success (with AI Conflict Resolution)
+
+```json
+{
+  "success": true,
+  "summary": "Merged to develop with AI-assisted conflict resolution",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": ["Review-Approved", "Ops-Ready"],
+    "add_comment": "ALS/1\nactor: ops\nintent: status\naction: ops-merge\ntags.add: []\ntags.remove: [Review-Approved, Ops-Ready]\nsummary: Merged to develop; AI-assisted conflict resolution applied.\ndetails:\n- resolved_files:\n  - src/api/auth.ts\n  - src/utils/helpers.ts",
+    "move_to_column": "Deploy",
+    "update_description": null
+  },
+  "git_actions": {
+    "branch_merged": "feature/task-name",
+    "commit_sha": "def456ghi",
+    "ai_resolved": true,
+    "resolved_files": ["src/api/auth.ts", "src/utils/helpers.ts"]
+  },
+  "worker_type": "ops",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Already Merged (Idempotency)
+
+```json
+{
+  "success": true,
+  "summary": "Branch already merged; cleaned up stale workflow tags",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": ["Review-Approved", "Ops-Ready"],
+    "add_comment": "ALS/1\nactor: ops\nintent: status\naction: ops-cleanup\ntags.add: []\ntags.remove: [Review-Approved, Ops-Ready]\nsummary: Branch already merged; cleaned up stale workflow tags.\ndetails:\n- reason: Idempotency check detected prior merge",
+    "move_to_column": "Deploy",
+    "update_description": null
+  },
+  "git_actions": {
+    "already_merged": true
+  },
+  "worker_type": "ops",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Conflict Failure (AI couldn't resolve)
+
+```json
+{
+  "success": true,
+  "summary": "Merge failed; manual conflict resolution required",
+  "joan_actions": {
+    "add_tags": ["Merge-Conflict", "Rework-Requested", "Planned"],
+    "remove_tags": ["Review-Approved", "Ops-Ready"],
+    "add_comment": "ALS/1\nactor: ops\nintent: decision\naction: ops-conflict\ntags.add: [Merge-Conflict, Rework-Requested, Planned]\ntags.remove: [Review-Approved, Ops-Ready]\nsummary: Merge failed; manual conflict resolution required.\ndetails:\n- conflicting files:\n  - {file1}\n  - {file2}\n- reason: {why AI resolution failed}",
+    "move_to_column": "Development",
+    "update_description": null
+  },
+  "git_actions": {
+    "conflict_files": ["src/api/auth.ts", "src/config/settings.ts"],
+    "resolution_attempted": true,
+    "resolution_failed_reason": "Tests failed after resolution"
+  },
+  "worker_type": "ops",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Cleanup Success (Anomaly Detection)
+
+```json
+{
+  "success": true,
+  "summary": "Cleaned up stale workflow tags from completed task",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": ["Review-Approved", "Ops-Ready", "Planned"],
+    "add_comment": "ALS/1\nactor: ops\nintent: status\naction: anomaly-cleanup\ntags.add: []\ntags.remove: [Review-Approved, Ops-Ready, Planned]\nsummary: Anomaly detected and resolved; removed stale workflow tags.\ndetails:\n- task was in: Deploy column\n- stale tags removed: Review-Approved, Ops-Ready, Planned",
+    "move_to_column": null,
+    "update_description": null
+  },
+  "worker_type": "ops",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Validation Failure
+
+```json
+{
+  "success": false,
+  "summary": "Task validation failed: missing Ops-Ready tag",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": [],
+    "add_comment": "ALS/1\nactor: ops\nintent: failure\naction: ops-validation-failed\ntags.add: []\ntags.remove: []\nsummary: Task validation failed; cannot process.\ndetails:\n- reason: {specific validation failure}",
+    "move_to_column": null,
+    "update_description": null
+  },
+  "errors": ["Task missing required Ops-Ready tag"],
+  "worker_type": "ops",
+  "task_id": "{task_id from work package}"
+}
 ```
 
 ---
@@ -230,10 +283,13 @@ Resolution approaches:
 
 ## Constraints
 
+- **Return ONLY JSON** - No explanation text before or after
 - Single task only - process and exit
 - Never force push
 - Always attempt AI resolution before failing back
 - Merge to develop only (never main/master)
-- Store conflict details in task description for manual resolution
+- Note: `success: true` even for CONFLICT_FAILURE (worker completed its job; conflict needs human)
 
-Begin processing task: $TASK_ID with mode: $MODE
+---
+
+Now process the work package provided in the prompt and return your JSON result.

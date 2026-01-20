@@ -22,20 +22,42 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 ## Architecture
 
 ```
-Coordinator + Single-Pass Workers
-──────────────────────────────────────────────────────
-  Coordinator ────► poll once ────► dispatch workers ────► sleep ────► repeat
+Coordinator + Single-Pass Workers (MCP Proxy Pattern)
+──────────────────────────────────────────────────────────────────────────
+  Coordinator (has MCP access)
        │
-       ├──► spawn BA-worker (task X)
-       ├──► spawn Architect-worker (task Y)
-       ├──► claim then spawn Dev-worker (task Z)
-       ├──► spawn Reviewer-worker (task W)
-       └──► spawn Ops-worker (task V)
+       ├── 1. Poll Joan (once per interval)
+       ├── 2. Build work packages with task data
+       ├── 3. Dispatch workers with work packages via prompt
+       │       │
+       │       ├──► BA-worker (task X) ──────► returns JSON result
+       │       ├──► Architect-worker (task Y) ─► returns JSON result
+       │       ├──► Dev-worker (task Z) ──────► returns JSON result
+       │       ├──► Reviewer-worker (task W) ─► returns JSON result
+       │       └──► Ops-worker (task V) ──────► returns JSON result
+       │
+       ├── 4. Execute joan_actions from worker results
+       ├── 5. Verify post-conditions (retry if needed)
+       └── 6. Sleep → repeat (in loop mode)
 
-  • Single polling point (not N agents polling independently)
-  • Workers are single-pass: process one task, then exit
-  • Tags drive all state transitions (no comment parsing)
+  Key Principles:
+  • Workers do NOT have MCP access - they return action requests
+  • Coordinator executes all MCP operations (tags, comments, moves)
+  • Post-condition verification ensures changes are applied
+  • Self-healing: anomaly detection cleans stale tags automatically
 ```
+
+### Why MCP Proxy Pattern?
+
+Subagents spawned via the Task tool cannot access MCP servers (platform limitation).
+The solution:
+
+1. **Workers are "pure functions"** - receive work package, return structured result
+2. **Coordinator has MCP access** - executes all Joan API operations
+3. **Structured results** - workers return `WorkerResult` JSON with `joan_actions`
+4. **Post-condition verification** - coordinator re-fetches to confirm changes
+
+See `shared/joan-shared-specs/docs/workflow/worker-result-schema.md` for the full schema.
 
 ## Configuration
 
@@ -110,16 +132,19 @@ The coordinator supports two modes via the `--loop` flag:
 
 ## Coordinator Workflow
 
-The coordinator uses a smart polling pattern:
+The coordinator uses a smart polling pattern with MCP Proxy execution:
 
 1. **Poll** - Fetch all tasks from Joan (once per interval)
-2. **Queue** - Build priority queues based on tags
-3. **Dispatch** - Spawn single-pass workers for available tasks
-4. **Claim** - For dev tasks, atomically claim before dispatch
-5. **Sleep** - Wait for poll interval (in loop mode)
-6. **Repeat** - Continue until idle threshold reached
+2. **Recover** - Release stale claims, clean anomalous tags (self-healing)
+3. **Queue** - Build priority queues based on tags
+4. **Dispatch** - Build work packages, spawn workers with task data via prompt
+5. **Claim** - For dev tasks, atomically claim before dispatch
+6. **Execute** - Process worker JSON results, execute `joan_actions` via MCP
+7. **Verify** - Re-fetch tasks to confirm changes applied (retry if needed)
+8. **Sleep** - Wait for poll interval (in loop mode)
+9. **Repeat** - Continue until idle threshold reached
 
-This reduces Joan API calls to 1 poll per interval (vs N agents polling independently).
+This reduces Joan API calls to 1 poll per interval and ensures reliable state transitions.
 
 ## Agent Communication Protocol
 
@@ -189,12 +214,20 @@ When the coordinator or workers are killed/crash, `Claimed-Dev-N` tags may remai
 3. If stale, removes the orphaned claim tag and adds an ALS comment for audit
 4. Task becomes available for other dev workers to claim
 
+**Anomaly Detection (Stale Workflow Tags):**
+Tasks can end up with stale workflow tags due to partial failures, manual moves, or worker crashes. Each poll cycle, the coordinator:
+1. Finds tasks in terminal columns (Deploy, Done) with workflow tags
+2. Removes stale tags: `Review-Approved`, `Ops-Ready`, `Planned`, `Ready`, etc.
+3. Detects conflicting tag combinations (e.g., both `Review-Approved` AND `Rework-Requested`)
+4. Adds ALS comment documenting the cleanup for audit trail
+
 This makes the system self-healing - no manual intervention needed when workers crash or the coordinator is restarted.
 
 **What triggers recovery:**
 - Coordinator killed mid-dispatch (workers still claimed tasks)
 - Worker crashes or times out without cleanup
 - Network issues preventing worker completion
+- Manual task moves in Joan UI that bypass tag cleanup
 
 **What still requires manual intervention:**
 - `Implementation-Failed` tag (dev hit unrecoverable error)

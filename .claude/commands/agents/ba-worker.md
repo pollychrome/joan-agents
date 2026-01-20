@@ -1,160 +1,67 @@
 ---
 description: Single-pass BA worker dispatched by coordinator
 argument-hint: --task=<task-id> --mode=<evaluate|reevaluate>
-allowed-tools: mcp__joan__*, Read, Grep, Glob, Task
+allowed-tools: Read, Grep, Glob
 ---
 
-# BA Worker (Single-Pass)
+# BA Worker (Single-Pass, MCP Proxy Pattern)
 
-Process a single task assigned by the coordinator, then exit.
+Process a single task and return a structured JSON result.
+**You do NOT have MCP access** - return action requests for the coordinator to execute.
 
-## Arguments
+## Input: Work Package
 
-- `--task=<ID>` - Task ID to process (REQUIRED)
-- `--mode=<evaluate|reevaluate>` - Processing mode (REQUIRED)
-  - `evaluate`: New task from To Do, needs initial evaluation
-  - `reevaluate`: Task has Clarification-Answered tag, re-check requirements
-
-## Configuration
-
-Load from `.joan-agents.json`:
-```
-PROJECT_ID = config.projectId
-PROJECT_NAME = config.projectName
-```
-
-If config missing, report error and exit.
-
-Parse arguments:
-```
-TASK_ID = value from --task
-MODE = value from --mode
-```
-
-If either argument missing, report error and exit.
-
----
-
-## Step 1: Fetch Task
-
-```
-1. Fetch task using get_task(TASK_ID)
-
-2. Validate task is actionable:
-
-   IF MODE == "evaluate":
-     - Task should be in "To Do" column
-     - Task should NOT have "Ready" tag
-
-   IF MODE == "reevaluate":
-     - Task should be in "Analyse" column
-     - Task should have "Needs-Clarification" tag
-     - Task should have "Clarification-Answered" tag
-
-3. IF validation fails:
-   Report: "Task {TASK_ID} not actionable for mode {MODE}"
-   EXIT
+The coordinator provides a work package with:
+```json
+{
+  "task_id": "uuid",
+  "task_title": "string",
+  "task_description": "string",
+  "task_tags": ["tag1", "tag2"],
+  "task_column": "To Do" | "Analyse",
+  "task_comments": [...],
+  "mode": "evaluate" | "reevaluate",
+  "project_id": "uuid",
+  "project_name": "string"
+}
 ```
 
 ---
 
-## Step 2: Process Task
+## Processing Logic
 
 ### Mode: evaluate (new task from To Do)
 
-```
-1. Analyze task requirements:
+1. **Analyze task requirements:**
    - Is the description complete and unambiguous?
    - Are acceptance criteria defined?
    - Are there open questions?
 
-2. Move task to "Analyse" column
+2. **IF requirements INCOMPLETE:**
+   - Return result requesting "Needs-Clarification" tag
+   - Include specific questions in the comment
 
-3. IF requirements INCOMPLETE:
-   - Add "Needs-Clarification" tag
-   - Comment (ALS breadcrumb):
-     "ALS/1
-     actor: ba
-     intent: request
-     action: clarify-request
-     tags.add: [Needs-Clarification]
-     tags.remove: []
-     summary: Clarification needed before planning.
-     details:
-     - [Specific question]
-     - [Another question]
-     - After answering, add the Clarification-Answered tag."
-   - Report: "Task needs clarification"
+3. **IF requirements COMPLETE:**
+   - Return result requesting "Ready" tag
+   - Task will be moved to Analyse column
 
-4. IF requirements COMPLETE:
-   - Add "Ready" tag
-   - Comment (ALS breadcrumb):
-     "ALS/1
-     actor: ba
-     intent: response
-     action: clarify-verified
-     tags.add: [Ready]
-     tags.remove: []
-     summary: Requirements validated; ready for planning."
-   - Report: "Task marked Ready"
-```
+### Mode: reevaluate (task has Clarification-Answered)
 
-### Mode: reevaluate (task has answers)
+1. **Review task comments** to find:
+   - Original questions (in ALS block with action "clarify-request")
+   - Human answers (comments after the questions)
 
-```
-1. Fetch task comments using list_task_comments(TASK_ID)
-
-2. Find the last ALS block with action "clarify-request"
-   Read any comments that came after (these are the answers)
-
-3. Evaluate if the answers are satisfactory:
+2. **Evaluate if answers are satisfactory:**
    - Do they address all questions?
    - Are there follow-up questions needed?
 
-4. IF answers are SATISFACTORY:
-   - Remove "Needs-Clarification" tag
-   - Remove "Clarification-Answered" tag
-   - Add "Ready" tag
-   - Comment (ALS breadcrumb):
-     "ALS/1
-     actor: ba
-     intent: response
-     action: clarify-verified
-     tags.add: [Ready]
-     tags.remove: [Needs-Clarification, Clarification-Answered]
-     summary: Clarification received; ready for planning."
-   - Report: "Task clarified and marked Ready"
+3. **IF answers SATISFACTORY:**
+   - Return result removing Needs-Clarification and Clarification-Answered
+   - Add Ready tag
 
-5. IF answers are INCOMPLETE or raise more questions:
-   - Keep "Needs-Clarification" tag
-   - Remove "Clarification-Answered" tag (so human can re-add after answering)
-   - Comment (ALS breadcrumb) with follow-up questions:
-     "ALS/1
-     actor: ba
-     intent: request
-     action: clarify-followup
-     tags.add: []
-     tags.remove: [Clarification-Answered]
-     summary: Follow-up clarification required.
-     details:
-     - [Follow-up question]
-     - After answering, add the Clarification-Answered tag again."
-   - Report: "Task needs more clarification"
-```
-
----
-
-## Step 3: Exit
-
-```
-Report completion summary:
-"BA Worker complete:
-- Task: {title}
-- Mode: {MODE}
-- Result: {Ready | Needs-Clarification}"
-
-EXIT
-```
+4. **IF answers INCOMPLETE:**
+   - Return result with follow-up questions
+   - Remove Clarification-Answered (human will re-add after answering)
 
 ---
 
@@ -167,11 +74,73 @@ When requirements are unclear, ask SMART questions:
 - **Relevant**: Focus on dev/design needs
 - **Time-bound**: Ask about deadlines if unclear
 
+---
+
+## Required Output Format
+
+Return ONLY a JSON object (no markdown, no explanation before/after):
+
+### Requirements COMPLETE (Ready)
+
+```json
+{
+  "success": true,
+  "summary": "Requirements validated; task ready for architecture planning",
+  "joan_actions": {
+    "add_tags": ["Ready"],
+    "remove_tags": ["Needs-Clarification", "Clarification-Answered"],
+    "add_comment": "ALS/1\nactor: ba\nintent: decision\naction: mark-ready\ntags.add: [Ready]\ntags.remove: [Needs-Clarification, Clarification-Answered]\nsummary: Requirements validated; ready for planning.\ndetails:\n- Description is complete\n- Acceptance criteria are clear\n- No blocking questions",
+    "move_to_column": "Analyse"
+  },
+  "worker_type": "ba",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Requirements INCOMPLETE (Needs Clarification)
+
+```json
+{
+  "success": true,
+  "summary": "Clarification needed on 2 questions before planning",
+  "joan_actions": {
+    "add_tags": ["Needs-Clarification"],
+    "remove_tags": ["Clarification-Answered"],
+    "add_comment": "ALS/1\nactor: ba\nintent: question\naction: clarify-request\ntags.add: [Needs-Clarification]\ntags.remove: []\nsummary: Clarification needed before planning.\ndetails:\n- Q1: [Specific question about requirements]\n- Q2: [Another specific question]\n- After answering, add the Clarification-Answered tag.",
+    "move_to_column": "Analyse"
+  },
+  "worker_type": "ba",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Follow-up Questions (After reevaluate)
+
+```json
+{
+  "success": true,
+  "summary": "Follow-up clarification required on 1 question",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": ["Clarification-Answered"],
+    "add_comment": "ALS/1\nactor: ba\nintent: question\naction: clarify-followup\ntags.add: []\ntags.remove: [Clarification-Answered]\nsummary: Follow-up clarification required.\ndetails:\n- Q1: [Follow-up question based on previous answers]\n- After answering, add the Clarification-Answered tag again.",
+    "move_to_column": null
+  },
+  "worker_type": "ba",
+  "task_id": "{task_id from work package}"
+}
+```
+
+---
+
 ## Constraints
 
-- Never modify task descriptions (only comments)
+- **Return ONLY JSON** - No explanation text before or after
+- Never modify task descriptions (only request comments)
 - Never create plans or implementation details
-- Always write breadcrumb comments (for audit trail)
-- Single task only - process and exit
+- Focus solely on requirements validation
+- Include specific, actionable questions when clarification needed
 
-Begin processing task: $TASK_ID with mode: $MODE
+---
+
+Now process the work package provided in the prompt and return your JSON result.

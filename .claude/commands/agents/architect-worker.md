@@ -1,250 +1,81 @@
 ---
 description: Single-pass Architect worker dispatched by coordinator
 argument-hint: --task=<task-id> --mode=<plan|finalize|revise>
-allowed-tools: mcp__joan__*, Read, Write, Grep, Glob, View, Task
+allowed-tools: Read, Write, Grep, Glob, View, Task
 ---
 
-# Architect Worker (Single-Pass)
+# Architect Worker (Single-Pass, MCP Proxy Pattern)
 
-Process a single task assigned by the coordinator, then exit.
+Process a single task and return a structured JSON result.
+**You do NOT have MCP access** - return action requests for the coordinator to execute.
 
-## Arguments
+## Input: Work Package
 
-- `--task=<ID>` - Task ID to process (REQUIRED)
-- `--mode=<plan|finalize|revise>` - Processing mode (REQUIRED)
-  - `plan`: Task has Ready tag, create implementation plan
-  - `finalize`: Task has Plan-Approved tag, inject sub-tasks and move to Development
-  - `revise`: Task has Plan-Rejected tag, revise plan based on human feedback
-
-## Configuration
-
-Load from `.joan-agents.json`:
-```
-PROJECT_ID = config.projectId
-PROJECT_NAME = config.projectName
-```
-
-If config missing, report error and exit.
-
-Parse arguments:
-```
-TASK_ID = value from --task
-MODE = value from --mode
-```
-
-If either argument missing, report error and exit.
-
----
-
-## Step 1: Fetch Task
-
-```
-1. Fetch task using get_task(TASK_ID)
-
-2. Validate task is actionable:
-
-   IF MODE == "plan":
-     - Task should be in "Analyse" column
-     - Task should have "Ready" tag
-     - Task should NOT have "Plan-Pending-Approval" tag
-
-   IF MODE == "finalize":
-     - Task should be in "Analyse" column
-     - Task should have "Plan-Pending-Approval" tag
-     - Task should have "Plan-Approved" tag
-
-   IF MODE == "revise":
-     - Task should be in "Analyse" column
-     - Task should have "Plan-Pending-Approval" tag
-     - Task should have "Plan-Rejected" tag
-
-3. IF validation fails:
-   Report: "Task {TASK_ID} not actionable for mode {MODE}"
-   EXIT
+The coordinator provides a work package with:
+```json
+{
+  "task_id": "uuid",
+  "task_title": "string",
+  "task_description": "string",
+  "task_tags": ["tag1", "tag2"],
+  "task_column": "Analyse",
+  "task_comments": [...],
+  "mode": "plan" | "finalize" | "revise",
+  "project_id": "uuid",
+  "project_name": "string"
+}
 ```
 
 ---
 
-## Step 2: Process Task
+## Processing Logic
 
 ### Mode: plan (create implementation plan)
 
-```
-1. Analyze the codebase:
+1. **Analyze the codebase:**
    - Read CLAUDE.md for project conventions
-   - Explore relevant directories
+   - Explore relevant directories using Glob/Grep
    - Understand architecture patterns
    - Identify files that will need modification
 
-2. Create plan document with this structure:
-
-   # Implementation Plan: {Task Title}
-
-   ## Overview
-   {Brief description of what will be implemented}
-
-   ## Architecture Analysis
-   {Current state, patterns to follow, relevant files}
-
-   ## Sub-Tasks
+2. **Create plan** with this structure:
+   ```markdown
+   ## Implementation Plan
 
    ### Design (execute first)
    - [ ] DES-1: {component/UI design task}
-   - [ ] DES-2: {design system updates if needed}
 
    ### Development (execute second)
    - [ ] DEV-1: {implementation task}
    - [ ] DEV-2: {implementation task} (depends: DEV-1)
-   - [ ] DEV-3: {integration task} (depends: DEV-1, DEV-2)
 
    ### Testing (execute last)
    - [ ] TEST-1: {unit test task} (depends: DEV-1)
-   - [ ] TEST-2: {integration test task} (depends: DEV-3)
 
-   ## Branch Name
-   `feature/{task-title-kebab-case}`
+   ## Branch Strategy
+   - **Branch name**: `feature/{task-title-kebab-case}`
+   - **Base**: `main`
 
-   ## Execution Notes
-   {Special instructions for devs}
+   ## Files to Modify/Create
+   | File | Action |
+   |------|--------|
+   | `src/foo.ts` | Modify |
+   | `src/bar.ts` | Create |
+   ```
 
-3. Attach plan to task:
-   - Use upload_attachment with the plan content
-   - Filename: plan-{task-id}.md
+3. **Return result** with plan in `update_description` field
 
-4. Update tags:
-   - Remove "Ready" tag
-   - Add "Plan-Pending-Approval" tag
+### Mode: finalize (plan approved, prepare for Development)
 
-5. Comment (ALS breadcrumb):
-   "ALS/1
-   actor: architect
-   intent: request
-   action: plan-ready
-   tags.add: [Plan-Pending-Approval]
-   tags.remove: [Ready]
-   summary: Plan attached; add Plan-Approved to proceed.
-   details:
-   - Plan includes {N} sub-tasks across Design, Development, and Testing.
-   links:
-   - plan: plan-{task-id}.md"
+1. **Read the current task description** (contains the plan)
+2. **Update tags** to indicate ready for development
+3. **Move to Development column**
 
-6. Report: "Plan created for '{title}', awaiting approval"
-```
+### Mode: revise (plan rejected, update based on feedback)
 
-### Mode: finalize (plan approved, move to Development)
-
-```
-1. Retrieve the plan attachment:
-   - List attachments for task
-   - Find plan-{task-id}.md
-   - Download/read the plan content
-
-2. Extract sub-tasks from plan:
-   - Parse the Design, Development, and Testing sections
-   - Build the sub-task list
-
-3. Update task description:
-   - Append sub-tasks to the end of the description:
-
-   ---
-
-   ## Implementation Plan
-
-   ### Design
-   - [ ] DES-1: {task}
-
-   ### Development
-   - [ ] DEV-1: {task}
-   - [ ] DEV-2: {task}
-
-   ### Testing
-   - [ ] TEST-1: {task}
-
-   **Branch:** `feature/{branch-name}`
-
-4. Update tags:
-   - Remove "Plan-Pending-Approval" tag
-   - Remove "Plan-Approved" tag
-   - Add "Planned" tag
-
-5. Move task to "Development" column
-
-6. Comment (ALS breadcrumb):
-   "ALS/1
-   actor: architect
-   intent: decision
-   action: plan-approved
-   tags.add: [Planned]
-   tags.remove: [Plan-Pending-Approval, Plan-Approved]
-   summary: Plan approved; moved to Development.
-   details:
-   - Branch: feature/{branch-name}
-   - Sub-tasks: {N} total ({DES} design, {DEV} development, {TEST} testing)"
-
-7. Report: "Plan finalized for '{title}', moved to Development"
-```
-
-### Mode: revise (plan rejected, revise based on feedback)
-
-```
-1. Read task comments to find rejection feedback:
-   - Look for recent ALS block with action: plan-rejected
-   - Extract the details/summary from that block
-   - This contains human's reason for rejection
-
-2. Retrieve the existing plan attachment:
-   - List attachments for task
-   - Find plan-{task-id}.md
-   - Download/read the current plan
-
-3. Analyze the plan vs feedback:
-   - Identify what needs to change
-   - May need to re-explore codebase if feedback requires different approach
-
-4. Revise the plan:
-   - Update the relevant sections
-   - Keep unchanged parts intact
-   - Ensure all sub-tasks still have proper dependencies
-
-5. Replace plan attachment:
-   - Delete old plan attachment
-   - Upload revised plan with same filename: plan-{task-id}.md
-
-6. Update tags:
-   - Remove "Plan-Rejected" tag
-   - Remove "Plan-Approved" tag if present (reject clears approval)
-   - Keep "Plan-Pending-Approval" tag (still awaiting approval)
-
-7. Comment (ALS breadcrumb):
-   "ALS/1
-   actor: architect
-   intent: response
-   action: plan-revised
-   tags.add: []
-   tags.remove: [Plan-Rejected]
-   summary: Plan revised based on feedback; awaiting re-approval.
-   details:
-   - Changes: {summary of what changed}
-   - Reason: {echo of rejection reason}"
-
-   If "Plan-Approved" was removed, include it in tags.remove.
-
-8. Report: "Plan revised for '{title}', awaiting re-approval"
-```
-
----
-
-## Step 3: Exit
-
-```
-Report completion summary:
-"Architect Worker complete:
-- Task: {title}
-- Mode: {MODE}
-- Result: {Plan Created | Plan Finalized | Plan Revised}"
-
-EXIT
-```
+1. **Read task comments** to find rejection feedback
+2. **Revise the plan** based on feedback
+3. **Return updated description** with revised plan
 
 ---
 
@@ -261,11 +92,76 @@ Branch naming:
 - Keep it descriptive but concise
 - Must be valid git branch name
 
+---
+
+## Required Output Format
+
+Return ONLY a JSON object (no markdown, no explanation before/after):
+
+### Mode: plan (Plan Created)
+
+```json
+{
+  "success": true,
+  "summary": "Created implementation plan with 8 sub-tasks",
+  "joan_actions": {
+    "add_tags": ["Plan-Pending-Approval"],
+    "remove_tags": ["Ready"],
+    "add_comment": "ALS/1\nactor: architect\nintent: status\naction: plan-created\ntags.add: [Plan-Pending-Approval]\ntags.remove: [Ready]\nsummary: Implementation plan created; awaiting approval.\ndetails:\n- 2 design tasks\n- 4 development tasks\n- 2 testing tasks\n- Branch: feature/{branch-name}",
+    "move_to_column": null,
+    "update_description": "ORIGINAL DESCRIPTION\n\n---\n\n## Implementation Plan\n\n### Design\n- [ ] DES-1: ...\n\n### Development\n- [ ] DEV-1: ...\n\n### Testing\n- [ ] TEST-1: ...\n\n## Branch Strategy\n- **Branch name**: `feature/...`"
+  },
+  "worker_type": "architect",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Mode: finalize (Plan Approved, Move to Development)
+
+```json
+{
+  "success": true,
+  "summary": "Plan finalized; task ready for development",
+  "joan_actions": {
+    "add_tags": ["Planned"],
+    "remove_tags": ["Plan-Pending-Approval", "Plan-Approved"],
+    "add_comment": "ALS/1\nactor: architect\nintent: decision\naction: plan-finalized\ntags.add: [Planned]\ntags.remove: [Plan-Pending-Approval, Plan-Approved]\nsummary: Plan approved; moved to Development.\ndetails:\n- Branch: feature/{branch-name}\n- Sub-tasks: N total",
+    "move_to_column": "Development",
+    "update_description": null
+  },
+  "worker_type": "architect",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Mode: revise (Plan Revised)
+
+```json
+{
+  "success": true,
+  "summary": "Plan revised based on rejection feedback",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": ["Plan-Rejected"],
+    "add_comment": "ALS/1\nactor: architect\nintent: status\naction: plan-revised\ntags.add: []\ntags.remove: [Plan-Rejected]\nsummary: Plan revised based on feedback; awaiting re-approval.\ndetails:\n- Changes: {summary of what changed}\n- Original feedback: {echo of rejection reason}",
+    "move_to_column": null,
+    "update_description": "REVISED DESCRIPTION WITH UPDATED PLAN"
+  },
+  "worker_type": "architect",
+  "task_id": "{task_id from work package}"
+}
+```
+
+---
+
 ## Constraints
 
+- **Return ONLY JSON** - No explanation text before or after
 - Never implement code (only plan it)
-- Always attach plan as file (for reference)
-- Always inject sub-tasks into description when finalizing
-- Single task only - process and exit
+- Always include plan in task description via update_description
+- Include branch name in plan
+- List files to modify/create
 
-Begin processing task: $TASK_ID with mode: $MODE
+---
+
+Now process the work package provided in the prompt and return your JSON result.

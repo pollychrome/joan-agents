@@ -69,6 +69,7 @@ WHILE true:
   Step 1: Cache Tags and Columns
   Step 2: Fetch Tasks
   Step 2b: Recover Stale Claims (self-healing)
+  Step 2c: Detect and Clean Anomalies (self-healing)
   Step 3: Build Priority Queues
   Step 4: Dispatch Workers
   Step 5: Handle Idle / Exit
@@ -194,6 +195,80 @@ Report: "Stale claim recovery complete"
 
 ---
 
+## Step 2c: Detect and Clean Anomalies (Self-Healing)
+
+Tasks can end up in inconsistent states due to partial failures, manual moves, or worker crashes.
+This step detects and auto-cleans anomalies to prevent stuck states.
+
+```
+WORKFLOW_TAGS = ["Review-Approved", "Ops-Ready", "Plan-Approved", "Planned",
+                 "Plan-Pending-Approval", "Ready", "Rework-Requested"]
+TERMINAL_COLUMNS = ["Deploy", "Done"]
+
+For each task in tasks:
+
+  # Anomaly 1: Completed tasks with stale workflow tags
+  IF inColumn(task, "Deploy") OR inColumn(task, "Done"):
+    stale_tags = []
+    FOR tagName IN WORKFLOW_TAGS:
+      IF hasTag(task, tagName):
+        stale_tags.push(tagName)
+
+    IF stale_tags.length > 0:
+      Report: "ANOMALY: '{task.title}' in {column} has stale tags: {stale_tags}"
+
+      # Auto-clean stale tags
+      FOR tagName IN stale_tags:
+        mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE[tagName])
+
+      # Audit trail
+      mcp__joan__create_task_comment(task.id,
+        "ALS/1
+        actor: coordinator
+        intent: recovery
+        action: anomaly-cleanup
+        tags.add: []
+        tags.remove: {stale_tags}
+        summary: Cleaned stale workflow tags from completed task.
+        details:
+        - column: {task column name}
+        - reason: Tasks in terminal columns should not have active workflow tags")
+
+  # Anomaly 2: Conflicting approval/rejection tags
+  IF hasTag(task, "Review-Approved") AND hasTag(task, "Rework-Requested"):
+    Report: "ANOMALY: '{task.title}' has both Review-Approved AND Rework-Requested"
+
+    # Remove the older state (approval came after rework request would be invalid)
+    mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Review-Approved"])
+
+    mcp__joan__create_task_comment(task.id,
+      "ALS/1
+      actor: coordinator
+      intent: recovery
+      action: anomaly-cleanup
+      tags.add: []
+      tags.remove: [Review-Approved]
+      summary: Removed conflicting Review-Approved tag (Rework-Requested takes precedence).
+      details:
+      - reason: Cannot be both approved and requesting rework simultaneously")
+
+  # Anomaly 3: Plan-Approved without Plan-Pending-Approval
+  IF hasTag(task, "Plan-Approved") AND NOT hasTag(task, "Plan-Pending-Approval"):
+    IF NOT inColumn(task, "Development") AND NOT inColumn(task, "Deploy") AND NOT inColumn(task, "Done"):
+      Report: "ANOMALY: '{task.title}' has Plan-Approved but no Plan-Pending-Approval"
+      # This is informational - may need Plan-Pending-Approval added or may be stale
+
+Report: "Anomaly detection complete"
+```
+
+**Why this matters:**
+- Partial worker failures leave inconsistent tag states
+- Manual task moves in Joan UI bypass tag cleanup
+- Without detection, tasks get stuck in limbo forever
+- Auto-cleanup makes the system self-healing
+
+---
+
 ## Step 3: Build Priority Queues
 
 Build queues in priority order. Each task goes into AT MOST one queue.
@@ -288,7 +363,8 @@ For each task in tasks:
     CONTINUE
 
   # Priority 9: Ops tasks with Review-Approved AND Ops-Ready
-  IF inColumn(task, "Review")
+  # NOTE: Check both Review AND Deploy to handle column drift (task moved before Ops processed)
+  IF (inColumn(task, "Review") OR inColumn(task, "Deploy"))
      AND hasTag(task, "Review-Approved")
      AND hasTag(task, "Ops-Ready"):
     OPS_QUEUE.push({task, mode: "merge"})
@@ -307,135 +383,374 @@ Report queue sizes:
 
 ---
 
-## Step 4: Dispatch Workers
+## Step 4: Dispatch Workers (MCP Proxy Pattern)
 
-**IMPORTANT:** Workers run in FOREGROUND (not background) to ensure MCP access if needed.
-Dispatch at most ONE worker per type per cycle (except devs which can be up to DEV_COUNT).
+**ARCHITECTURE:** Workers do NOT have MCP access. The coordinator:
+1. Builds a complete "work package" with all task data
+2. Dispatches worker with work package via prompt
+3. Receives structured JSON result from worker
+4. Executes MCP actions on behalf of worker
+5. Verifies post-conditions
 
-**CRITICAL - USE EXACT COMMAND FORMAT:**
-- You MUST invoke worker commands EXACTLY as shown (e.g., `/agents:dev-worker --task=... --dev=... --mode=...`)
-- DO NOT create custom prompts or inline instructions
-- DO NOT write "checkout the branch" or any other custom task steps
-- The worker command files (dev-worker.md, etc.) contain all the logic including WORKTREE CREATION
-- If you write custom prompts, workers will NOT create worktrees and will cause branch conflicts
-- The "Task Details" section is ONLY for reference - the worker command handles everything
+This pattern ensures workers are isolated, parallelizable, and fault-tolerant.
 
 ```
 DISPATCHED = 0
+RESULTS = []  # Collect worker results for batch processing
+
+# Helper: Build Work Package
+def build_work_package(task, mode, extra={}):
+  # Fetch full task details and comments
+  full_task = mcp__joan__get_task(task.id)
+  comments = mcp__joan__list_task_comments(task.id)
+
+  return {
+    "task_id": task.id,
+    "task_title": task.title,
+    "task_description": full_task.description,
+    "task_tags": [t.name for t in full_task.tags],
+    "task_column": get_column_name(full_task.column_id),
+    "task_comments": comments,
+    "mode": mode,
+    "project_id": PROJECT_ID,
+    "project_name": PROJECT_NAME,
+    **extra
+  }
 
 # 4a: Dispatch BA worker (one task)
 IF BA_ENABLED AND BA_QUEUE.length > 0:
   item = BA_QUEUE.shift()
-  task = item.task
+  work_package = build_work_package(item.task, item.mode)
 
-  Dispatch BA worker:
-    Task tool call:
-      subagent_type: "business-analyst"
-      model: MODEL
-      prompt: |
-        /agents:ba-worker --task={task.id} --mode={item.mode}
+  Report: "Dispatching BA worker for '{item.task.title}' (mode: {item.mode})"
 
-        Task Details (for reference):
-        - ID: {task.id}
-        - Title: {task.title}
-        - Description: {task.description}
-        - Current Tags: {task.tags}
+  result = Task tool call:
+    subagent_type: "business-analyst"
+    model: MODEL
+    prompt: |
+      You are a Business Analyst worker. Process this task and return a structured JSON result.
+
+      ## Work Package
+      ```json
+      {work_package as JSON}
+      ```
+
+      ## Instructions
+      Follow /agents:ba-worker logic for mode "{item.mode}".
+
+      ## Required Output
+      Return ONLY a JSON object with this structure (no markdown, no explanation):
+      ```json
+      {
+        "success": true/false,
+        "summary": "What you did",
+        "joan_actions": {
+          "add_tags": ["tag names to add"],
+          "remove_tags": ["tag names to remove"],
+          "add_comment": "ALS/1 format comment",
+          "move_to_column": "column name or null"
+        },
+        "worker_type": "ba",
+        "task_id": "{task.id}",
+        "needs_human": "reason if blocked, or null"
+      }
+      ```
+
+  RESULTS.push({worker: "ba", task: item.task, result: result})
   DISPATCHED++
 
 # 4b: Dispatch Architect worker (one task)
 IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
   item = ARCHITECT_QUEUE.shift()
-  task = item.task
+  work_package = build_work_package(item.task, item.mode)
 
-  Dispatch Architect worker:
-    Task tool call:
-      subagent_type: "architect"
-      model: MODEL
-      prompt: |
-        /agents:architect-worker --task={task.id} --mode={item.mode}
+  Report: "Dispatching Architect worker for '{item.task.title}' (mode: {item.mode})"
 
-        Task Details (for reference):
-        - ID: {task.id}
-        - Title: {task.title}
-        - Description: {task.description}
-        - Current Tags: {task.tags}
+  result = Task tool call:
+    subagent_type: "architect"
+    model: MODEL
+    prompt: |
+      You are an Architect worker. Process this task and return a structured JSON result.
+
+      ## Work Package
+      ```json
+      {work_package as JSON}
+      ```
+
+      ## Instructions
+      Follow /agents:architect-worker logic for mode "{item.mode}".
+
+      ## Required Output
+      Return ONLY a JSON object with this structure:
+      ```json
+      {
+        "success": true/false,
+        "summary": "What you did",
+        "joan_actions": {
+          "add_tags": ["tag names"],
+          "remove_tags": ["tag names"],
+          "add_comment": "ALS/1 format comment",
+          "move_to_column": "column name or null",
+          "update_description": "new description with plan, or null"
+        },
+        "worker_type": "architect",
+        "task_id": "{task.id}",
+        "needs_human": "reason if blocked, or null"
+      }
+      ```
+
+  RESULTS.push({worker: "architect", task: item.task, result: result})
   DISPATCHED++
 
 # 4c: Dispatch Dev workers (one per available dev)
 IF DEVS_ENABLED:
-  available_devs = find_available_devs()  # Devs not currently claimed
+  available_devs = find_available_devs()
 
   FOR EACH dev_id IN available_devs:
   IF DEV_QUEUE.length > 0:
     item = DEV_QUEUE.shift()
     task = item.task
 
-    # ATOMIC CLAIM before dispatch
-    1. mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Claimed-Dev-{dev_id}"])
-    2. Wait 1 second
-    3. Re-fetch task: mcp__joan__get_task(task.id)
-    4. Verify claim succeeded (your tag present, no other Claimed-Dev-* tags)
+    # ATOMIC CLAIM before dispatch (coordinator does this, not worker)
+    mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Claimed-Dev-{dev_id}"])
+    Wait 1 second
+    updated_task = mcp__joan__get_task(task.id)
 
-    IF claim succeeded:
-      Dispatch Dev worker:
-        Task tool call:
-          subagent_type: "implementation-worker"
-          model: MODEL
-          prompt: |
-            /agents:dev-worker --task={task.id} --dev={dev_id} --mode={item.mode}
+    IF claim verified (Claimed-Dev-{dev_id} tag present):
+      work_package = build_work_package(task, item.mode, {"dev_id": dev_id})
 
-            Task Details (for reference only - worker command handles everything):
-            - ID: {task.id}
-            - Title: {task.title}
+      Report: "Dispatching Dev worker {dev_id} for '{task.title}' (mode: {item.mode})"
 
-            IMPORTANT: The dev-worker command creates a WORKTREE for isolated development.
-            Do NOT add custom instructions. The command file has all the logic.
+      result = Task tool call:
+        subagent_type: "implementation-worker"
+        model: MODEL
+        prompt: |
+          You are Dev Worker {dev_id}. Implement this task and return a structured JSON result.
+
+          ## Work Package
+          ```json
+          {work_package as JSON}
+          ```
+
+          ## Instructions
+          Follow /agents:dev-worker logic for mode "{item.mode}".
+          IMPORTANT: Create a git worktree at ../worktrees/{task.id} for isolated development.
+
+          ## Required Output
+          Return ONLY a JSON object:
+          ```json
+          {
+            "success": true/false,
+            "summary": "What you implemented",
+            "joan_actions": {
+              "add_tags": ["Dev-Complete", "Design-Complete", "Test-Complete"],
+              "remove_tags": ["Claimed-Dev-{dev_id}", "Planned"],
+              "add_comment": "ALS/1 format",
+              "move_to_column": "Review"
+            },
+            "git_actions": {
+              "branch_created": "feature/...",
+              "files_changed": ["file1.ts", "file2.ts"],
+              "commit_made": true,
+              "pr_created": {"number": N, "url": "..."}
+            },
+            "worker_type": "dev",
+            "task_id": "{task.id}",
+            "needs_human": null
+          }
+          ```
+
+      RESULTS.push({worker: "dev", dev_id: dev_id, task: task, result: result})
       DISPATCHED++
 
     ELSE:
-      # Another coordinator/dev claimed it - skip
-      Remove your claim tag if present
-      Continue to next task
+      # Claim failed - another coordinator got it
+      mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Claimed-Dev-{dev_id}"])
+      Continue
 
 # 4d: Dispatch Reviewer worker (one task)
 IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
   item = REVIEWER_QUEUE.shift()
-  task = item.task
+  work_package = build_work_package(item.task, "review")
 
-  Dispatch Reviewer worker:
-    Task tool call:
-      subagent_type: "code-reviewer"
-      model: MODEL
-      prompt: |
-        /agents:reviewer-worker --task={task.id}
+  Report: "Dispatching Reviewer worker for '{item.task.title}'"
 
-        Task Details (for reference):
-        - ID: {task.id}
-        - Title: {task.title}
-        - Description: {task.description}
-        - Current Tags: {task.tags}
+  result = Task tool call:
+    subagent_type: "code-reviewer"
+    model: MODEL
+    prompt: |
+      You are a Code Reviewer worker. Review this task and return a structured JSON result.
+
+      ## Work Package
+      ```json
+      {work_package as JSON}
+      ```
+
+      ## Instructions
+      Follow /agents:reviewer-worker logic.
+
+      ## Required Output
+      Return ONLY a JSON object:
+      ```json
+      {
+        "success": true/false,
+        "summary": "Review findings",
+        "joan_actions": {
+          "add_tags": ["Review-Approved"] or ["Rework-Requested", "Planned"],
+          "remove_tags": ["Review-In-Progress"] or completion tags if rejecting,
+          "add_comment": "ALS/1 format with review details",
+          "move_to_column": null or "Development" if rework needed
+        },
+        "worker_type": "reviewer",
+        "task_id": "{task.id}",
+        "needs_human": null
+      }
+      ```
+
+  RESULTS.push({worker: "reviewer", task: item.task, result: result})
   DISPATCHED++
 
 # 4e: Dispatch Ops worker (one task)
 IF OPS_ENABLED AND OPS_QUEUE.length > 0:
   item = OPS_QUEUE.shift()
-  task = item.task
+  work_package = build_work_package(item.task, item.mode)
 
-  Dispatch Ops worker:
-    Task tool call:
-      subagent_type: "ops"
-      model: MODEL
-      prompt: |
-        /agents:ops-worker --task={task.id} --mode={item.mode}
+  Report: "Dispatching Ops worker for '{item.task.title}' (mode: {item.mode})"
 
-        Task Details (for reference):
-        - ID: {task.id}
-        - Title: {task.title}
-        - Description: {task.description}
-        - Current Tags: {task.tags}
+  result = Task tool call:
+    subagent_type: "ops"
+    model: MODEL
+    prompt: |
+      You are an Ops worker. Handle integration operations and return a structured JSON result.
+
+      ## Work Package
+      ```json
+      {work_package as JSON}
+      ```
+
+      ## Instructions
+      Follow /agents:ops-worker logic for mode "{item.mode}".
+
+      ## Required Output
+      Return ONLY a JSON object:
+      ```json
+      {
+        "success": true/false,
+        "summary": "What you did",
+        "joan_actions": {
+          "add_tags": [],
+          "remove_tags": ["Review-Approved", "Ops-Ready"],
+          "add_comment": "ALS/1 format",
+          "move_to_column": "Deploy" or "Development" if conflict
+        },
+        "git_actions": {
+          "merged_to": "develop",
+          "commit_sha": "..."
+        },
+        "worker_type": "ops",
+        "task_id": "{task.id}",
+        "needs_human": null or "reason"
+      }
+      ```
+
+  RESULTS.push({worker: "ops", task: item.task, result: result})
   DISPATCHED++
 
 Report: "Dispatched {DISPATCHED} workers"
+```
+
+---
+
+## Step 4f: Execute Worker Results (MCP Proxy)
+
+After all workers complete, execute their requested MCP actions.
+
+```
+FOR EACH {worker, task, result} IN RESULTS:
+
+  Report: "Processing result from {worker} worker for '{task.title}'"
+
+  # 1. Parse result (handle both JSON and text responses)
+  parsed = parse_json_from_result(result)
+
+  IF parsed is null OR not valid:
+    Report: "WARNING: Could not parse result from {worker} worker"
+    Report: "Raw result: {result}"
+    CONTINUE
+
+  # 2. Check success status
+  IF NOT parsed.success:
+    Report: "Worker reported FAILURE: {parsed.summary}"
+    IF parsed.needs_human:
+      Report: "Needs human intervention: {parsed.needs_human}"
+      # Add failure tag for visibility
+      mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Implementation-Failed"])
+    CONTINUE
+
+  # 3. Execute joan_actions
+  actions = parsed.joan_actions
+
+  # 3a. Add tags
+  IF actions.add_tags AND actions.add_tags.length > 0:
+    FOR tag_name IN actions.add_tags:
+      IF TAG_CACHE[tag_name]:
+        mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE[tag_name])
+        Report: "  Added tag: {tag_name}"
+      ELSE:
+        Report: "  WARNING: Unknown tag '{tag_name}', skipping"
+
+  # 3b. Remove tags
+  IF actions.remove_tags AND actions.remove_tags.length > 0:
+    FOR tag_name IN actions.remove_tags:
+      IF TAG_CACHE[tag_name]:
+        mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE[tag_name])
+        Report: "  Removed tag: {tag_name}"
+
+  # 3c. Add comment
+  IF actions.add_comment AND actions.add_comment.length > 0:
+    mcp__joan__create_task_comment(task.id, actions.add_comment)
+    Report: "  Added comment"
+
+  # 3d. Update description (for architect plans)
+  IF actions.update_description:
+    mcp__joan__update_task(task.id, description=actions.update_description)
+    Report: "  Updated task description"
+
+  # 3e. Move to column
+  IF actions.move_to_column AND COLUMN_CACHE[actions.move_to_column]:
+    mcp__joan__update_task(task.id, column_id=COLUMN_CACHE[actions.move_to_column])
+    Report: "  Moved to column: {actions.move_to_column}"
+
+  # 4. Verify post-conditions
+  updated_task = mcp__joan__get_task(task.id)
+
+  # Verify tags were applied
+  FOR tag_name IN (actions.add_tags or []):
+    IF TAG_CACHE[tag_name] AND NOT hasTag(updated_task, tag_name):
+      Report: "  WARNING: Tag '{tag_name}' not applied, retrying..."
+      mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE[tag_name])
+
+  # Verify tags were removed
+  FOR tag_name IN (actions.remove_tags or []):
+    IF TAG_CACHE[tag_name] AND hasTag(updated_task, tag_name):
+      Report: "  WARNING: Tag '{tag_name}' not removed, retrying..."
+      mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE[tag_name])
+
+  Report: "Completed processing for '{task.title}': {parsed.summary}"
+
+Report: "All {RESULTS.length} worker results processed"
+```
+
+### Helper: parse_json_from_result(result)
+
+```
+# Workers return text that should contain JSON
+# Extract JSON from the result, handling various formats
+
+1. Try direct JSON.parse(result)
+2. If fails, look for ```json ... ``` block and extract
+3. If fails, look for { ... } pattern and extract
+4. If all fail, return null
 ```
 
 ### Helper: find_available_devs()
