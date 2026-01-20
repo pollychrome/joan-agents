@@ -48,7 +48,8 @@ Agents read from `.joan-agents.json` in project root:
   "settings": {
     "model": "opus",
     "pollingIntervalMinutes": 10,
-    "maxIdlePolls": 6
+    "maxIdlePolls": 6,
+    "staleClaimMinutes": 60
   },
   "agents": {
     "businessAnalyst": { "enabled": true },
@@ -69,6 +70,7 @@ Run `/agents:init` to generate this file interactively.
 | `model` | opus | Claude model for all agents: `opus`, `sonnet`, or `haiku` |
 | `pollingIntervalMinutes` | 10 | Minutes between polls when queue is empty |
 | `maxIdlePolls` | 6 | Consecutive empty polls before auto-shutdown |
+| `staleClaimMinutes` | 60 | Minutes before orphaned dev claims are auto-released |
 
 **Model Selection:**
 - `opus` - Best instruction-following, most thorough (recommended for complex workflows)
@@ -176,6 +178,29 @@ Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual in
 4. Human ensures `Planned` tag is present
 5. Task becomes available for devs to claim again
 
+### Automatic Recovery (Self-Healing)
+
+The coordinator automatically recovers from certain failure modes:
+
+**Stale Claim Recovery:**
+When the coordinator or workers are killed/crash, `Claimed-Dev-N` tags may remain orphaned on tasks. Each poll cycle, the coordinator:
+1. Finds tasks with `Claimed-Dev-N` tags
+2. Checks if the task's `updated_at` timestamp is older than `staleClaimMinutes` (default: 60)
+3. If stale, removes the orphaned claim tag and adds an ALS comment for audit
+4. Task becomes available for other dev workers to claim
+
+This makes the system self-healing - no manual intervention needed when workers crash or the coordinator is restarted.
+
+**What triggers recovery:**
+- Coordinator killed mid-dispatch (workers still claimed tasks)
+- Worker crashes or times out without cleanup
+- Network issues preventing worker completion
+
+**What still requires manual intervention:**
+- `Implementation-Failed` tag (dev hit unrecoverable error)
+- `Worktree-Failed` tag (git worktree creation failed)
+- Tasks stuck in unexpected states
+
 ### Comment Convention (ALS Breadcrumbs)
 
 **IMPORTANT:** In v4, comments are WRITE-ONLY breadcrumbs. Agents never parse comments to determine state - they use tags exclusively.
@@ -224,21 +249,25 @@ When Ops detects a merge conflict during final merge to `develop`:
 
 ## Worktree Management
 
+**CRITICAL:** Worktrees enable parallel development. Without them, multiple dev workers would conflict by switching branches in the same directory.
+
 Devs create worktrees in `../worktrees/`:
 
 ```bash
-# Create
+# Create (done by dev-worker.md Step 2)
 git worktree add ../worktrees/{task-id} feature/{branch}
 
 # Work happens here
 cd ../worktrees/{task-id}
 
-# Cleanup
+# Cleanup (done on success)
 git worktree remove ../worktrees/{task-id} --force
 git worktree prune
 ```
 
 All worktrees share the same `.git` directory.
+
+**Important:** The dispatcher MUST invoke `/agents:dev-worker` command (not custom prompts) to ensure worktree creation. See dispatch.md Step 4 constraints.
 
 ## Sub-Task Format
 

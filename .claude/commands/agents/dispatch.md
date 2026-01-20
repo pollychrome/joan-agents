@@ -30,6 +30,7 @@ POLL_INTERVAL = config.settings.pollingIntervalMinutes (default: 10)
 MAX_IDLE = --max-idle override or config.settings.maxIdlePolls (default: 6)
 MODEL = config.settings.model (default: "opus")
 DEV_COUNT = config.agents.devs.count (default: 2)
+STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes (default: 60)
 
 # Enabled flags (all default to true)
 BA_ENABLED = config.agents.businessAnalyst.enabled
@@ -65,8 +66,9 @@ LOOP_MODE = true if --loop flag present, else false
 
 ```
 WHILE true:
-  Step 1: Cache Tags
+  Step 1: Cache Tags and Columns
   Step 2: Fetch Tasks
+  Step 2b: Recover Stale Claims (self-healing)
   Step 3: Build Priority Queues
   Step 4: Dispatch Workers
   Step 5: Handle Idle / Exit
@@ -138,6 +140,57 @@ Do NOT compare task.status string - it may be out of sync with column_id.
 NOTE: Do NOT use task.status for column checks - it may be stale.
 Always use task.column_id with the inColumn() helper.
 ```
+
+---
+
+## Step 2b: Recover Stale Claims (Self-Healing)
+
+When the coordinator is killed or workers crash, `Claimed-Dev-N` tags may remain orphaned.
+This step detects and releases stale claims so tasks can be picked up again.
+
+```
+STALE_THRESHOLD_MINUTES = STALE_CLAIM_MINUTES  # From config, default 60
+
+For each task in tasks:
+  IF isClaimedByAnyDev(task):
+
+    # Check task's updated_at timestamp
+    claim_age_minutes = (NOW - task.updated_at) in minutes
+
+    # A task claimed but not updated for STALE_THRESHOLD is likely orphaned
+    IF claim_age_minutes > STALE_THRESHOLD_MINUTES:
+
+      # Find which dev has the claim
+      FOR N in 1..DEV_COUNT:
+        IF hasTag(task, "Claimed-Dev-{N}"):
+
+          Report: "Releasing stale claim on '{task.title}' (Claimed-Dev-{N}, idle {claim_age_minutes} min)"
+
+          # Remove the stale claim tag
+          mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Claimed-Dev-{N}"])
+
+          # Add comment for audit trail
+          mcp__joan__create_task_comment(task.id,
+            "ALS/1
+            actor: coordinator
+            intent: recovery
+            action: release-stale-claim
+            tags.add: []
+            tags.remove: [Claimed-Dev-{N}]
+            summary: Released stale claim after {claim_age_minutes} min idle.
+            details:
+            - threshold: {STALE_THRESHOLD_MINUTES} min
+            - reason: Worker likely crashed or was terminated")
+
+          BREAK  # Only one claim per task
+
+Report: "Stale claim recovery complete"
+```
+
+**Why this matters:**
+- Without recovery, orphaned claims block tasks indefinitely
+- Workers may crash, be killed, or hit timeouts
+- This makes the system self-healing without manual intervention
 
 ---
 
