@@ -38,6 +38,48 @@
           "maximum": 100,
           "default": 6,
           "description": "Number of consecutive empty polls before agent shuts down"
+        },
+        "staleClaimMinutes": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 1440,
+          "default": 60,
+          "description": "Minutes before orphaned dev claims are auto-released (self-healing)"
+        },
+        "maxPollCyclesBeforeRestart": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 100,
+          "default": 10,
+          "description": "Poll cycles before coordinator restarts to clear context (prevents drift)"
+        },
+        "stuckStateMinutes": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 1440,
+          "default": 120,
+          "description": "Minutes before tasks in same workflow state are flagged as stuck"
+        },
+        "schedulerIntervalSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600,
+          "default": 300,
+          "description": "Seconds between coordinator spawns when using external scheduler (/agents:scheduler)"
+        },
+        "schedulerStuckTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 120,
+          "maximum": 1800,
+          "default": 600,
+          "description": "Seconds before external scheduler kills a stuck coordinator (no heartbeat)"
+        },
+        "schedulerMaxConsecutiveFailures": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3,
+          "description": "Max consecutive coordinator failures before scheduler stops"
         }
       }
     },

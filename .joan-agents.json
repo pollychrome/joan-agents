@@ -5,7 +5,13 @@
   "settings": {
     "model": "opus",
     "pollingIntervalMinutes": 10,
-    "maxIdlePolls": 6
+    "maxIdlePolls": 6,
+    "staleClaimMinutes": 60,
+    "maxPollCyclesBeforeRestart": 10,
+    "stuckStateMinutes": 120,
+    "schedulerIntervalSeconds": 300,
+    "schedulerStuckTimeoutSeconds": 600,
+    "schedulerMaxConsecutiveFailures": 3
   },
   "agents": {
     "businessAnalyst": {

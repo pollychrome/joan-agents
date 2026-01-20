@@ -13,7 +13,8 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 
 # 3. Run coordinator
 /agents:start              # Single pass
-/agents:start --loop       # Continuous operation (recommended)
+/agents:start --loop       # Continuous operation (interactive sessions)
+/agents:scheduler          # External scheduler (overnight/long-running - recommended)
 
 # Or equivalently:
 /agents:dispatch --loop
@@ -71,7 +72,12 @@ Agents read from `.joan-agents.json` in project root:
     "model": "opus",
     "pollingIntervalMinutes": 10,
     "maxIdlePolls": 6,
-    "staleClaimMinutes": 60
+    "staleClaimMinutes": 60,
+    "maxPollCyclesBeforeRestart": 10,
+    "stuckStateMinutes": 120,
+    "schedulerIntervalSeconds": 300,
+    "schedulerStuckTimeoutSeconds": 600,
+    "schedulerMaxConsecutiveFailures": 3
   },
   "agents": {
     "businessAnalyst": { "enabled": true },
@@ -93,6 +99,8 @@ Run `/agents:init` to generate this file interactively.
 | `pollingIntervalMinutes` | 10 | Minutes between polls when queue is empty |
 | `maxIdlePolls` | 6 | Consecutive empty polls before auto-shutdown |
 | `staleClaimMinutes` | 60 | Minutes before orphaned dev claims are auto-released |
+| `maxPollCyclesBeforeRestart` | 10 | Poll cycles before context refresh (prevents drift) |
+| `stuckStateMinutes` | 120 | Minutes before tasks are flagged as stuck in workflow |
 
 **Model Selection:**
 - `opus` - Best instruction-following, most thorough (recommended for complex workflows)
@@ -129,6 +137,51 @@ The coordinator supports two modes via the `--loop` flag:
 - Poll continuously until max idle reached
 - Auto-shutdown after N empty polls
 - Best for: autonomous operation, overnight runs
+
+### External Scheduler (Recommended for Long-Running Operations)
+
+**Problem:** Internal `--loop` mode accumulates context within the Claude session. After many poll cycles, the context window fills → model becomes unresponsive or erratic.
+
+**Solution:** Use `/agents:scheduler` which spawns fresh coordinator processes with clean context:
+
+```bash
+/agents:scheduler                    # Run with defaults
+/agents:scheduler --interval=120     # Poll every 2 minutes
+/agents:scheduler --max-idle=48      # Extended operation (4 hours)
+```
+
+**How it works:**
+```
+External Scheduler (bash script)
+├── spawn: claude /agents:dispatch → exits with fresh context
+├── check heartbeat for stuck detection
+├── sleep INTERVAL seconds
+├── spawn: claude /agents:dispatch → exits with fresh context
+└── ... (each invocation starts clean)
+```
+
+**When to use:**
+
+| Scenario | Recommended Mode |
+|----------|------------------|
+| Short interactive session | `/agents:dispatch --loop` |
+| Overnight autonomous operation | `/agents:scheduler` |
+| Multi-hour background processing | `/agents:scheduler --max-idle=48` |
+| Debugging/testing | `/agents:dispatch` (single pass) |
+
+**Scheduler settings** (in `.joan-agents.json`):
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `schedulerIntervalSeconds` | 300 | Seconds between coordinator spawns |
+| `schedulerStuckTimeoutSeconds` | 600 | Seconds before killing stuck coordinator |
+| `schedulerMaxConsecutiveFailures` | 3 | Max failures before scheduler stops |
+
+**Graceful shutdown:**
+```bash
+touch /tmp/joan-agents-{project-name}.shutdown
+```
+
+Logs are written to `.claude/logs/scheduler.log`.
 
 ## Coordinator Workflow
 
@@ -221,6 +274,24 @@ Tasks can end up with stale workflow tags due to partial failures, manual moves,
 3. Detects conflicting tag combinations (e.g., both `Review-Approved` AND `Rework-Requested`)
 4. Adds ALS comment documenting the cleanup for audit trail
 
+**Stuck State Detection:**
+Tasks can get stuck in mid-workflow states due to context bloat or lost worker results. Each poll cycle:
+1. Checks tasks against expected workflow state timeouts (e.g., plan finalization: 30 min, plan creation: 60 min)
+2. Tasks exceeding their timeout are flagged and force re-queued for processing
+3. Logs diagnostic comments for debugging
+
+**State Machine Validation:**
+Validates that task tag combinations are valid workflow states:
+1. Detects invalid tag combinations (e.g., `Ready` + `Plan-Pending-Approval` + `Plan-Approved`)
+2. Auto-remediates by removing stale tags (removes `Ready` when plan exists)
+3. Prevents tasks from matching multiple queues or none
+
+**Context Window Management:**
+Long-running coordinators can experience context drift:
+1. Tracks poll cycles (`maxPollCyclesBeforeRestart`, default: 10)
+2. In loop mode, exits with code 100 after N cycles to trigger restart
+3. External scheduler spawns fresh processes for each dispatch cycle
+
 This makes the system self-healing - no manual intervention needed when workers crash or the coordinator is restarted.
 
 **What triggers recovery:**
@@ -228,11 +299,11 @@ This makes the system self-healing - no manual intervention needed when workers 
 - Worker crashes or times out without cleanup
 - Network issues preventing worker completion
 - Manual task moves in Joan UI that bypass tag cleanup
+- Context bloat causing queue-building logic to fail
 
 **What still requires manual intervention:**
 - `Implementation-Failed` tag (dev hit unrecoverable error)
 - `Worktree-Failed` tag (git worktree creation failed)
-- Tasks stuck in unexpected states
 
 ### Comment Convention (ALS Breadcrumbs)
 

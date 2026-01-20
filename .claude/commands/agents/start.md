@@ -85,13 +85,24 @@ Task tool call:
 /agents:start
 /agents:start dispatch
 
-# Continuous loop mode (recommended for production)
+# Continuous loop mode (interactive sessions)
 /agents:start --loop
 /agents:start dispatch --loop
 
 # Extended idle threshold (2 hours at 10-min intervals)
 /agents:start --loop --max-idle=12
+
+# For long-running/overnight operations, use the external scheduler instead:
+/agents:scheduler
 ```
+
+## When to Use Which Mode
+
+| Scenario | Command |
+|----------|---------|
+| Single test run | `/agents:start` |
+| Interactive session | `/agents:start --loop` |
+| Overnight/long-running | `/agents:scheduler` (prevents context overflow) |
 
 ## How It Works
 

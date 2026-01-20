@@ -217,7 +217,13 @@ Create `.joan-agents.json` in project root with the user's selections:
   "settings": {
     "model": "{opus|sonnet|haiku}",
     "pollingIntervalMinutes": {user-choice},
-    "maxIdlePolls": {user-choice}
+    "maxIdlePolls": {user-choice},
+    "staleClaimMinutes": 60,
+    "maxPollCyclesBeforeRestart": 10,
+    "stuckStateMinutes": 120,
+    "schedulerIntervalSeconds": 300,
+    "schedulerStuckTimeoutSeconds": 600,
+    "schedulerMaxConsecutiveFailures": 3
   },
   "agents": {
     "businessAnalyst": { "enabled": {true/false} },
@@ -359,11 +365,20 @@ The coordinator polls Joan ONCE per interval and dispatches
 single-pass workers as needed. Much more efficient than
 running agents independently.
 
-RECOMMENDED - DISPATCHER MODE:
+INVOCATION MODES:
 ─────────────────────────────────────
   /agents:dispatch           Single pass (dispatch once, exit)
-  /agents:dispatch --loop    Continuous (recommended for production)
-  /agents:start --loop       Equivalent to dispatch --loop
+  /agents:dispatch --loop    Continuous (interactive sessions)
+  /agents:scheduler          External scheduler (overnight/long-running)
+
+WHEN TO USE EACH:
+─────────────────────────────────────
+  --loop mode:    Good for interactive sessions where you're watching
+  scheduler:      Best for overnight/multi-hour runs (prevents context overflow)
+
+  The internal --loop accumulates context over time. After many cycles,
+  context can overflow causing issues. The external scheduler spawns
+  FRESH Claude processes each cycle, avoiding this problem.
 
 WHAT HAPPENS:
 ─────────────────────────────────────
@@ -376,9 +391,9 @@ WHAT HAPPENS:
      - Reviewer-worker for Review tasks
      - Ops-worker for approved merges
   4. Workers complete and exit
-  5. Coordinator sleeps, then repeats (in loop mode)
+  5. Coordinator sleeps, then repeats (in loop/scheduler mode)
 
-Loop mode auto-shuts down after {maxIdlePolls} empty polls
+Auto-shutdown after {maxIdlePolls} empty polls
 (configured to {calculated time} with current settings)
 
 PARALLEL DEVELOPMENT:
@@ -450,7 +465,8 @@ Ready to go! Here's your workflow:
 1. Create tasks in Joan's "To Do" column
 
 2. Start agents:
-   /agents:dispatch --loop    (recommended)
+   /agents:dispatch --loop    (interactive sessions)
+   /agents:scheduler          (overnight/long-running - recommended)
 
 3. Watch tasks flow:
    To Do → BA adds "Ready" tag
@@ -462,8 +478,8 @@ Ready to go! Here's your workflow:
    Done!
 
 4. Stop agents:
-   They auto-shutdown after {calculated time} of inactivity
-   Or press Ctrl+C to stop manually
+   --loop mode: Auto-shutdown after {calculated time} of inactivity, or Ctrl+C
+   scheduler:   touch /tmp/joan-agents-{project-name}.shutdown
 
 Need help later? Run /agents:init again to see this tutorial.
 ```
@@ -476,9 +492,12 @@ After tutorial (or if skipped), show:
 
 ```
 Start agents with:
-  /agents:dispatch --loop   - Recommended: continuous coordinator
+  /agents:scheduler         - Recommended for overnight/long-running (fresh context each cycle)
+  /agents:dispatch --loop   - Interactive sessions (watch progress)
   /agents:dispatch          - Single pass (dispatch once, exit)
-  /agents:start --loop      - Equivalent to dispatch --loop
+
+Stop scheduler gracefully:
+  touch /tmp/joan-agents-{project-name}.shutdown
 
 Change model anytime with: /agents:model
 

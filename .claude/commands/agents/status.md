@@ -30,8 +30,21 @@ If config missing, report error and exit.
 
 3. For each task, resolve tag names from IDs
 
-4. Check for running background agents:
-   - Use Bash to check for Claude Code background tasks if possible
+4. Check scheduler/coordinator status:
+   PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+   HEARTBEAT_FILE = /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+   PID_FILE = /tmp/joan-agents-{PROJECT_SLUG}.pid
+   SHUTDOWN_FILE = /tmp/joan-agents-{PROJECT_SLUG}.shutdown
+
+   Check if HEARTBEAT_FILE exists:
+     - If exists, read timestamp and calculate age
+     - If age < 60 seconds: SCHEDULER_STATUS = "Active (heartbeat {age}s ago)"
+     - If age < 600 seconds: SCHEDULER_STATUS = "Running (heartbeat {age}s ago)"
+     - If age >= 600 seconds: SCHEDULER_STATUS = "Possibly stuck (heartbeat {age}s ago)"
+   - If not exists: SCHEDULER_STATUS = "Not running"
+
+   Check if SHUTDOWN_FILE exists:
+     - If exists: SHUTDOWN_PENDING = true
 ```
 
 ## Step 2: Categorize Tasks
@@ -109,6 +122,12 @@ Output the following format:
   JOAN AGENTS STATUS - {PROJECT_NAME}
 ═══════════════════════════════════════════════════════════════
 
+  SCHEDULER STATUS
+  ─────────────────────────────────────────────────────────────
+  {SCHEDULER_STATUS}
+  {IF SHUTDOWN_PENDING}  ⚠ Shutdown pending (will stop after current cycle){END IF}
+  ─────────────────────────────────────────────────────────────
+
   PIPELINE OVERVIEW
   ─────────────────────────────────────────────────────────────
   To Do        [{TO_DO.length}] ████░░░░░░
@@ -170,7 +189,8 @@ Output the following format:
   ─────────────────────────────────────────────────────────────
 
 ═══════════════════════════════════════════════════════════════
-  Run /agents:start to begin processing | /agents:status to refresh
+  /agents:scheduler (long-running) | /agents:dispatch --loop (interactive)
+  /agents:status to refresh
 ═══════════════════════════════════════════════════════════════
 ```
 
