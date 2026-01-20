@@ -77,7 +77,7 @@ WHILE true:
 
 ---
 
-## Step 1: Cache Tags (once per loop iteration)
+## Step 1: Cache Tags and Columns (once per loop iteration)
 
 ```
 1. Fetch all project tags:
@@ -91,15 +91,34 @@ WHILE true:
      ... (all workflow tags)
    }
 
-3. Helper functions:
+3. Fetch all project columns:
+   columns = mcp__joan__list_columns(PROJECT_ID)
+
+4. Build column name → ID map:
+   COLUMN_CACHE = {
+     "To Do": "uuid-a",
+     "Analyse": "uuid-b",
+     "Development": "uuid-c",
+     "Review": "uuid-d",
+     "Deploy": "uuid-e",
+     "Done": "uuid-f"
+   }
+
+5. Helper functions:
 
    hasTag(task, tagName):
-   - Check if task.tags contains TAG_CACHE[tagName]
+   - Check if task.tags array contains any tag with id === TAG_CACHE[tagName]
 
    isClaimedByAnyDev(task):
    - For each tagName in TAG_CACHE keys:
        IF tagName starts with "Claimed-Dev-" AND hasTag(task, tagName): RETURN true
    - RETURN false
+
+   inColumn(task, columnName):
+   - RETURN task.column_id === COLUMN_CACHE[columnName]
+
+IMPORTANT: Always use inColumn(task, "Column Name") to check columns.
+Do NOT compare task.status string - it may be out of sync with column_id.
 ```
 
 ---
@@ -113,8 +132,11 @@ WHILE true:
 2. For each task, note:
    - task.id
    - task.title
-   - task.status (column)
+   - task.column_id (use this for column checks via inColumn())
    - task.tags[]
+
+NOTE: Do NOT use task.status for column checks - it may be stale.
+Always use task.column_id with the inColumn() helper.
 ```
 
 ---
@@ -133,96 +155,96 @@ OPS_QUEUE = []
 For each task in tasks:
 
   # Priority 1: Dev tasks needing conflict resolution
-  IF task in "Development" column
-     AND hasTag("Merge-Conflict")
+  IF inColumn(task, "Development")
+     AND hasTag(task, "Merge-Conflict")
      AND NOT isClaimedByAnyDev(task):
     DEV_QUEUE.push({task, mode: "conflict"})
     CONTINUE
 
   # Priority 2: Dev tasks needing rework
-  IF task in "Development" column
-     AND hasTag("Rework-Requested")
+  IF inColumn(task, "Development")
+     AND hasTag(task, "Rework-Requested")
      AND NOT isClaimedByAnyDev(task)
-     AND NOT hasTag("Merge-Conflict"):
+     AND NOT hasTag(task, "Merge-Conflict"):
     DEV_QUEUE.push({task, mode: "rework"})
     CONTINUE
 
   # Priority 3: Dev tasks ready for implementation
-  IF task in "Development" column
-     AND hasTag("Planned")
+  IF inColumn(task, "Development")
+     AND hasTag(task, "Planned")
      AND NOT isClaimedByAnyDev(task)
-     AND NOT hasTag("Rework-Requested")
-     AND NOT hasTag("Implementation-Failed")
-     AND NOT hasTag("Worktree-Failed"):
+     AND NOT hasTag(task, "Rework-Requested")
+     AND NOT hasTag(task, "Implementation-Failed")
+     AND NOT hasTag(task, "Worktree-Failed"):
     DEV_QUEUE.push({task, mode: "implement"})
     CONTINUE
 
   # Priority 4: Architect tasks with Plan-Approved (finalize)
-  IF task in "Analyse" column
-     AND hasTag("Plan-Pending-Approval")
-     AND hasTag("Plan-Approved")
-     AND NOT hasTag("Plan-Rejected"):
+  IF inColumn(task, "Analyse")
+     AND hasTag(task, "Plan-Pending-Approval")
+     AND hasTag(task, "Plan-Approved")
+     AND NOT hasTag(task, "Plan-Rejected"):
     ARCHITECT_QUEUE.push({task, mode: "finalize"})
     CONTINUE
 
   # Priority 4.5: Architect tasks with Plan-Rejected (revise)
-  IF task in "Analyse" column
-     AND hasTag("Plan-Pending-Approval")
-     AND hasTag("Plan-Rejected"):
+  IF inColumn(task, "Analyse")
+     AND hasTag(task, "Plan-Pending-Approval")
+     AND hasTag(task, "Plan-Rejected"):
     ARCHITECT_QUEUE.push({task, mode: "revise"})
     CONTINUE
 
   # Priority 5: Architect tasks with Ready (create plan)
-  IF task in "Analyse" column
-     AND hasTag("Ready")
-     AND NOT hasTag("Plan-Pending-Approval"):
+  IF inColumn(task, "Analyse")
+     AND hasTag(task, "Ready")
+     AND NOT hasTag(task, "Plan-Pending-Approval"):
     ARCHITECT_QUEUE.push({task, mode: "plan"})
     CONTINUE
 
   # Priority 6: BA tasks with Clarification-Answered (reevaluate)
-  IF task in "Analyse" column
-     AND hasTag("Needs-Clarification")
-     AND hasTag("Clarification-Answered"):
+  IF inColumn(task, "Analyse")
+     AND hasTag(task, "Needs-Clarification")
+     AND hasTag(task, "Clarification-Answered"):
     BA_QUEUE.push({task, mode: "reevaluate"})
     CONTINUE
 
   # Priority 7: BA tasks in To Do (evaluate)
-  IF task in "To Do" column
-     AND NOT hasTag("Ready"):
+  IF inColumn(task, "To Do")
+     AND NOT hasTag(task, "Ready"):
     BA_QUEUE.push({task, mode: "evaluate"})
     CONTINUE
 
   # Priority 8: Reviewer tasks ready for review
-  IF task in "Review" column
-     AND hasTag("Dev-Complete")
-     AND hasTag("Design-Complete")
-     AND hasTag("Test-Complete")
-     AND NOT hasTag("Review-In-Progress")
-     AND NOT hasTag("Review-Approved")
-     AND NOT hasTag("Rework-Requested"):
+  IF inColumn(task, "Review")
+     AND hasTag(task, "Dev-Complete")
+     AND hasTag(task, "Design-Complete")
+     AND hasTag(task, "Test-Complete")
+     AND NOT hasTag(task, "Review-In-Progress")
+     AND NOT hasTag(task, "Review-Approved")
+     AND NOT hasTag(task, "Rework-Requested"):
     REVIEWER_QUEUE.push({task})
     CONTINUE
 
   # Priority 8b: Rework-Complete triggers re-review
-  IF task in "Review" column
-     AND hasTag("Rework-Complete")
-     AND NOT hasTag("Review-In-Progress")
-     AND NOT hasTag("Review-Approved")
-     AND NOT hasTag("Rework-Requested"):
+  IF inColumn(task, "Review")
+     AND hasTag(task, "Rework-Complete")
+     AND NOT hasTag(task, "Review-In-Progress")
+     AND NOT hasTag(task, "Review-Approved")
+     AND NOT hasTag(task, "Rework-Requested"):
     REVIEWER_QUEUE.push({task})
     CONTINUE
 
   # Priority 9: Ops tasks with Review-Approved AND Ops-Ready
-  IF task in "Review" column
-     AND hasTag("Review-Approved")
-     AND hasTag("Ops-Ready"):
+  IF inColumn(task, "Review")
+     AND hasTag(task, "Review-Approved")
+     AND hasTag(task, "Ops-Ready"):
     OPS_QUEUE.push({task, mode: "merge"})
     CONTINUE
 
   # Priority 10: Ops tasks with Rework-Requested in Review
-  IF task in "Review" column
-     AND hasTag("Rework-Requested")
-     AND NOT hasTag("Review-Approved"):
+  IF inColumn(task, "Review")
+     AND hasTag(task, "Rework-Requested")
+     AND NOT hasTag(task, "Review-Approved"):
     OPS_QUEUE.push({task, mode: "rework"})
     CONTINUE
 
