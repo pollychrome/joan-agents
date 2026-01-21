@@ -9,9 +9,10 @@ allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Task, View, computer
 Implement a single task and return a structured JSON result.
 **You do NOT have MCP access** - return action requests for the coordinator to execute.
 
-**CRITICAL: This command MUST be invoked by the dispatcher - not bypassed with custom prompts.**
-This command creates a WORKTREE for isolated development. Without worktrees, multiple dev workers
-will conflict by switching branches in the same directory.
+**Branch Management:** In strict serial mode (one dev worker), we work directly in the main
+directory using feature branches. The feature branch stays checked out until Ops merges it
+to develop. This simplifies the workflow while maintaining isolation since only one dev
+task runs at a time.
 
 ## Input: Work Package
 
@@ -29,10 +30,21 @@ The coordinator provides a work package with:
   "claim_tag": "Claimed-Dev-1",
   "project_id": "uuid",
   "project_name": "string",
-  "project_root": "/path/to/project",
-  "worktree_base": "../worktrees"
+  "previous_stage_context": {
+    "from_stage": "architect" | "reviewer",
+    "to_stage": "dev",
+    "key_decisions": ["..."],
+    "files_of_interest": ["..."],
+    "warnings": ["..."],
+    "dependencies": ["..."]
+  }
 }
 ```
+
+**Note on previous_stage_context**:
+- **implement mode**: Contains Architect→Dev handoff with architecture decisions, files to modify, dependencies
+- **rework/conflict mode**: Contains Reviewer→Dev handoff with blockers, warnings, specific issues to fix
+- May be `null` for legacy tasks without handoffs
 
 ---
 
@@ -47,8 +59,6 @@ The coordinator provides a work package with:
    MODE = work_package.mode
    DEV_ID = work_package.dev_id
    CLAIM_TAG = work_package.claim_tag
-   PROJECT_ROOT = work_package.project_root
-   WORKTREE_BASE = work_package.worktree_base
 
 2. Validate task is claimed by this worker:
    - TAGS should contain CLAIM_TAG
@@ -72,34 +82,32 @@ The coordinator provides a work package with:
 
 ---
 
-## Step 2: Setup Worktree
+## Step 2: Setup Branch
 
 ```
 1. Extract branch name from task description:
    - Find "**Branch:** `feature/{name}`" or "Branch: `feature/{name}`"
    - BRANCH = extracted branch name
 
-2. Setup worktree:
-   WORKTREE = "{WORKTREE_BASE}/{TASK_ID}"
+2. Setup branch:
+   git fetch origin
 
-   IF worktree already exists (rework/conflict case):
-     cd "$WORKTREE"
-     git fetch origin
+   IF MODE == "implement" (fresh implementation):
+     # Start from current develop
+     git checkout develop
+     git pull origin develop
+     git checkout -b "$BRANCH"
+
+   ELSE (rework or conflict - branch already exists):
+     # Checkout existing branch
      git checkout "$BRANCH"
      git pull origin "$BRANCH" --rebase || git pull origin "$BRANCH"
 
-   ELSE (fresh implementation):
-     mkdir -p "$WORKTREE_BASE"
-     git fetch origin
-     git worktree add "$WORKTREE" -b "$BRANCH" origin/develop 2>/dev/null || \
-     git worktree add "$WORKTREE" "$BRANCH"
-
-3. Enter worktree and install deps:
-   cd "$WORKTREE"
+3. Install dependencies (if needed):
    npm install 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
 
-4. IF worktree creation fails:
-   Return WORKTREE_FAILURE result (see Output Format)
+4. IF branch setup fails:
+   Return BRANCH_SETUP_FAILURE result (see Output Format)
 ```
 
 ---
@@ -109,10 +117,17 @@ The coordinator provides a work package with:
 ### Mode: implement (fresh implementation)
 
 ```
-1. Parse sub-tasks from task description:
+1. Review previous stage context (Architect→Dev):
+   IF previous_stage_context exists:
+     - Note key architectural decisions to follow
+     - Use files_of_interest as implementation starting points
+     - Check warnings for migration needs or gotchas
+     - Verify dependencies are available/installable
+
+2. Parse sub-tasks from task description:
    - Extract DES-*, DEV-*, TEST-* items
 
-2. Execute in order:
+3. Execute in order:
 
    a. Design tasks (DES-*) first:
       - Reference frontend-design skill for UI work
@@ -135,24 +150,30 @@ The coordinator provides a work package with:
       - Commit: "test({scope}): TEST-{N} - {description}"
       - Track as completed: TEST-{N}
 
-3. IF any sub-task fails after 3 retries:
+4. IF any sub-task fails after 3 retries:
    Return IMPLEMENTATION_FAILURE result
 ```
 
 ### Mode: rework (address reviewer feedback)
 
 ```
-1. Read the rework instructions from work_package.task_comments:
-   - Find ALS comment with action "review-rework"
-   - Use the ALS details as the rework checklist
+1. Review previous stage context (Reviewer→Dev):
+   IF previous_stage_context exists:
+     - Use key_decisions as the rework checklist (BLOCKERS to fix)
+     - Check files_of_interest for specific file:line locations
+     - Note any warnings as non-blocking improvements to consider
 
-2. Address each piece of feedback:
+2. Read the rework instructions from work_package.task_comments:
+   - Find ALS comment with action "review-rework"
+   - Use the ALS details as supplemental context
+
+3. Address each piece of feedback:
    - Make targeted changes
    - Don't redo the entire task
 
-3. Run tests to verify fixes
+4. Run tests to verify fixes
 
-4. Commit: "fix: address review feedback - {summary}"
+5. Commit: "fix: address review feedback - {summary}"
 ```
 
 ### Mode: conflict (resolve merge conflict)
@@ -176,11 +197,11 @@ The coordinator provides a work package with:
 
 ---
 
-## Step 4: Create/Update PR and Cleanup (Success)
+## Step 4: Create/Update PR (Success)
 
 ```
 1. Push branch:
-   git push origin "$BRANCH"
+   git push origin "$BRANCH" -u
 
 2. Handle PR:
    IF MODE == "implement":
@@ -192,15 +213,13 @@ The coordinator provides a work package with:
      PR already exists, just pushed updates
      Get existing PR info: gh pr view --json number,url,title
 
-3. Cleanup worktree:
-   cd "$PROJECT_ROOT"
-   git worktree remove "$WORKTREE" --force
-   git worktree prune
-
-4. Prepare updated description with checked-off sub-tasks
+3. Prepare updated description with checked-off sub-tasks
    - Replace [ ] with [x] for completed items
 
-5. Return SUCCESS result (see Output Format)
+4. Return SUCCESS result (see Output Format)
+
+NOTE: Feature branch stays checked out. Ops will merge it to develop and
+delete the branch after successful merge.
 ```
 
 ---
@@ -222,6 +241,31 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
     "move_to_column": "Review",
     "update_description": "ORIGINAL DESCRIPTION WITH [x] CHECKED SUB-TASKS"
   },
+  "stage_context": {
+    "from_stage": "dev",
+    "to_stage": "reviewer",
+    "key_decisions": [
+      "Used Context + useReducer pattern per architecture plan",
+      "Added migration script for localStorage → cookies",
+      "Implemented retry logic for token refresh"
+    ],
+    "files_of_interest": [
+      "src/context/AuthContext.tsx",
+      "src/hooks/useAuth.ts",
+      "src/api/authInterceptor.ts",
+      "tests/auth.test.ts"
+    ],
+    "warnings": [
+      "Migration script needs manual testing in staging",
+      "Added 2 new npm dependencies"
+    ],
+    "metadata": {
+      "pr_number": 42,
+      "lines_added": 450,
+      "lines_removed": 120,
+      "test_coverage": "87%"
+    }
+  },
   "git_actions": {
     "branch_created": "feature/task-name",
     "files_changed": ["src/a.ts", "src/b.ts", "tests/a.test.ts"],
@@ -237,6 +281,12 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
   "task_id": "{task_id from work package}"
 }
 ```
+
+**Note on stage_context**: When completing implementation, include:
+- `key_decisions`: Implementation decisions made (for Reviewer to verify against plan)
+- `files_of_interest`: Files changed (guides Reviewer's focus)
+- `warnings`: Things that need extra attention during review
+- `metadata`: PR number, lines changed, test coverage for Reviewer context
 
 ### Mode: rework (Success)
 
@@ -305,21 +355,21 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
 }
 ```
 
-### Worktree Failure
+### Branch Setup Failure
 
 ```json
 {
   "success": false,
-  "summary": "Failed to create worktree",
+  "summary": "Failed to setup branch",
   "joan_actions": {
-    "add_tags": ["Worktree-Failed"],
+    "add_tags": ["Branch-Setup-Failed"],
     "remove_tags": ["Claimed-Dev-1"],
-    "add_comment": "ALS/1\nactor: dev\nintent: failure\naction: worktree-failed\ntags.add: [Worktree-Failed]\ntags.remove: [Claimed-Dev-1]\nsummary: Worktree creation failed; manual intervention required.\ndetails:\n- error: {error message}\n- branch: {BRANCH}",
+    "add_comment": "ALS/1\nactor: dev\nintent: failure\naction: branch-setup-failed\ntags.add: [Branch-Setup-Failed]\ntags.remove: [Claimed-Dev-1]\nsummary: Branch setup failed; manual intervention required.\ndetails:\n- error: {error message}\n- branch: {BRANCH}",
     "move_to_column": null,
     "update_description": null
   },
-  "errors": ["git worktree add failed: {error}"],
-  "needs_human": "Worktree creation failed - check git state and disk space",
+  "errors": ["git checkout/branch failed: {error}"],
+  "needs_human": "Branch setup failed - check git state and resolve conflicts",
   "worker_type": "dev",
   "task_id": "{task_id from work package}"
 }
@@ -351,8 +401,7 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
 
 - **Return ONLY JSON** - No explanation text before or after
 - One task only - process and exit
-- Always work in worktree, never main repo
-- Always clean up worktree on success (keep on failure)
+- Work in feature branch (stays checked out until Ops merges)
 - Never merge PRs (only create/update them)
 - Respect sub-task dependencies
 - Include CLAIM_TAG in remove_tags on both success and failure

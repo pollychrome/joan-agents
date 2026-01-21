@@ -1,6 +1,6 @@
-# Joan Multi-Agent System (v4 - Tag-Triggered Orchestration)
+# Joan Multi-Agent System (v4.4 - Workflow-Complete Context Refresh)
 
-This system uses **tag-based state transitions** (no comment parsing), a **single coordinator** that dispatches workers, and git worktrees for parallel development.
+This system uses **tag-based state transitions** (no comment parsing), a **single coordinator** that dispatches workers, and a **strict serial dev pipeline** to prevent merge conflicts.
 
 ## Quick Start
 
@@ -23,28 +23,33 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 ## Architecture
 
 ```
-Coordinator + Single-Pass Workers (MCP Proxy Pattern)
+Staged Pipeline Architecture (Strict Serial Mode)
 ──────────────────────────────────────────────────────────────────────────
-  Coordinator (has MCP access)
-       │
-       ├── 1. Poll Joan (once per interval)
-       ├── 2. Build work packages with task data
-       ├── 3. Dispatch workers with work packages via prompt
-       │       │
-       │       ├──► BA-worker (task X) ──────► returns JSON result
-       │       ├──► Architect-worker (task Y) ─► returns JSON result
-       │       ├──► Dev-worker (task Z) ──────► returns JSON result
-       │       ├──► Reviewer-worker (task W) ─► returns JSON result
-       │       └──► Ops-worker (task V) ──────► returns JSON result
-       │
-       ├── 4. Execute joan_actions from worker results
-       ├── 5. Verify post-conditions (retry if needed)
-       └── 6. Sleep → repeat (in loop mode)
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                      PHASE 1: BA DRAINING                           │
+  │  Process ALL tasks in To Do → Move to Analyse with Ready tag        │
+  │  (Safe to process all - no code dependencies)                       │
+  └─────────────────────────────────────────────────────────────────────┘
+                                  ↓
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                PHASE 2: STRICT SERIAL DEV PIPELINE                  │
+  │                                                                     │
+  │  ┌──────────┐   ┌─────────┐   ┌────────┐   ┌──────┐   ┌──────────┐ │
+  │  │ Architect│ → │   Dev   │ → │ Review │ → │  Ops │ → │  MERGED  │ │
+  │  │ (1 task) │   │(1 task) │   │(1 task)│   │merge │   │to develop│ │
+  │  └──────────┘   └─────────┘   └────────┘   └──────┘   └──────────┘ │
+  │                                                                     │
+  │  ONLY AFTER MERGE → Pick next Ready task for Architect              │
+  │  This ensures plans always reference current codebase               │
+  └─────────────────────────────────────────────────────────────────────┘
 
   Key Principles:
+  • BA tasks drain in parallel (no code dependencies)
+  • ONE task at a time in the Architect→Dev→Review→Ops pipeline
+  • Pipeline gate blocks new planning until current task merges
+  • No merge conflicts - each PR merges to fresh develop state
   • Workers do NOT have MCP access - they return action requests
-  • Coordinator executes all MCP operations (tags, comments, moves)
-  • Post-condition verification ensures changes are applied
   • Self-healing: anomaly detection cleans stale tags automatically
 ```
 
@@ -70,21 +75,35 @@ Agents read from `.joan-agents.json` in project root:
   "projectName": "My Project",
   "settings": {
     "model": "opus",
-    "pollingIntervalMinutes": 10,
-    "maxIdlePolls": 6,
-    "staleClaimMinutes": 60,
+    "pollingIntervalMinutes": 5,
+    "maxIdlePolls": 12,
+    "staleClaimMinutes": 120,
     "maxPollCyclesBeforeRestart": 10,
     "stuckStateMinutes": 120,
+    "contextRefresh": {
+      "trigger": "workflow-complete"
+    },
     "schedulerIntervalSeconds": 300,
     "schedulerStuckTimeoutSeconds": 600,
-    "schedulerMaxConsecutiveFailures": 3
+    "schedulerMaxConsecutiveFailures": 3,
+    "pipeline": {
+      "baQueueDraining": true,
+      "maxBaTasksPerCycle": 10
+    },
+    "workerTimeouts": {
+      "ba": 10,
+      "architect": 20,
+      "dev": 60,
+      "reviewer": 20,
+      "ops": 15
+    }
   },
   "agents": {
     "businessAnalyst": { "enabled": true },
     "architect": { "enabled": true },
     "reviewer": { "enabled": true },
     "ops": { "enabled": true },
-    "devs": { "enabled": true, "count": 2 }
+    "devs": { "enabled": true, "count": 1 }
   }
 }
 ```
@@ -96,11 +115,39 @@ Run `/agents:init` to generate this file interactively.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `model` | opus | Claude model for all agents: `opus`, `sonnet`, or `haiku` |
-| `pollingIntervalMinutes` | 10 | Minutes between polls when queue is empty |
-| `maxIdlePolls` | 6 | Consecutive empty polls before auto-shutdown |
-| `staleClaimMinutes` | 60 | Minutes before orphaned dev claims are auto-released |
-| `maxPollCyclesBeforeRestart` | 10 | Poll cycles before context refresh (prevents drift) |
+| `pollingIntervalMinutes` | 5 | Minutes between polls when queue is empty |
+| `maxIdlePolls` | 12 | Consecutive empty polls before auto-shutdown |
+| `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released |
+| `maxPollCyclesBeforeRestart` | 10 | Poll cycles before context refresh (only used if trigger=poll-count) |
 | `stuckStateMinutes` | 120 | Minutes before tasks are flagged as stuck in workflow |
+
+### Context Refresh Settings (v4.4)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `contextRefresh.trigger` | workflow-complete | When to refresh context: `workflow-complete` (after task reaches Done) or `poll-count` (after N polls) |
+
+**Recommended: `workflow-complete`** - This ensures each new task starts with fresh context, preventing stale references to previous tasks' files and comments.
+
+### Pipeline Settings (Strict Serial Mode)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `pipeline.baQueueDraining` | true | Process all BA tasks before dev pipeline |
+| `pipeline.maxBaTasksPerCycle` | 10 | Maximum BA tasks to drain per dispatch cycle |
+
+### Worker Timeouts
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `workerTimeouts.ba` | 10 | BA worker timeout in minutes |
+| `workerTimeouts.architect` | 20 | Architect worker timeout in minutes |
+| `workerTimeouts.dev` | 60 | Dev worker timeout in minutes |
+| `workerTimeouts.reviewer` | 20 | Reviewer worker timeout in minutes |
+| `workerTimeouts.ops` | 15 | Ops worker timeout in minutes |
+
+**IMPORTANT: `devs.count` must be 1 (enforced by schema)**
+This ensures strict serial execution and prevents merge conflicts.
 
 **Model Selection:**
 - `opus` - Best instruction-following, most thorough (recommended for complex workflows)
@@ -109,11 +156,11 @@ Run `/agents:init` to generate this file interactively.
 
 Change model anytime with `/agents:model`.
 
-With defaults: agents auto-shutdown after 1 hour of inactivity (6 polls × 10 min).
+With defaults: agents auto-shutdown after 1 hour of inactivity (12 polls × 5 min).
 
 Override per-run with `--max-idle=N`:
 ```bash
-/agents:start --loop --max-idle=12  # Shutdown after 2 hours idle
+/agents:start --loop --max-idle=24  # Shutdown after 2 hours idle
 ```
 
 ## Invocation Modes
@@ -199,9 +246,78 @@ The coordinator uses a smart polling pattern with MCP Proxy execution:
 
 This reduces Joan API calls to 1 poll per interval and ensures reliable state transitions.
 
+### Serial Pipeline Gate
+
+The coordinator enforces a **strict serial gate** on the Architect→Dev→Review→Ops pipeline:
+
+```
+Pipeline Gate Check (runs before dispatching Architect)
+─────────────────────────────────────────────────────────
+  IF any task in Development OR Review that hasn't merged:
+    → BLOCK: Don't plan new tasks
+    → BA continues draining (no code deps)
+  ELSE:
+    → CLEAR: Architect can plan next Ready task
+```
+
+**Why strict serial?**
+
+| Aspect | Parallel (Old) | Strict Serial (New) |
+|--------|---------------|---------------------|
+| Merge conflicts | Frequent | None |
+| Plan freshness | Often stale | Always current |
+| Throughput | Higher nominal | Lower but reliable |
+| Rework cycles | Common | Rare |
+| Predictability | Chaotic | Linear, trackable |
+
+The trade-off is worth it: avoiding merge conflicts and stale plans saves more time than parallel execution gains.
+
 ## Agent Communication Protocol
 
 All agents communicate through Joan MCP and task comments/tags.
+
+### Context Handoffs (v4.2)
+
+Workers pass structured context between workflow stages using **handoff comments**. This enables each worker to receive relevant context from the previous stage while maintaining stateless architecture.
+
+**Key Design Principles:**
+- Context is per-transition (not cumulative) - each handoff contains only what the next stage needs
+- Persisted in Joan comments (durable across coordinator restarts)
+- Structured with enforced schema (prevents context bloat)
+- Optional and backward-compatible (existing tasks continue working)
+
+**Handoff Flow:**
+```
+BA evaluates → BA→Architect handoff
+      ↓
+Architect plans → reads BA context, produces Architect→Dev handoff
+      ↓
+Dev implements → reads Architect context, produces Dev→Reviewer handoff
+      ↓
+Reviewer reviews → reads Dev context
+      ├── APPROVE: Reviewer→Ops handoff → Ops merges → Done
+      └── REJECT: Reviewer→Dev (rework) handoff → Dev reworks
+```
+
+**Handoff Content by Stage:**
+
+| Transition | Contains |
+|------------|----------|
+| BA → Architect | Requirements clarifications, user answers, key decisions |
+| Architect → Dev | Architecture decisions, files to modify, dependencies |
+| Dev → Reviewer | Implementation notes, files changed, warnings |
+| Reviewer → Ops | Review summary, approval notes |
+| Reviewer → Dev (rework) | Blockers with file:line, warnings, suggestions |
+
+**Schema Constraints:**
+- `key_decisions`: Max 5 items, 200 chars each
+- `files_of_interest`: Max 10 file paths
+- `warnings`: Max 3 items, 100 chars each
+- `dependencies`: Max 5 items
+- `metadata`: Max 1KB serialized
+- **Total**: Max 3KB per handoff
+
+See `shared/joan-shared-specs/docs/workflow/als-spec.md` for the full ALS handoff format.
 
 ### Tag Conventions
 
@@ -213,7 +329,7 @@ All agents communicate through Joan MCP and task comments/tags.
 | `Ready` | Requirements complete | BA | Architect |
 | `Plan-Pending-Approval` | Plan created, awaiting approval | Architect | Architect |
 | `Planned` | Plan approved, available for devs | Architect, Reviewer | Dev |
-| `Claimed-Dev-N` | Dev N is implementing this task | Coordinator | Dev |
+| `Claimed-Dev-1` | Dev is implementing this task (strict serial: always N=1) | Coordinator | Dev |
 | `Dev-Complete` | All DEV sub-tasks done | Dev | Reviewer |
 | `Design-Complete` | All DES sub-tasks done | Dev | Reviewer |
 | `Test-Complete` | All TEST sub-tasks pass | Dev | Reviewer |
@@ -221,7 +337,9 @@ All agents communicate through Joan MCP and task comments/tags.
 | `Rework-Requested` | Reviewer found issues, needs fixes | Reviewer, Ops | Dev |
 | `Merge-Conflict` | Merge conflict with develop | Ops | Dev |
 | `Implementation-Failed` | Dev couldn't complete (manual) | Dev | Human |
-| `Worktree-Failed` | Worktree creation failed (manual) | Dev | Human |
+| `Branch-Setup-Failed` | Branch setup failed (manual) | Dev | Human |
+| `Invoke-Architect` | Task needs Architect consultation | Ops | Architect |
+| `Architect-Assist-Complete` | Architect provided guidance | Architect | Ops |
 
 **Trigger Tags (set by humans or agents to trigger next action):**
 
@@ -249,7 +367,7 @@ The **Coordinator** handles task claiming (not individual devs):
 
 ### Recovering Failed Tasks
 
-Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual intervention**:
+Tasks with `Implementation-Failed` or `Branch-Setup-Failed` tags require **manual intervention**:
 1. Human reviews failure comment to understand the issue
 2. Human resolves the underlying problem
 3. Human removes the failure tag
@@ -261,8 +379,8 @@ Tasks with `Implementation-Failed` or `Worktree-Failed` tags require **manual in
 The coordinator automatically recovers from certain failure modes:
 
 **Stale Claim Recovery:**
-When the coordinator or workers are killed/crash, `Claimed-Dev-N` tags may remain orphaned on tasks. Each poll cycle, the coordinator:
-1. Finds tasks with `Claimed-Dev-N` tags
+When the coordinator or workers are killed/crash, `Claimed-Dev-1` tags may remain orphaned on tasks. Each poll cycle, the coordinator:
+1. Finds tasks with `Claimed-Dev-1` tag (or `Claimed-Dev-N` if legacy config)
 2. Checks if the task's `updated_at` timestamp is older than `staleClaimMinutes` (default: 60)
 3. If stale, removes the orphaned claim tag and adds an ALS comment for audit
 4. Task becomes available for other dev workers to claim
@@ -303,7 +421,7 @@ This makes the system self-healing - no manual intervention needed when workers 
 
 **What still requires manual intervention:**
 - `Implementation-Failed` tag (dev hit unrecoverable error)
-- `Worktree-Failed` tag (git worktree creation failed)
+- `Branch-Setup-Failed` tag (git branch setup failed)
 
 ### Comment Convention (ALS Breadcrumbs)
 
@@ -326,7 +444,7 @@ Instead of comment mentions, humans add tags in Joan UI:
 
 **Legacy comment triggers (`@approve-plan`, `@approve`, `@rework`) are no longer parsed.**
 
-### Merge Conflict Handling (AI-Assisted)
+### Merge Conflict Handling (AI-Assisted + Invocation)
 
 When Ops detects a merge conflict during final merge to `develop`:
 
@@ -338,40 +456,125 @@ When Ops detects a merge conflict during final merge to `develop`:
 
 2. **If AI resolution succeeds**:
    - Ops commits the resolution with a descriptive message
-   - Ops pushes to develop
+   - Ops pushes to develop, deletes feature branch
    - Ops comments with resolution details
    - Task proceeds to Deploy
 
 3. **If AI resolution fails** (tests fail, complex conflicts):
-   - Ops adds `Merge-Conflict` tag to the task
-   - Ops adds `Rework-Requested` tag
-   - Ops adds `Planned` tag (makes task claimable)
-   - Ops stores conflict details in task description
+   - Ops invokes Architect for specialist guidance (adds `Invoke-Architect` tag)
+   - Coordinator dispatches Architect in `advisory-conflict` mode
+   - Architect analyzes both branches, provides resolution strategy
+   - Architect adds `Architect-Assist-Complete` tag
+   - Coordinator dispatches Ops in `merge-with-guidance` mode
+   - Ops applies Architect guidance to resolve conflicts
+
+4. **If even Architect guidance fails** (rare edge case):
+   - Ops adds `Merge-Conflict` + `Rework-Requested` + `Planned` tags
    - Ops moves task back to Development column
    - Dev claims and manually resolves conflicts
    - Dev removes `Merge-Conflict` tag, adds `Rework-Complete` when resolved
 
-## Worktree Management
+See [Agent Invocation](#agent-invocation) for the full invocation flow.
 
-**CRITICAL:** Worktrees enable parallel development. Without them, multiple dev workers would conflict by switching branches in the same directory.
+## Agent Invocation
 
-Devs create worktrees in `../worktrees/`:
+Workers can invoke other agents for specialist help during workflow execution.
+This enables cross-agent consultation without breaking the tag-based state machine.
 
-```bash
-# Create (done by dev-worker.md Step 2)
-git worktree add ../worktrees/{task-id} feature/{branch}
+**Current Invocation Flow: Ops → Architect (for merge conflicts)**
 
-# Work happens here
-cd ../worktrees/{task-id}
-
-# Cleanup (done on success)
-git worktree remove ../worktrees/{task-id} --force
-git worktree prune
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Ops → Architect Invocation Flow                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  1. Ops attempts merge to develop                                        │
+│  2. Conflict detected, AI resolution fails (tests don't pass)            │
+│  3. Ops returns: { invoke_agent: { agent_type: "architect", ... } }      │
+│  4. Coordinator adds Invoke-Architect tag, stores context as ALS comment │
+│  5. Coordinator skips sleep, re-polls immediately                        │
+│  6. Architect dispatched in advisory-conflict mode                       │
+│  7. Architect analyzes both branches, returns resolution strategy        │
+│  8. Architect adds Architect-Assist-Complete, removes Invoke-Architect   │
+│  9. Coordinator dispatches Ops in merge-with-guidance mode               │
+│  10. Ops applies guidance, completes merge, deletes feature branch       │
+│                                                                          │
+│  Fallback: If guidance also fails → Dev handles manually                 │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-All worktrees share the same `.git` directory.
+**How invocation works:**
 
-**Important:** The dispatcher MUST invoke `/agents:dev-worker` command (not custom prompts) to ensure worktree creation. See dispatch.md Step 4 constraints.
+1. **Worker returns `invoke_agent` field** in WorkerResult JSON
+2. **Coordinator processes invocation:**
+   - Adds invocation tag (e.g., `Invoke-Architect`)
+   - Stores invocation context as ALS comment
+   - Sets `INVOCATION_PENDING` flag to skip sleep
+3. **Coordinator dispatches invoked agent** on next (immediate) poll
+4. **Invoked agent provides guidance** and updates tags
+5. **Coordinator resumes original worker** with guidance
+
+**Invocation context includes:**
+- `reason`: Why invocation is needed
+- `question`: Specific question to answer
+- `files_of_interest`: Relevant files
+- `conflict_details`: For merge conflicts - what each branch changed
+- `resume_as`: How to continue after invocation (agent type + mode)
+
+**Design principles:**
+- Tag-based (no comment parsing for state)
+- Fast resolution (skip sleep when invocation pending)
+- Stateless (context stored in ALS comment, not memory)
+- Fallback path (graceful degradation if invocation fails)
+
+See `shared/joan-shared-specs/docs/workflow/worker-result-schema.md` for the full `invoke_agent` schema.
+
+## Branch Management
+
+With strict serial mode (one dev worker), we work directly on feature branches in the main directory.
+No worktrees needed - the feature branch stays checked out until Ops merges it.
+
+**Dev workflow:**
+```bash
+# Fresh implementation (from develop)
+git checkout develop
+git pull origin develop
+git checkout -b feature/{task-name}
+
+# Work happens directly in main directory
+# ... implement, commit, push ...
+git push origin feature/{task-name} -u
+
+# Branch stays checked out until Ops merges
+```
+
+**Ops merge workflow:**
+```bash
+git checkout develop
+git pull origin develop
+git merge origin/feature/{task-name}
+# Resolve conflicts if needed (AI-assisted + Architect invocation)
+git push origin develop
+
+# Cleanup: delete feature branch
+git push origin --delete feature/{task-name}
+git branch -d feature/{task-name}
+```
+
+**Why no worktrees?**
+- Strict serial mode means only one task is in-flight at a time
+- No parallel development = no need for branch isolation
+- Simpler workflow, less git complexity
+- Feature branch stays on feature until deliberately merged
+
+**Branch state model:**
+```
+To Do → Analyse: develop checked out
+Analyse → Development: feature branch created and checked out
+Development → Review: feature branch still checked out
+Review → Deploy: Ops merges to develop, deletes feature branch
+```
 
 ## Sub-Task Format
 
@@ -396,7 +599,7 @@ Devs check off tasks as completed:
 
 Feature branches: `feature/{task-title-kebab-case}`
 
-This name is specified in the Architect's plan and used by Devs to create worktrees.
+This name is specified in the Architect's plan and used by Devs when creating the branch.
 
 ## Auto-Shutdown Behavior
 
@@ -422,8 +625,8 @@ To Do → Analyse → Development → Review → Deploy → Done
 3. **Analyse** (Plan-Pending-Approval) → **Human adds `Plan-Approved` tag** OR **Human adds `Plan-Rejected` tag**
 4. **Analyse** (Plan-Pending-Approval + Plan-Approved) → Architect finalizes → removes `Plan-Pending-Approval` + `Plan-Approved`, adds `Planned` → moves to Development
 4b. **Analyse** (Plan-Rejected) → Architect revises plan → removes `Plan-Rejected`, keeps `Plan-Pending-Approval` → awaits re-approval
-5. **Development** (Planned) → Coordinator claims with `Claimed-Dev-N` → dispatches Dev worker
-6. **Development** → Dev implements → PR → removes `Claimed-Dev-N` + `Planned`, adds completion tags → moves to Review
+5. **Development** (Planned) → Coordinator claims with `Claimed-Dev-1` → dispatches Dev worker
+6. **Development** → Dev implements → PR → removes `Claimed-Dev-1` + `Planned`, adds completion tags → moves to Review
 7. **Review** → Reviewer validates → merges develop into feature (conflict check)
 8. **Review** (approved) → Reviewer adds `Review-Approved` tag
 9. **Review** (Review-Approved) → **Human adds `Ops-Ready` tag**
@@ -446,10 +649,10 @@ To Do → Analyse → Development → Review → Deploy → Done
 | Agent | Primary Role | Key Actions |
 |-------|-------------|-------------|
 | **BA** | Requirements validation | Evaluates tasks, asks clarifying questions, marks Ready |
-| **Architect** | Technical planning | Analyzes codebase, creates implementation plans with sub-tasks |
-| **Dev** | Implementation | Claims tasks, implements in worktrees, creates PRs, handles rework |
+| **Architect** | Technical planning | Analyzes codebase, creates implementation plans with sub-tasks, provides conflict guidance |
+| **Dev** | Implementation | Claims tasks, implements on feature branches, creates PRs, handles rework |
 | **Reviewer** | Quality gate | Merges develop into feature, deep code review, approves or rejects |
-| **Ops** | Integration & deployment | Merges to develop with AI conflict resolution, tracks deployment |
+| **Ops** | Integration & deployment | Merges to develop with AI conflict resolution + Architect invocation, tracks deployment |
 
 ### Reviewer Deep Dive
 

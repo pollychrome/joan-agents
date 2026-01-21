@@ -28,6 +28,7 @@ The coordinator provides a work package with:
 
 **Modes:**
 - `merge`: Task has Review-Approved + Ops-Ready, merge PR to develop
+- `merge-with-guidance`: Resume merge after Architect provided conflict resolution guidance
 - `cleanup`: Task in Deploy/Done with stale workflow tags, clean them up
 
 ---
@@ -48,6 +49,10 @@ The coordinator provides a work package with:
    IF MODE == "merge":
      - Task should have "Review-Approved" tag
      - Task should have "Ops-Ready" tag
+
+   IF MODE == "merge-with-guidance":
+     - Task should have "Architect-Assist-Complete" tag
+     - Read the latest ALS comment with action "invoke-advisory" for resolution guidance
 
    IF MODE == "cleanup":
      - Task should be in "Deploy" or "Done" column
@@ -85,7 +90,10 @@ The coordinator provides a work package with:
    Go to AI CONFLICT RESOLUTION
 
 5. IF merge clean:
+   # Delete feature branch (cleanup)
    git push origin develop
+   git push origin --delete $BRANCH 2>/dev/null || true
+   git branch -d $BRANCH 2>/dev/null || true
    Return MERGE_SUCCESS result
 
 --- AI CONFLICT RESOLUTION ---
@@ -105,11 +113,55 @@ The coordinator provides a work package with:
 5d. IF tests fail:
     - Conflict resolution was incorrect
     - git merge --abort || git reset --hard origin/develop
-    - Return CONFLICT_FAILURE result
+    - Return INVOKE_ARCHITECT result (request Architect guidance)
 
 5e. IF tests pass (or no tests):
+    # Delete feature branch (cleanup)
     git push origin develop
+    git push origin --delete $BRANCH 2>/dev/null || true
+    git branch -d $BRANCH 2>/dev/null || true
     Return MERGE_SUCCESS result (with ai_resolved: true)
+```
+
+### Mode: merge-with-guidance
+
+Resume merge after Architect provided conflict resolution guidance.
+
+```
+1. Extract branch name from task description (same as merge mode)
+
+2. Read Architect guidance from task comments:
+   - Find ALS comment with action "invoke-advisory"
+   - Extract resolution strategy from details
+
+3. Checkout develop and attempt merge:
+   git fetch origin
+   git checkout develop
+   git pull origin develop
+   git merge origin/$BRANCH --no-edit
+
+4. Apply Architect-guided resolution:
+   - For each conflicting file:
+     - Read the guidance for that specific file
+     - Apply the recommended resolution strategy
+     - git add {resolved-file}
+
+5. Complete merge:
+   git commit -m "merge: {BRANCH} into develop - resolved with Architect guidance"
+
+6. Run verification:
+   npm test 2>/dev/null || pytest 2>/dev/null || true
+
+7. IF tests fail:
+   - git merge --abort || git reset --hard origin/develop
+   - Return CONFLICT_FAILURE result (fall back to Dev)
+
+8. IF tests pass:
+   # Delete feature branch (cleanup)
+   git push origin develop
+   git push origin --delete $BRANCH 2>/dev/null || true
+   git branch -d $BRANCH 2>/dev/null || true
+   Return MERGE_WITH_GUIDANCE_SUCCESS result
 ```
 
 ### Mode: cleanup
@@ -193,23 +245,95 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
 }
 ```
 
-### Conflict Failure (AI couldn't resolve)
+### Invoke Architect (AI couldn't resolve, requesting guidance)
+
+When AI conflict resolution fails, invoke Architect for specialist guidance before falling back to Dev:
 
 ```json
 {
   "success": true,
-  "summary": "Merge failed; manual conflict resolution required",
+  "summary": "Complex merge conflict; invoking Architect for guidance",
+  "joan_actions": {
+    "add_tags": ["Invoke-Architect"],
+    "remove_tags": [],
+    "add_comment": "ALS/1\nactor: ops\nintent: request\naction: invoke-request\ntags.add: [Invoke-Architect]\nsummary: Invoking Architect for merge conflict resolution guidance.\ndetails:\n- conflicting_files: [src/api/auth.ts, src/config/settings.ts]\n- reason: AI resolution failed - tests did not pass after resolution",
+    "move_to_column": null,
+    "update_description": null
+  },
+  "invoke_agent": {
+    "agent_type": "architect",
+    "mode": "advisory-conflict",
+    "context": {
+      "reason": "AI conflict resolution failed - tests did not pass",
+      "question": "How should we resolve these conflicting changes?",
+      "files_of_interest": ["src/api/auth.ts", "src/config/settings.ts"],
+      "conflict_details": {
+        "conflicting_files": ["src/api/auth.ts", "src/config/settings.ts"],
+        "develop_summary": "Summary of what develop branch changed",
+        "feature_summary": "Summary of what feature branch changed"
+      }
+    },
+    "resume_as": {
+      "agent_type": "ops",
+      "mode": "merge-with-guidance"
+    }
+  },
+  "git_actions": {
+    "conflict_files": ["src/api/auth.ts", "src/config/settings.ts"],
+    "resolution_attempted": true,
+    "resolution_failed_reason": "Tests failed after resolution"
+  },
+  "worker_type": "ops",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Merge with Guidance Success
+
+After Architect provides guidance, Ops applies it and completes the merge:
+
+```json
+{
+  "success": true,
+  "summary": "Merged to develop with Architect-guided conflict resolution",
+  "joan_actions": {
+    "add_tags": [],
+    "remove_tags": ["Review-Approved", "Ops-Ready", "Architect-Assist-Complete"],
+    "add_comment": "ALS/1\nactor: ops\nintent: status\naction: invoke-resume\ntags.add: []\ntags.remove: [Review-Approved, Ops-Ready, Architect-Assist-Complete]\nsummary: Merged to develop with Architect guidance applied.\ndetails:\n- applied Architect resolution strategy\n- all tests passing\n- feature branch deleted",
+    "move_to_column": "Deploy",
+    "update_description": null
+  },
+  "git_actions": {
+    "branch_merged": "feature/task-name",
+    "branch_deleted": true,
+    "commit_sha": "abc123def",
+    "architect_guided": true
+  },
+  "worker_type": "ops",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Conflict Failure (Architect guidance also failed, fall back to Dev)
+
+When both AI resolution and Architect guidance fail, fall back to Dev for manual resolution:
+
+```json
+{
+  "success": true,
+  "summary": "Merge failed even with Architect guidance; Dev manual resolution required",
   "joan_actions": {
     "add_tags": ["Merge-Conflict", "Rework-Requested", "Planned"],
-    "remove_tags": ["Review-Approved", "Ops-Ready"],
-    "add_comment": "ALS/1\nactor: ops\nintent: decision\naction: ops-conflict\ntags.add: [Merge-Conflict, Rework-Requested, Planned]\ntags.remove: [Review-Approved, Ops-Ready]\nsummary: Merge failed; manual conflict resolution required.\ndetails:\n- conflicting files:\n  - {file1}\n  - {file2}\n- reason: {why AI resolution failed}",
+    "remove_tags": ["Review-Approved", "Ops-Ready", "Architect-Assist-Complete"],
+    "add_comment": "ALS/1\nactor: ops\nintent: decision\naction: ops-conflict\ntags.add: [Merge-Conflict, Rework-Requested, Planned]\ntags.remove: [Review-Approved, Ops-Ready, Architect-Assist-Complete]\nsummary: Merge failed; manual conflict resolution required.\ndetails:\n- conflicting files:\n  - {file1}\n  - {file2}\n- reason: {why even Architect guidance failed}",
     "move_to_column": "Development",
     "update_description": null
   },
   "git_actions": {
     "conflict_files": ["src/api/auth.ts", "src/config/settings.ts"],
     "resolution_attempted": true,
-    "resolution_failed_reason": "Tests failed after resolution"
+    "architect_guided": true,
+    "resolution_failed_reason": "Tests still failed after Architect-guided resolution"
   },
   "worker_type": "ops",
   "task_id": "{task_id from work package}"

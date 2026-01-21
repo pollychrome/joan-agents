@@ -26,13 +26,27 @@ Load from `.joan-agents.json`:
 ```
 PROJECT_ID = config.projectId
 PROJECT_NAME = config.projectName
-POLL_INTERVAL = config.settings.pollingIntervalMinutes (default: 10)
-MAX_IDLE = --max-idle override or config.settings.maxIdlePolls (default: 6)
+POLL_INTERVAL = config.settings.pollingIntervalMinutes (default: 5)
+MAX_IDLE = --max-idle override or config.settings.maxIdlePolls (default: 12)
 MODEL = config.settings.model (default: "opus")
-DEV_COUNT = config.agents.devs.count (default: 2)
-STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes (default: 60)
+DEV_COUNT = config.agents.devs.count (default: 1)  # STRICT SERIAL: Must be 1
+STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes (default: 120)
 MAX_POLL_CYCLES = config.settings.maxPollCyclesBeforeRestart (default: 10)
 STUCK_STATE_MINUTES = config.settings.stuckStateMinutes (default: 120)
+
+# Context refresh settings
+CONTEXT_REFRESH_TRIGGER = config.settings.contextRefresh?.trigger (default: "workflow-complete")
+
+# Pipeline settings (strict serial mode)
+BA_DRAINING_ENABLED = config.settings.pipeline.baQueueDraining (default: true)
+MAX_BA_TASKS_PER_CYCLE = config.settings.pipeline.maxBaTasksPerCycle (default: 10)
+
+# Worker timeout settings (in minutes)
+WORKER_TIMEOUT_BA = config.settings.workerTimeouts.ba (default: 10)
+WORKER_TIMEOUT_ARCHITECT = config.settings.workerTimeouts.architect (default: 20)
+WORKER_TIMEOUT_DEV = config.settings.workerTimeouts.dev (default: 60)
+WORKER_TIMEOUT_REVIEWER = config.settings.workerTimeouts.reviewer (default: 20)
+WORKER_TIMEOUT_OPS = config.settings.workerTimeouts.ops (default: 15)
 
 # Enabled flags (all default to true)
 BA_ENABLED = config.agents.businessAnalyst.enabled
@@ -43,6 +57,11 @@ DEVS_ENABLED = config.agents.devs.enabled
 ```
 
 If config missing, report error and exit.
+
+**IMPORTANT (Strict Serial Mode):**
+- `DEV_COUNT` MUST be 1 - the schema enforces this
+- This prevents parallel dev work which causes merge conflicts
+- Plans always reference the current codebase state
 
 Parse arguments:
 ```
@@ -62,6 +81,8 @@ LOOP_MODE = true if --loop flag present, else false
    POLL_CYCLE_COUNT = 0
    TAG_CACHE = {}
    FORCE_REQUEUE = []  # Tasks flagged for priority re-processing
+   INVOCATION_PENDING = false  # Set when agent invocation needs fast resolution
+   CONTEXT_REFRESH_REQUESTED = false  # Set when workflow completes (task reaches Done)
 ```
 
 ---
@@ -587,6 +608,22 @@ OPS_QUEUE = []
 
 For each task in tasks:
 
+  # Priority 0: Invocation responses (HIGHEST PRIORITY - fast resolution)
+  # These are handled first to minimize latency in cross-agent consultation
+
+  # 0a: Architect invoked for conflict advisory (needs to provide guidance)
+  IF inColumn(task, "Review")
+     AND hasTag(task, "Invoke-Architect")
+     AND NOT hasTag(task, "Architect-Assist-Complete"):
+    ARCHITECT_QUEUE.unshift({task, mode: "advisory-conflict"})  # Insert at front
+    CONTINUE
+
+  # 0b: Architect advisory complete, Ops can resume with guidance
+  IF inColumn(task, "Review")
+     AND hasTag(task, "Architect-Assist-Complete"):
+    OPS_QUEUE.unshift({task, mode: "merge-with-guidance"})  # Insert at front
+    CONTINUE
+
   # Priority 1: Dev tasks needing conflict resolution
   IF inColumn(task, "Development")
      AND hasTag(task, "Merge-Conflict")
@@ -698,7 +735,115 @@ Report queue sizes:
 
 ---
 
-## Step 4: Dispatch Workers (MCP Proxy Pattern)
+## Step 3b: Serial Pipeline Gate Check
+
+Before dispatching Architect workers, check if the dev pipeline is clear.
+**Strict serial mode ensures only ONE task flows through Architect→Dev→Review→Ops at a time.**
+
+This prevents:
+- Stale plans (Architect plans reference code that gets modified by other tasks)
+- Merge conflicts (multiple PRs trying to merge to develop)
+- Rework cycles (plans become invalid before dev even starts)
+
+```
+PIPELINE_BLOCKED = false
+BLOCKING_TASK = null
+BLOCKING_REASON = ""
+
+# Check if any task is currently in the dev pipeline
+For each task in tasks:
+
+  # === Check Development column ===
+  IF inColumn(task, "Development"):
+
+    # Task is planned and waiting for dev pickup
+    IF hasTag(task, "Planned") AND NOT isClaimedByAnyDev(task):
+      PIPELINE_BLOCKED = true
+      BLOCKING_TASK = task
+      BLOCKING_REASON = "Planned task waiting for dev claim"
+      Report: "Pipeline BLOCKED: '{task.title}' is Planned in Development"
+      BREAK
+
+    # Task is actively being implemented
+    IF isClaimedByAnyDev(task):
+      PIPELINE_BLOCKED = true
+      BLOCKING_TASK = task
+      BLOCKING_REASON = "Task being implemented by dev worker"
+      Report: "Pipeline BLOCKED: '{task.title}' is claimed by a dev worker"
+      BREAK
+
+    # Task needs rework (failed review)
+    IF hasTag(task, "Rework-Requested"):
+      PIPELINE_BLOCKED = true
+      BLOCKING_TASK = task
+      BLOCKING_REASON = "Task needs rework after review"
+      Report: "Pipeline BLOCKED: '{task.title}' has Rework-Requested"
+      BREAK
+
+    # Task has merge conflict
+    IF hasTag(task, "Merge-Conflict"):
+      PIPELINE_BLOCKED = true
+      BLOCKING_TASK = task
+      BLOCKING_REASON = "Task has merge conflict to resolve"
+      Report: "Pipeline BLOCKED: '{task.title}' has Merge-Conflict"
+      BREAK
+
+  # === Check Review column ===
+  IF inColumn(task, "Review"):
+
+    # Task awaiting reviewer (has completion tags, not yet reviewed)
+    IF hasTag(task, "Dev-Complete") AND NOT hasTag(task, "Review-Approved") AND NOT hasTag(task, "Rework-Requested"):
+      PIPELINE_BLOCKED = true
+      BLOCKING_TASK = task
+      BLOCKING_REASON = "Task awaiting code review"
+      Report: "Pipeline BLOCKED: '{task.title}' is in Review awaiting reviewer"
+      BREAK
+
+    # Task approved but awaiting human merge approval (Ops-Ready tag)
+    IF hasTag(task, "Review-Approved") AND NOT hasTag(task, "Ops-Ready"):
+      PIPELINE_BLOCKED = true
+      BLOCKING_TASK = task
+      BLOCKING_REASON = "Approved task awaiting human Ops-Ready tag"
+      Report: "Pipeline BLOCKED: '{task.title}' is Review-Approved, awaiting Ops-Ready"
+      BREAK
+
+    # Task ready for Ops to merge
+    IF hasTag(task, "Review-Approved") AND hasTag(task, "Ops-Ready"):
+      PIPELINE_BLOCKED = true
+      BLOCKING_TASK = task
+      BLOCKING_REASON = "Task ready for Ops merge to develop"
+      Report: "Pipeline BLOCKED: '{task.title}' is ready for Ops merge"
+      BREAK
+
+# === Apply gate decision ===
+IF PIPELINE_BLOCKED:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  SERIAL PIPELINE GATE: BLOCKED                                   ║"
+  Report: "╠══════════════════════════════════════════════════════════════════╣"
+  Report: "║  Blocking task: '{BLOCKING_TASK.title}'                          ║"
+  Report: "║  Reason: {BLOCKING_REASON}                                       ║"
+  Report: "╠══════════════════════════════════════════════════════════════════╣"
+  Report: "║  Architect will NOT plan new tasks until current task merges.    ║"
+  Report: "║  BA evaluation continues (no code dependencies).                 ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+
+  # Clear architect queue - do NOT plan anything new
+  ARCHITECT_QUEUE = []
+
+ELSE:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  SERIAL PIPELINE GATE: CLEAR                                     ║"
+  Report: "║  No tasks in dev pipeline. Architect can plan next Ready task.   ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+```
+
+---
+
+## Step 4: Dispatch Workers (MCP Proxy Pattern - Staged Pipeline)
 
 **ARCHITECTURE:** Workers do NOT have MCP access. The coordinator:
 1. Builds a complete "work package" with all task data
@@ -719,6 +864,9 @@ def build_work_package(task, mode, extra={}):
   full_task = mcp__joan__get_task(task.id)
   comments = mcp__joan__list_task_comments(task.id)
 
+  # Extract previous stage context based on mode
+  previous_stage_context = extract_stage_context(comments, mode)
+
   return {
     "task_id": task.id,
     "task_title": task.title,
@@ -729,54 +877,318 @@ def build_work_package(task, mode, extra={}):
     "mode": mode,
     "project_id": PROJECT_ID,
     "project_name": PROJECT_NAME,
+    "previous_stage_context": previous_stage_context,  # NEW: Context from previous stage
     **extra
   }
 
-# 4a: Dispatch BA worker (one task)
+# Helper: Extract Stage Context from Comments
+def extract_stage_context(comments, mode):
+  """
+  Extract the most recent context handoff relevant to the current mode.
+
+  Context routing by mode:
+  - "plan" mode (architect)     → look for BA→Architect handoff
+  - "implement" mode (dev)      → look for Architect→Dev handoff
+  - "rework" mode (dev)         → look for Reviewer→Dev handoff
+  - "conflict" mode (dev)       → look for Reviewer→Dev handoff
+  - "review" mode (reviewer)    → look for Dev→Reviewer handoff
+  - "merge" mode (ops)          → look for Reviewer→Ops handoff
+  """
+
+  # Define expected handoff source based on mode
+  expected_handoffs = {
+    "plan": ("ba", "architect"),
+    "finalize": ("ba", "architect"),
+    "revise": ("ba", "architect"),
+    "implement": ("architect", "dev"),
+    "rework": ("reviewer", "dev"),
+    "conflict": ("reviewer", "dev"),
+    "review": ("dev", "reviewer"),
+    "merge": ("reviewer", "ops"),
+  }
+
+  IF mode NOT IN expected_handoffs:
+    RETURN null
+
+  (expected_from, expected_to) = expected_handoffs[mode]
+
+  # Scan comments in reverse chronological order (newest first)
+  FOR comment IN reversed(comments):
+    content = comment.content
+
+    # Check if this is a context handoff ALS block
+    IF "intent: handoff" IN content AND "action: context-handoff" IN content:
+
+      # Extract from_stage and to_stage
+      from_stage = extract_yaml_field(content, "from_stage")
+      to_stage = extract_yaml_field(content, "to_stage")
+
+      IF from_stage == expected_from AND to_stage == expected_to:
+        # Found matching handoff - parse and return
+        RETURN parse_handoff_content(content)
+
+  # No matching handoff found (backward compatible)
+  RETURN null
+
+# Helper: Parse Handoff Content
+def parse_handoff_content(content):
+  """
+  Parse ALS handoff block into structured context object.
+  """
+  RETURN {
+    "from_stage": extract_yaml_field(content, "from_stage"),
+    "to_stage": extract_yaml_field(content, "to_stage"),
+    "summary": extract_yaml_field(content, "summary"),
+    "key_decisions": extract_yaml_list(content, "key_decisions"),
+    "files_of_interest": extract_yaml_list(content, "files_of_interest"),
+    "warnings": extract_yaml_list(content, "warnings"),
+    "dependencies": extract_yaml_list(content, "dependencies"),
+    "metadata": extract_yaml_object(content, "metadata"),
+  }
+
+# Helper: Extract YAML field (simple string value)
+def extract_yaml_field(content, field_name):
+  # Look for "field_name: value" pattern
+  # Return null if not found
+  ...
+
+# Helper: Extract YAML list (bulleted items under a field)
+def extract_yaml_list(content, field_name):
+  # Look for "field_name:\n- item1\n- item2" pattern
+  # Return empty array if not found
+  ...
+
+# Helper: Extract YAML object (nested key-values)
+def extract_yaml_object(content, field_name):
+  # Look for "field_name:\n  key1: value1\n  key2: value2" pattern
+  # Return empty object if not found
+  ...
+
+# Helper: Format Handoff Comment
+def format_handoff_comment(context):
+  """
+  Format a StageContext object as an ALS handoff comment.
+  See als-spec.md for the full format.
+  """
+  lines = [
+    "ALS/1",
+    f"actor: {context.from_stage}",
+    "intent: handoff",
+    "action: context-handoff",
+    f"from_stage: {context.from_stage}",
+    f"to_stage: {context.to_stage}",
+    f"summary: {context.summary or 'Context handoff for next stage'}",
+  ]
+
+  # Add key_decisions (required)
+  IF context.key_decisions AND len(context.key_decisions) > 0:
+    lines.append("key_decisions:")
+    FOR decision IN context.key_decisions:
+      lines.append(f"- {decision}")
+
+  # Add files_of_interest (optional)
+  IF context.files_of_interest AND len(context.files_of_interest) > 0:
+    lines.append("files_of_interest:")
+    FOR file_path IN context.files_of_interest:
+      lines.append(f"- {file_path}")
+
+  # Add warnings (optional)
+  IF context.warnings AND len(context.warnings) > 0:
+    lines.append("warnings:")
+    FOR warning IN context.warnings:
+      lines.append(f"- {warning}")
+
+  # Add dependencies (optional)
+  IF context.dependencies AND len(context.dependencies) > 0:
+    lines.append("dependencies:")
+    FOR dep IN context.dependencies:
+      lines.append(f"- {dep}")
+
+  # Add metadata (optional)
+  IF context.metadata AND len(context.metadata) > 0:
+    lines.append("metadata:")
+    FOR key, value IN context.metadata.items():
+      lines.append(f"  {key}: {value}")
+
+  RETURN "\n".join(lines)
+
+# Helper: Format Invocation Comment
+def format_invoke_comment(invocation):
+  """
+  Format an AgentInvocation as an ALS invoke-request comment.
+  This stores the invocation context for the invoked agent to read.
+  """
+  lines = [
+    "ALS/1",
+    f"actor: {invocation.resume_as.agent_type}",  # Original requester
+    "intent: request",
+    "action: invoke-request",
+    f"tags.add: [Invoke-{invocation.agent_type.capitalize()}]",
+    "tags.remove: []",
+    f"summary: Invoking {invocation.agent_type} for {invocation.mode}.",
+  ]
+
+  # Add context details
+  lines.append("details:")
+  lines.append(f"- reason: {invocation.context.reason}")
+  IF invocation.context.question:
+    lines.append(f"- question: {invocation.context.question}")
+  IF invocation.context.files_of_interest:
+    lines.append("- files_of_interest:")
+    FOR file_path IN invocation.context.files_of_interest:
+      lines.append(f"  - {file_path}")
+
+  # Add conflict details if present (for Ops → Architect)
+  IF invocation.context.conflict_details:
+    cd = invocation.context.conflict_details
+    lines.append("- conflict_details:")
+    lines.append(f"  conflicting_files: {cd.conflicting_files}")
+    lines.append(f"  develop_summary: {cd.develop_summary}")
+    lines.append(f"  feature_summary: {cd.feature_summary}")
+
+  # Add resume info
+  lines.append("invoke_context:")
+  lines.append(f"  agent_type: {invocation.agent_type}")
+  lines.append(f"  mode: {invocation.mode}")
+  lines.append(f"  resume_as: {invocation.resume_as.agent_type}/{invocation.resume_as.mode}")
+
+  RETURN "\n".join(lines)
+
+# 4a: Dispatch BA workers - DRAIN QUEUE (no code dependencies, safe to process all)
+#
+# BA evaluation is safe to run for ALL pending tasks because:
+# - No code modifications (just requirement analysis)
+# - No git operations
+# - Each task evaluation is independent
+#
+# Load config for max tasks per cycle
+MAX_BA_TASKS_PER_CYCLE = config.settings.pipeline.maxBaTasksPerCycle OR 10
+BA_DRAINING_ENABLED = config.settings.pipeline.baQueueDraining OR true
+
 IF BA_ENABLED AND BA_QUEUE.length > 0:
-  item = BA_QUEUE.shift()
-  work_package = build_work_package(item.task, item.mode)
+  ba_count = 0
+  ba_failures = 0
 
-  Report: "Dispatching BA worker for '{item.task.title}' (mode: {item.mode})"
+  IF BA_DRAINING_ENABLED:
+    Report: ""
+    Report: "╔══════════════════════════════════════════════════════════════════╗"
+    Report: "║  PHASE 1: BA QUEUE DRAINING                                      ║"
+    Report: "║  Processing up to {MAX_BA_TASKS_PER_CYCLE} of {BA_QUEUE.length} BA tasks  ║"
+    Report: "╚══════════════════════════════════════════════════════════════════╝"
+    Report: ""
 
-  result = Task tool call:
-    subagent_type: "business-analyst"
-    model: MODEL
-    prompt: |
-      You are a Business Analyst worker. Process this task and return a structured JSON result.
+    # Process ALL BA tasks (up to max per cycle)
+    WHILE BA_QUEUE.length > 0 AND ba_count < MAX_BA_TASKS_PER_CYCLE:
+      item = BA_QUEUE.shift()
+      work_package = build_work_package(item.task, item.mode)
 
-      ## Work Package
-      ```json
-      {work_package as JSON}
-      ```
+      Report: "BA [{ba_count + 1}/{MAX_BA_TASKS_PER_CYCLE}] Dispatching for '{item.task.title}' (mode: {item.mode})"
 
-      ## Instructions
-      Follow /agents:ba-worker logic for mode "{item.mode}".
+      result = Task tool call:
+        subagent_type: "business-analyst"
+        model: MODEL
+        prompt: |
+          You are a Business Analyst worker. Process this task and return a structured JSON result.
 
-      ## Required Output
-      Return ONLY a JSON object with this structure (no markdown, no explanation):
-      ```json
-      {
-        "success": true/false,
-        "summary": "What you did",
-        "joan_actions": {
-          "add_tags": ["tag names to add"],
-          "remove_tags": ["tag names to remove"],
-          "add_comment": "ALS/1 format comment",
-          "move_to_column": "column name or null"
-        },
-        "worker_type": "ba",
-        "task_id": "{task.id}",
-        "needs_human": "reason if blocked, or null"
-      }
-      ```
+          ## Work Package
+          ```json
+          {work_package as JSON}
+          ```
 
-  RESULTS.push({worker: "ba", task: item.task, result: result})
-  DISPATCHED++
+          ## Instructions
+          Follow /agents:ba-worker logic for mode "{item.mode}".
 
-# 4b: Dispatch Architect worker (one task)
+          ## Required Output
+          Return ONLY a JSON object with this structure (no markdown, no explanation):
+          ```json
+          {
+            "success": true/false,
+            "summary": "What you did",
+            "joan_actions": {
+              "add_tags": ["tag names to add"],
+              "remove_tags": ["tag names to remove"],
+              "add_comment": "ALS/1 format comment",
+              "move_to_column": "column name or null"
+            },
+            "worker_type": "ba",
+            "task_id": "{task.id}",
+            "needs_human": "reason if blocked, or null"
+          }
+          ```
+
+      # Check if result indicates failure (we continue anyway, per design)
+      IF result indicates failure:
+        ba_failures++
+        Report: "  WARNING: BA task '{item.task.title}' failed - continuing with others"
+        # Record failure but don't stop - we continue processing remaining BA tasks
+
+      RESULTS.push({worker: "ba", task: item.task, result: result})
+      ba_count++
+      DISPATCHED++
+
+    Report: ""
+    Report: "BA draining complete: {ba_count} dispatched, {ba_failures} failures"
+    IF BA_QUEUE.length > 0:
+      Report: "  {BA_QUEUE.length} BA tasks remaining (will process next cycle)"
+    Report: ""
+
+  ELSE:
+    # Legacy single-task mode (for debugging or if draining disabled)
+    item = BA_QUEUE.shift()
+    work_package = build_work_package(item.task, item.mode)
+
+    Report: "Dispatching BA worker for '{item.task.title}' (mode: {item.mode})"
+
+    result = Task tool call:
+      subagent_type: "business-analyst"
+      model: MODEL
+      prompt: |
+        You are a Business Analyst worker. Process this task and return a structured JSON result.
+
+        ## Work Package
+        ```json
+        {work_package as JSON}
+        ```
+
+        ## Instructions
+        Follow /agents:ba-worker logic for mode "{item.mode}".
+
+        ## Required Output
+        Return ONLY a JSON object with this structure (no markdown, no explanation):
+        ```json
+        {
+          "success": true/false,
+          "summary": "What you did",
+          "joan_actions": {
+            "add_tags": ["tag names to add"],
+            "remove_tags": ["tag names to remove"],
+            "add_comment": "ALS/1 format comment",
+            "move_to_column": "column name or null"
+          },
+          "worker_type": "ba",
+          "task_id": "{task.id}",
+          "needs_human": "reason if blocked, or null"
+        }
+        ```
+
+    RESULTS.push({worker: "ba", task: item.task, result: result})
+    DISPATCHED++
+
+# 4b: Dispatch Architect worker (ONE TASK ONLY - respects pipeline gate)
+#
+# NOTE: The pipeline gate in Step 3b clears ARCHITECT_QUEUE if pipeline is blocked.
+# If we reach here with tasks in the queue, the pipeline is clear and we can plan.
+# Only plan ONE task to maintain strict serialization.
+#
 IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
-  item = ARCHITECT_QUEUE.shift()
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  PHASE 2: SERIAL DEV PIPELINE - ARCHITECT                        ║"
+  Report: "║  Planning ONE task (pipeline is clear)                           ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+
+  item = ARCHITECT_QUEUE.shift()  # Take first (oldest) Ready task
   work_package = build_work_package(item.task, item.mode)
 
   Report: "Dispatching Architect worker for '{item.task.title}' (mode: {item.mode})"
@@ -817,12 +1229,27 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
   RESULTS.push({worker: "architect", task: item.task, result: result})
   DISPATCHED++
 
-# 4c: Dispatch Dev workers (one per available dev)
-IF DEVS_ENABLED:
+# 4c: Dispatch Dev worker (ONE TASK - strict serial mode enforces single dev)
+#
+# STRICT SERIAL MODE: Only one dev worker exists (DEV_COUNT=1).
+# This ensures:
+# - No parallel development that could cause merge conflicts
+# - Plans always reference current codebase state
+# - No race conditions for task claiming
+#
+IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  PHASE 2: SERIAL DEV PIPELINE - DEVELOPMENT                      ║"
+  Report: "║  Implementing ONE task (strict serial mode)                      ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+
+  # In strict serial mode, we only have dev_id = 1
+  dev_id = 1
   available_devs = find_available_devs()
 
-  FOR EACH dev_id IN available_devs:
-  IF DEV_QUEUE.length > 0:
+  IF dev_id IN available_devs AND DEV_QUEUE.length > 0:
     item = DEV_QUEUE.shift()
     task = item.task
 
@@ -834,13 +1261,13 @@ IF DEVS_ENABLED:
     IF claim verified (Claimed-Dev-{dev_id} tag present):
       work_package = build_work_package(task, item.mode, {"dev_id": dev_id})
 
-      Report: "Dispatching Dev worker {dev_id} for '{task.title}' (mode: {item.mode})"
+      Report: "Dispatching Dev worker for '{task.title}' (mode: {item.mode})"
 
       result = Task tool call:
         subagent_type: "implementation-worker"
         model: MODEL
         prompt: |
-          You are Dev Worker {dev_id}. Implement this task and return a structured JSON result.
+          You are the Dev Worker. Implement this task and return a structured JSON result.
 
           ## Work Package
           ```json
@@ -859,7 +1286,7 @@ IF DEVS_ENABLED:
             "summary": "What you implemented",
             "joan_actions": {
               "add_tags": ["Dev-Complete", "Design-Complete", "Test-Complete"],
-              "remove_tags": ["Claimed-Dev-{dev_id}", "Planned"],
+              "remove_tags": ["Claimed-Dev-1", "Planned"],
               "add_comment": "ALS/1 format",
               "move_to_column": "Review"
             },
@@ -879,12 +1306,22 @@ IF DEVS_ENABLED:
       DISPATCHED++
 
     ELSE:
-      # Claim failed - another coordinator got it
+      # Claim failed - another coordinator got it (unlikely in single-coordinator setup)
       mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Claimed-Dev-{dev_id}"])
-      Continue
+      Report: "Claim failed for '{task.title}' - will retry next cycle"
 
-# 4d: Dispatch Reviewer worker (one task)
+  ELSE IF dev_id NOT IN available_devs:
+    Report: "Dev worker busy (task already claimed) - skipping dispatch"
+
+# 4d: Dispatch Reviewer worker (ONE TASK - part of serial pipeline)
 IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  PHASE 2: SERIAL DEV PIPELINE - REVIEW                           ║"
+  Report: "║  Reviewing ONE task                                              ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+
   item = REVIEWER_QUEUE.shift()
   work_package = build_work_package(item.task, "review")
 
@@ -925,8 +1362,19 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
   RESULTS.push({worker: "reviewer", task: item.task, result: result})
   DISPATCHED++
 
-# 4e: Dispatch Ops worker (one task)
+# 4e: Dispatch Ops worker (ONE TASK - final step in serial pipeline)
+#
+# Ops merges the task to develop, which UNLOCKS the pipeline for the next task.
+# After Ops completes successfully, the pipeline gate will be CLEAR on next poll.
+#
 IF OPS_ENABLED AND OPS_QUEUE.length > 0:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  PHASE 2: SERIAL DEV PIPELINE - OPS (FINAL STEP)                 ║"
+  Report: "║  Merging ONE task to develop → UNLOCKS pipeline                  ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+
   item = OPS_QUEUE.shift()
   work_package = build_work_package(item.task, item.mode)
 
@@ -1106,6 +1554,46 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
     mcp__joan__update_task(task.id, column_id=COLUMN_CACHE[actions.move_to_column])
     Report: "  Moved to column: {actions.move_to_column}"
 
+    # 3e-ii. Detect workflow completion (for context refresh)
+    # If Ops moved task to Deploy or Done, a workflow is complete
+    IF worker == "ops" AND (actions.move_to_column == "Deploy" OR actions.move_to_column == "Done"):
+      IF CONTEXT_REFRESH_TRIGGER == "workflow-complete":
+        CONTEXT_REFRESH_REQUESTED = true
+        Report: "  ★ WORKFLOW COMPLETE: Task '{task.title}' reached {actions.move_to_column}"
+        Report: "  ★ Context refresh will occur at end of this cycle"
+
+  # 3f. Create context handoff comment (if worker provided stage_context)
+  IF parsed.stage_context:
+    context = parsed.stage_context
+
+    # Validate size constraint (max 3KB)
+    context_json = JSON.stringify(context)
+    IF context_json.length > 3072:
+      Report: "  WARNING: stage_context exceeds 3KB limit ({context_json.length} bytes), truncating"
+      # Truncate key_decisions and files_of_interest to fit
+      context.key_decisions = context.key_decisions[:3]
+      context.files_of_interest = context.files_of_interest[:5]
+      context.warnings = context.warnings[:2]
+
+    # Format as ALS handoff comment
+    handoff_comment = format_handoff_comment(context)
+    mcp__joan__create_task_comment(task.id, handoff_comment)
+    Report: "  Created context handoff: {context.from_stage} → {context.to_stage}"
+
+  # 3g. Handle agent invocation (cross-agent consultation)
+  IF parsed.invoke_agent:
+    invocation = parsed.invoke_agent
+    Report: "  Processing agent invocation: {worker} → {invocation.agent_type}"
+
+    # Store invocation context as ALS comment for the invoked agent
+    invoke_comment = format_invoke_comment(invocation)
+    mcp__joan__create_task_comment(task.id, invoke_comment)
+    Report: "  Stored invocation context for {invocation.agent_type}"
+
+    # Set flag to skip sleep and re-poll immediately
+    INVOCATION_PENDING = true
+    Report: "  INVOCATION_PENDING set - will skip sleep for fast resolution"
+
   # 4. Verify post-conditions
   updated_task = mcp__joan__get_task(task.id)
 
@@ -1171,7 +1659,18 @@ POLL_CYCLE_COUNT++
 PENDING_HUMAN = count tasks with:
   - Plan-Pending-Approval (no Plan-Approved) → waiting for human approval
   - Review-Approved (no Ops-Ready) → waiting for human merge approval
-  - Implementation-Failed or Worktree-Failed → waiting for human fix
+  - Implementation-Failed or Branch-Setup-Failed → waiting for human fix
+
+# Check for invocation pending (skip sleep for fast resolution)
+IF INVOCATION_PENDING:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  INVOCATION PENDING - Skipping sleep for fast resolution        ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+  INVOCATION_PENDING = false  # Reset for next cycle
+  # Skip directly to next poll iteration (no sleep, no idle increment)
+  CONTINUE  # Back to start of WHILE loop
 
 IF DISPATCHED == 0:
   IDLE_COUNT++
@@ -1206,25 +1705,34 @@ IF NOT LOOP_MODE:
   Report: "Single pass complete. Exiting."
   EXIT
 
-# Context Window Management: Restart to clear context after N cycles
-# This prevents context bloat from causing queue-building logic to fail
-IF LOOP_MODE AND POLL_CYCLE_COUNT >= MAX_POLL_CYCLES:
+# Context Refresh - Check workflow-complete trigger FIRST (highest priority)
+IF CONTEXT_REFRESH_REQUESTED:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  WORKFLOW COMPLETE: Task lifecycle finished                       ║"
+  Report: "║  Restarting coordinator with fresh context for next task...      ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+  Report: "  Refresh trigger: workflow-complete (recommended)"
+  Report: "  Next task will start with clean context, no stale references"
+  Report: ""
+
+  # Exit with special code 100 = restart requested
+  EXIT with code 100
+
+# Context Window Management (fallback): Restart after N cycles if using poll-count trigger
+# This is the legacy approach - workflow-complete is recommended
+IF LOOP_MODE AND CONTEXT_REFRESH_TRIGGER == "poll-count" AND POLL_CYCLE_COUNT >= MAX_POLL_CYCLES:
   Report: ""
   Report: "╔══════════════════════════════════════════════════════════════════╗"
   Report: "║  CONTEXT REFRESH: Reached {MAX_POLL_CYCLES} poll cycles.                          ║"
   Report: "║  Restarting coordinator to clear context and prevent drift...   ║"
   Report: "╚══════════════════════════════════════════════════════════════════╝"
   Report: ""
-  Report: "To run continuously, use a wrapper script:"
-  Report: "  while true; do"
-  Report: "    claude /agents:dispatch --loop"
-  Report: "    [ $? -ne 100 ] && break"
-  Report: "    echo 'Restarting coordinator with fresh context...'"
-  Report: "  done"
+  Report: "  Note: Consider using 'workflow-complete' trigger for better context management"
   Report: ""
 
   # Exit with special code 100 = restart requested
-  # A wrapper script can detect this and restart the coordinator
   EXIT with code 100
 
 # Continue to next iteration
@@ -1246,7 +1754,7 @@ IF LOOP_MODE AND POLL_CYCLE_COUNT >= MAX_POLL_CYCLES:
 - NEVER pause to wait for user confirmation
 - Human interaction happens via TAGS in Joan UI, not via conversation
 - In loop mode: poll → dispatch → sleep → repeat (no interruptions)
-- Only exit when: (a) single-pass mode completes, (b) max idle polls reached, or (c) max poll cycles reached (context refresh)
+- Only exit when: (a) single-pass mode completes, (b) max idle polls reached, (c) workflow completes (if trigger=workflow-complete), or (d) max poll cycles reached (if trigger=poll-count)
 
 **Operational Rules:**
 - NEVER parse comments for triggers (tags only)

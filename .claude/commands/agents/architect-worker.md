@@ -20,11 +20,24 @@ The coordinator provides a work package with:
   "task_tags": ["tag1", "tag2"],
   "task_column": "Analyse",
   "task_comments": [...],
-  "mode": "plan" | "finalize" | "revise",
+  "mode": "plan" | "finalize" | "revise" | "advisory-conflict",
   "project_id": "uuid",
-  "project_name": "string"
+  "project_name": "string",
+  "previous_stage_context": {
+    "from_stage": "ba",
+    "to_stage": "architect",
+    "key_decisions": ["..."],
+    "files_of_interest": ["..."],
+    "warnings": ["..."]
+  }
 }
 ```
+
+**Note**: `previous_stage_context` contains BA→Architect handoff with:
+- Requirements clarifications and user decisions
+- Files mentioned in requirements
+- Any warnings or caveats from requirements validation
+- May be `null` for legacy tasks without handoffs
 
 ---
 
@@ -32,13 +45,18 @@ The coordinator provides a work package with:
 
 ### Mode: plan (create implementation plan)
 
-1. **Analyze the codebase:**
+1. **Review previous stage context (if available):**
+   - Check `previous_stage_context` for BA clarifications
+   - Note any key decisions or warnings from requirements validation
+   - Use `files_of_interest` as starting points for exploration
+
+2. **Analyze the codebase:**
    - Read CLAUDE.md for project conventions
    - Explore relevant directories using Glob/Grep
    - Understand architecture patterns
    - Identify files that will need modification
 
-2. **Create plan** with this structure:
+3. **Create plan** with this structure:
    ```markdown
    ## Implementation Plan
 
@@ -63,7 +81,7 @@ The coordinator provides a work package with:
    | `src/bar.ts` | Create |
    ```
 
-3. **Return result** with plan in `update_description` field
+4. **Return result** with plan in `update_description` field and `stage_context` for Dev
 
 ### Mode: finalize (plan approved, prepare for Development)
 
@@ -76,6 +94,31 @@ The coordinator provides a work package with:
 1. **Read task comments** to find rejection feedback
 2. **Revise the plan** based on feedback
 3. **Return updated description** with revised plan
+
+### Mode: advisory-conflict (provide guidance for merge conflict)
+
+Invoked by Ops when AI conflict resolution fails and specialist guidance is needed.
+
+1. **Read invocation context from task comments:**
+   - Find ALS comment with action "invoke-request"
+   - Extract conflict_details: conflicting_files, develop_summary, feature_summary
+   - Understand the question being asked
+
+2. **Analyze both branches:**
+   - Read each conflicting file
+   - Understand what develop branch changed and why
+   - Understand what feature branch changed and why
+   - Identify semantic conflicts (not just text conflicts)
+
+3. **Develop resolution strategy:**
+   - For each conflicting file, determine:
+     - Keep develop version
+     - Keep feature version
+     - Merge both changes
+     - Create hybrid solution
+   - Explain the rationale for each decision
+
+4. **Return advisory result** with detailed guidance for Ops to apply
 
 ---
 
@@ -111,10 +154,43 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
     "move_to_column": null,
     "update_description": "ORIGINAL DESCRIPTION\n\n---\n\n## Implementation Plan\n\n### Design\n- [ ] DES-1: ...\n\n### Development\n- [ ] DEV-1: ...\n\n### Testing\n- [ ] TEST-1: ...\n\n## Branch Strategy\n- **Branch name**: `feature/...`"
   },
+  "stage_context": {
+    "from_stage": "architect",
+    "to_stage": "dev",
+    "key_decisions": [
+      "Use React Context for state management",
+      "Implement API calls with Axios interceptor pattern",
+      "Store tokens in httpOnly cookies"
+    ],
+    "files_of_interest": [
+      "src/services/auth.service.ts",
+      "src/context/AuthContext.tsx",
+      "src/api/interceptors.ts"
+    ],
+    "warnings": [
+      "Existing localStorage usage needs migration"
+    ],
+    "dependencies": [
+      "axios ^1.6.0",
+      "js-cookie ^3.0.0"
+    ],
+    "metadata": {
+      "branch_name": "feature/task-name",
+      "estimated_complexity": "medium",
+      "subtask_count": 8
+    }
+  },
   "worker_type": "architect",
   "task_id": "{task_id from work package}"
 }
 ```
+
+**Note on stage_context**: When creating a plan, include:
+- `key_decisions`: Architectural decisions that Dev needs to follow
+- `files_of_interest`: Files to modify/create (guides Dev's implementation)
+- `warnings`: Technical debt, migration needs, or gotchas
+- `dependencies`: New dependencies being added
+- `metadata`: Branch name, complexity estimate, subtask count
 
 ### Mode: finalize (Plan Approved, Move to Development)
 
@@ -151,6 +227,33 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
   "task_id": "{task_id from work package}"
 }
 ```
+
+### Mode: advisory-conflict (Conflict Resolution Guidance)
+
+```json
+{
+  "success": true,
+  "summary": "Provided resolution strategy for merge conflict",
+  "joan_actions": {
+    "add_tags": ["Architect-Assist-Complete"],
+    "remove_tags": ["Invoke-Architect"],
+    "add_comment": "ALS/1\nactor: architect\nintent: response\naction: invoke-advisory\ntags.add: [Architect-Assist-Complete]\ntags.remove: [Invoke-Architect]\nsummary: Resolution strategy provided for merge conflict.\ndetails:\n- strategy: {overall strategy description}\n- src/api/auth.ts: Keep JWT from develop, add OAuth2 as alternative provider pattern\n- src/config/settings.ts: Merge both configs under providers namespace\n- rationale: Both approaches are valid; provider pattern allows flexibility",
+    "move_to_column": null,
+    "update_description": null
+  },
+  "worker_type": "architect",
+  "task_id": "{task_id from work package}"
+}
+```
+
+**Advisory Comment Structure:**
+The ALS comment in `add_comment` should include:
+- `strategy`: High-level approach (e.g., "keep both", "prefer develop", "hybrid solution")
+- For each conflicting file:
+  - File path
+  - Specific resolution instructions
+  - What to keep/discard/merge
+- `rationale`: Why this approach makes sense architecturally
 
 ---
 
