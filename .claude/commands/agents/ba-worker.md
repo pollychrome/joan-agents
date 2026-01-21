@@ -22,7 +22,8 @@ The coordinator provides a work package with:
   "task_comments": [...],
   "mode": "evaluate" | "reevaluate",
   "project_id": "uuid",
-  "project_name": "string"
+  "project_name": "string",
+  "previous_stage_context": null  // BA is first stage, no previous context
 }
 ```
 
@@ -92,10 +93,29 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
     "add_comment": "ALS/1\nactor: ba\nintent: decision\naction: mark-ready\ntags.add: [Ready]\ntags.remove: [Needs-Clarification, Clarification-Answered]\nsummary: Requirements validated; ready for planning.\ndetails:\n- Description is complete\n- Acceptance criteria are clear\n- No blocking questions",
     "move_to_column": "Analyse"
   },
+  "stage_context": {
+    "from_stage": "ba",
+    "to_stage": "architect",
+    "key_decisions": [
+      "Key requirement or clarification 1",
+      "Key requirement or clarification 2"
+    ],
+    "files_of_interest": [],
+    "warnings": [],
+    "metadata": {
+      "clarifications_made": 0
+    }
+  },
   "worker_type": "ba",
   "task_id": "{task_id from work package}"
 }
 ```
+
+**Note on stage_context**: When marking a task Ready, include:
+- `key_decisions`: Important requirements or clarifications that the Architect needs to know
+- `files_of_interest`: Any files mentioned in requirements (if applicable)
+- `warnings`: Any concerns or caveats about the requirements
+- `metadata.clarifications_made`: Number of Q&A cycles with the user
 
 ### Requirements INCOMPLETE (Needs Clarification)
 

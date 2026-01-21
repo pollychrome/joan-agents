@@ -21,9 +21,28 @@ The coordinator provides a work package with:
   "task_column": "Review",
   "task_comments": [...],
   "project_id": "uuid",
-  "project_name": "string"
+  "project_name": "string",
+  "previous_stage_context": {
+    "from_stage": "dev",
+    "to_stage": "reviewer",
+    "key_decisions": ["..."],
+    "files_of_interest": ["..."],
+    "warnings": ["..."],
+    "metadata": {
+      "pr_number": 42,
+      "lines_added": 450,
+      "test_coverage": "87%"
+    }
+  }
 }
 ```
+
+**Note on previous_stage_context**: Contains Dev→Reviewer handoff with:
+- Implementation decisions made (verify against architecture plan)
+- Files changed (focus review on these)
+- Warnings (areas needing extra scrutiny)
+- PR/change metadata
+- May be `null` for legacy tasks without handoffs
 
 ---
 
@@ -81,6 +100,15 @@ The coordinator provides a work package with:
 
 ## Step 3: Deep Code Review
 
+### 3.0 Review Previous Stage Context (if available)
+```
+IF previous_stage_context exists:
+  - Read key_decisions to understand what dev implemented
+  - Use files_of_interest to focus the review
+  - Check warnings for areas needing extra scrutiny
+  - Use metadata (PR number, line counts) for context
+```
+
 Perform comprehensive review:
 
 ### 3a. Functional Completeness
@@ -88,6 +116,7 @@ Perform comprehensive review:
 - All sub-tasks checked off in task description
 - PR changes match requirements
 - No missing functionality
+- Implementation matches architecture plan (compare against key_decisions)
 ```
 
 ### 3b. Code Quality
@@ -153,6 +182,26 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
     "move_to_column": null,
     "update_description": null
   },
+  "stage_context": {
+    "from_stage": "reviewer",
+    "to_stage": "ops",
+    "key_decisions": [
+      "Code quality meets standards",
+      "Tests passing with 87% coverage",
+      "Security review passed - no vulnerabilities"
+    ],
+    "files_of_interest": [
+      "src/context/AuthContext.tsx"
+    ],
+    "warnings": [
+      "Consider splitting auth context in future refactor (non-blocking)"
+    ],
+    "metadata": {
+      "review_duration_minutes": 45,
+      "blockers_found": 0,
+      "warnings_noted": 1
+    }
+  },
   "review_result": {
     "decision": "APPROVED",
     "blockers": [],
@@ -163,6 +212,12 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
   "task_id": "{task_id from work package}"
 }
 ```
+
+**Note on stage_context (approval)**: For Reviewer→Ops handoff:
+- `key_decisions`: Review summary points for Ops awareness
+- `files_of_interest`: Critical files that were reviewed
+- `warnings`: Non-blocking observations for future reference
+- `metadata`: Review metrics
 
 ### Review REJECTED (Blockers Found)
 
@@ -177,6 +232,27 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
     "move_to_column": "Development",
     "update_description": null
   },
+  "stage_context": {
+    "from_stage": "reviewer",
+    "to_stage": "dev",
+    "key_decisions": [
+      "BLOCKER: Add null check in AuthContext.tsx line 42",
+      "BLOCKER: Fix failing test in auth.test.ts line 67",
+      "WARNING: Consider memoizing useAuth hook"
+    ],
+    "files_of_interest": [
+      "src/context/AuthContext.tsx:42",
+      "tests/auth.test.ts:67"
+    ],
+    "warnings": [
+      "Code quality otherwise acceptable",
+      "Security review passed"
+    ],
+    "metadata": {
+      "blockers_count": 2,
+      "warnings_count": 1
+    }
+  },
   "review_result": {
     "decision": "REJECTED",
     "blockers": ["Missing error handling in auth.ts", "Tests failing on CI"],
@@ -187,6 +263,12 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
   "task_id": "{task_id from work package}"
 }
 ```
+
+**Note on stage_context (rejection)**: For Reviewer→Dev handoff:
+- `key_decisions`: BLOCKER and WARNING items as structured list (Dev uses this as rework checklist)
+- `files_of_interest`: Specific file:line locations needing attention
+- `warnings`: Positive observations to preserve (don't break what's working)
+- `metadata`: Counts of blockers/warnings
 
 ### Merge Conflict Detected
 

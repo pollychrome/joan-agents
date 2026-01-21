@@ -41,7 +41,8 @@ Set these variables from config:
 - `POLL_INTERVAL` = config.settings.pollingIntervalMinutes
 - `MAX_IDLE` = override or config.settings.maxIdlePolls
 - `LOOP_MODE` = true if --loop flag present
-- `DEV_COUNT` = config.agents.devs.count
+
+Note: `devs.count` is always 1 (strict serial mode - prevents merge conflicts).
 
 Enabled flags (all default to true):
 - `BA_ENABLED` = config.agents.businessAnalyst.enabled
@@ -65,8 +66,8 @@ Task tool call:
     - POLL_INTERVAL: {POLL_INTERVAL}
     - MAX_IDLE: {MAX_IDLE}
     - LOOP_MODE: {LOOP_MODE}
-    - DEV_COUNT: {DEV_COUNT}
     - MODEL: {MODEL}
+    - MODE: Strict serial (one task at a time through dev pipeline)
 
     Enabled Agents:
     - BA_ENABLED: {BA_ENABLED}

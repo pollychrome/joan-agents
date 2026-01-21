@@ -35,10 +35,11 @@ Ask the user for their preferences using AskUserQuestion:
    - `opus` - Best instruction-following, most thorough (recommended for complex workflows)
    - `sonnet` - Faster, lower cost, good for simpler tasks
    - `haiku` - Fastest, lowest cost, best for very simple operations
-2. **Polling Interval**: How often should agents poll when idle? (default: 10 minutes)
-3. **Max Idle Polls**: How many empty polls before agent shuts down? (default: 6, meaning 1 hour at 10-min intervals)
+2. **Polling Interval**: How often should agents poll when idle? (default: 5 minutes)
+3. **Max Idle Polls**: How many empty polls before agent shuts down? (default: 12, meaning 1 hour at 5-min intervals)
 4. **Enabled Agents**: Which agents should be enabled?
-5. **Dev Count**: If devs enabled, how many parallel dev workers? (default: 2)
+
+**Note:** Dev count is always 1 (strict serial mode - prevents merge conflicts and stale plans).
 
 ## Step 4: Set Up Project Structure
 
@@ -116,11 +117,7 @@ The workflow uses tags for agent communication. Create any missing tags:
 | `Merge-Conflict` | #F97316 (orange) | Merge conflict detected |
 | `Implementation-Failed` | #F43F5E (rose) | Dev couldn't complete (manual recovery) |
 | `Worktree-Failed` | #EC4899 (pink) | Worktree creation failed (manual recovery) |
-
-Additionally, create `Claimed-Dev-N` tags based on dev count:
-- `Claimed-Dev-1` (#0EA5E9 sky)
-- `Claimed-Dev-2` (#38BDF8 sky-400)
-- etc.
+| `Claimed-Dev-1` | #0EA5E9 (sky) | Dev worker claim tag (strict serial: only 1) |
 
 First, fetch existing tags:
 ```
@@ -216,24 +213,37 @@ Create `.joan-agents.json` in project root with the user's selections:
   "projectName": "{selected-project-name}",
   "settings": {
     "model": "{opus|sonnet|haiku}",
-    "pollingIntervalMinutes": {user-choice},
-    "maxIdlePolls": {user-choice},
-    "staleClaimMinutes": 60,
+    "pollingIntervalMinutes": {user-choice, default: 5},
+    "maxIdlePolls": {user-choice, default: 12},
+    "staleClaimMinutes": 120,
     "maxPollCyclesBeforeRestart": 10,
     "stuckStateMinutes": 120,
     "schedulerIntervalSeconds": 300,
     "schedulerStuckTimeoutSeconds": 600,
-    "schedulerMaxConsecutiveFailures": 3
+    "schedulerMaxConsecutiveFailures": 3,
+    "pipeline": {
+      "baQueueDraining": true,
+      "maxBaTasksPerCycle": 10
+    },
+    "workerTimeouts": {
+      "ba": 10,
+      "architect": 20,
+      "dev": 60,
+      "reviewer": 20,
+      "ops": 15
+    }
   },
   "agents": {
     "businessAnalyst": { "enabled": {true/false} },
     "architect": { "enabled": {true/false} },
     "reviewer": { "enabled": {true/false} },
     "ops": { "enabled": {true/false} },
-    "devs": { "enabled": {true/false}, "count": {user-choice} }
+    "devs": { "enabled": {true/false}, "count": 1 }
   }
 }
 ```
+
+**Note:** `devs.count` is always 1 to enforce strict serial mode.
 
 ## Step 7: Confirm Setup & Offer Tutorial
 
@@ -254,7 +264,7 @@ Enabled Agents:
   • Architect: {enabled/disabled}
   • Code Reviewer: {enabled/disabled}
   • Ops: {enabled/disabled}
-  • Devs: {enabled/disabled} (x{count})
+  • Dev Worker: {enabled/disabled} (strict serial mode)
 
 Project Structure:
   • Columns: {N} workflow columns configured
@@ -380,26 +390,28 @@ WHEN TO USE EACH:
   context can overflow causing issues. The external scheduler spawns
   FRESH Claude processes each cycle, avoiding this problem.
 
-WHAT HAPPENS:
+WHAT HAPPENS (Staged Pipeline):
 ─────────────────────────────────────
+  PHASE 1: BA DRAINING
   1. Coordinator polls Joan (one API call)
-  2. Builds priority queues from task tags
-  3. Dispatches workers for available tasks:
-     - BA-worker for To Do tasks
-     - Architect-worker for Ready tasks
-     - Dev-worker for Planned tasks (claims atomically)
-     - Reviewer-worker for Review tasks
-     - Ops-worker for approved merges
-  4. Workers complete and exit
-  5. Coordinator sleeps, then repeats (in loop/scheduler mode)
+  2. Processes ALL BA tasks (no code dependencies)
+
+  PHASE 2: SERIAL DEV PIPELINE
+  3. Checks pipeline gate (is any task in Architect→Dev→Review→Ops?)
+  4. If clear: dispatches ONE task through the pipeline
+  5. Workers complete and exit
+  6. Coordinator sleeps, then repeats
 
 Auto-shutdown after {maxIdlePolls} empty polls
 (configured to {calculated time} with current settings)
 
-PARALLEL DEVELOPMENT:
+STRICT SERIAL MODE:
 ─────────────────────────────────────
-The coordinator automatically manages {dev_count} dev workers.
-Each works in isolated git worktrees - no conflicts!
+Only ONE task flows through the dev pipeline at a time.
+This prevents:
+  • Merge conflicts (no parallel PRs to develop)
+  • Stale plans (Architect always sees current codebase)
+  • Rework cycles (plans never become outdated)
 ```
 
 Ask: "Ready to see the human touchpoints? (Continue / Ask a question)"
@@ -426,7 +438,7 @@ All human actions are done via TAGS in Joan UI (not comments):
 
 3. MONITOR PROGRESS
    Check Joan board to see tasks flowing through columns.
-   Tags show current state (Ready, Planned, Claimed-Dev-1...)
+   Tags show current state (Ready, Planned, Claimed-Dev-1)
 
 4. HANDLE FAILURES
    Tasks tagged "Implementation-Failed" or "Worktree-Failed"

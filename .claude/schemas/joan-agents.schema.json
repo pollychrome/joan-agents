@@ -51,7 +51,19 @@
           "minimum": 3,
           "maximum": 100,
           "default": 10,
-          "description": "Poll cycles before coordinator restarts to clear context (prevents drift)"
+          "description": "Poll cycles before coordinator restarts to clear context (fallback for poll-count trigger)"
+        },
+        "contextRefresh": {
+          "type": "object",
+          "description": "Context refresh strategy - controls when coordinator restarts with fresh context",
+          "properties": {
+            "trigger": {
+              "type": "string",
+              "enum": ["workflow-complete", "poll-count"],
+              "default": "workflow-complete",
+              "description": "When to refresh context: 'workflow-complete' (after task reaches Done) or 'poll-count' (after N polls)"
+            }
+          }
         },
         "stuckStateMinutes": {
           "type": "integer",
@@ -80,6 +92,65 @@
           "maximum": 10,
           "default": 3,
           "description": "Max consecutive coordinator failures before scheduler stops"
+        },
+        "pipeline": {
+          "type": "object",
+          "description": "Strict serial pipeline settings - ensures ONE task flows through Architect→Dev→Review→Ops at a time",
+          "properties": {
+            "baQueueDraining": {
+              "type": "boolean",
+              "default": true,
+              "description": "Process ALL BA tasks before moving to serial dev pipeline"
+            },
+            "maxBaTasksPerCycle": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 10,
+              "description": "Maximum BA tasks to drain per dispatch cycle"
+            }
+          }
+        },
+        "workerTimeouts": {
+          "type": "object",
+          "description": "Timeout settings (in minutes) for each worker type",
+          "properties": {
+            "ba": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 60,
+              "default": 10,
+              "description": "BA worker timeout in minutes"
+            },
+            "architect": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 120,
+              "default": 20,
+              "description": "Architect worker timeout in minutes"
+            },
+            "dev": {
+              "type": "integer",
+              "minimum": 15,
+              "maximum": 180,
+              "default": 60,
+              "description": "Dev worker timeout in minutes"
+            },
+            "reviewer": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 120,
+              "default": 20,
+              "description": "Reviewer worker timeout in minutes"
+            },
+            "ops": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 60,
+              "default": 15,
+              "description": "Ops worker timeout in minutes"
+            }
+          }
         }
       }
     },
@@ -141,9 +212,9 @@
             "count": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 10,
-              "default": 2,
-              "description": "Number of parallel devs to run"
+              "maximum": 1,
+              "default": 1,
+              "description": "Number of dev workers (strict serial mode enforces 1)"
             }
           },
           "required": ["enabled", "count"]

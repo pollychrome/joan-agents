@@ -1,4 +1,4 @@
-# Joan Multi-Agent Orchestration System (v4)
+# Joan Multi-Agent Orchestration System (v4.2)
 
 A multi-agent system that automates software development workflows using Claude Code. Agents handle requirements analysis, architecture planning, implementation, code review, and deployment—all orchestrated through your Joan project board.
 
@@ -167,7 +167,7 @@ Created by `/agents:init`, this file controls agent behavior:
 | `model` | `opus` | Claude model: `opus`, `sonnet`, or `haiku` |
 | `pollingIntervalMinutes` | `10` | Minutes between polls when idle |
 | `maxIdlePolls` | `6` | Idle polls before auto-shutdown (~1 hour) |
-| `devs.count` | `2` | Number of parallel dev workers |
+| `devs.count` | `1` | Number of dev workers (strict serial mode) |
 
 ### Bash Permissions (Auto-Configured)
 
@@ -262,26 +262,25 @@ Coordinator ────► poll Joan ────► dispatch workers ───
 | **Reviewer** | Code review, quality gate, approves or requests rework |
 | **Ops** | Merges to develop, tracks deployments |
 
-### Parallel Development with Worktrees
+### Strict Serial Pipeline with Context Handoffs
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         DEVELOPMENT COLUMN                              │
+│                      STRICT SERIAL PIPELINE (v4.2)                      │
 │                                                                         │
-│    Task A          Task B          Task C          Task D               │
-│       │               │               │               │                 │
-│       ▼               ▼               ▼               ▼                 │
-│    Dev #1          Dev #2          Dev #3          Dev #4               │
-│       │               │               │               │                 │
-│       ▼               ▼               ▼               ▼                 │
-│  ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐           │
-│  │Worktree │     │Worktree │     │Worktree │     │Worktree │           │
-│  │ task-a  │     │ task-b  │     │ task-c  │     │ task-d  │           │
-│  └─────────┘     └─────────┘     └─────────┘     └─────────┘           │
+│  ┌──────────┐   ┌─────────┐   ┌────────┐   ┌──────┐   ┌──────────┐    │
+│  │ Architect│ → │   Dev   │ → │ Review │ → │  Ops │ → │  MERGED  │    │
+│  │ (1 task) │   │(1 task) │   │(1 task)│   │merge │   │to develop│    │
+│  └──────────┘   └─────────┘   └────────┘   └──────┘   └──────────┘    │
+│       │               │             │           │                      │
+│       └───────────────┴─────────────┴───────────┘                      │
+│                    Context Handoffs                                     │
 │                                                                         │
-│  4 features developed IN PARALLEL                                       │
+│  ONE task at a time → No merge conflicts → Plans always fresh          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+Dev workers still use **worktrees** for isolation, but in strict serial mode only one task moves through the Architect→Dev→Review→Ops pipeline at a time. This prevents merge conflicts and ensures plans reference the current codebase state.
 
 ---
 
@@ -366,6 +365,7 @@ To Do → Analyse → Development → Review → Deploy → Done
 | [Architecture](shared/joan-shared-specs/docs/joan-agents/architecture.md) | System design details |
 | [Agentic Workflow](shared/joan-shared-specs/docs/workflow/agentic-workflow.md) | Task lifecycle spec |
 | [ALS Syntax](shared/joan-shared-specs/docs/workflow/als-spec.md) | Comment format for agents |
+| [Worker Result Schema](shared/joan-shared-specs/docs/workflow/worker-result-schema.md) | Worker output format and context handoffs |
 | [Human Inbox](shared/joan-shared-specs/docs/human-interface/human-inbox.md) | Human interaction patterns |
 
 ---
@@ -374,11 +374,12 @@ To Do → Analyse → Development → Review → Deploy → Done
 
 - **Tag-Based Orchestration** - Deterministic state machine, no comment parsing
 - **10x Lower Overhead** - Single coordinator vs N independent polling agents
-- **True Parallelism** - N features developed simultaneously in worktrees
-- **No Conflicts** - Each dev has isolated workspace
+- **Strict Serial Pipeline** - One task at a time prevents merge conflicts
+- **Context Handoffs** - Structured context passed between workflow stages
 - **Single-Pass Workers** - Stateless workers, easy to retry on failure
 - **Quality Gate** - Automated code review before merge
-- **Auto-Cleanup** - Worktrees created and removed automatically
+- **Self-Healing** - Auto-recovery from stale claims, anomaly detection
+- **External Scheduler** - Context-safe long-running operations
 
 ---
 
@@ -392,6 +393,27 @@ git pull
 Changes are immediately available in all projects via symlinks.
 
 ---
+
+## What's New in v4.2
+
+| Feature | v4 | v4.2 |
+|---------|-----|------|
+| Dev pipeline | Parallel (N workers) | Strict serial (1 worker, no merge conflicts) |
+| Context passing | Manual via comments | Structured handoffs between stages |
+| Session management | Internal loop | External scheduler (context-safe) |
+| Self-healing | Basic claim recovery | Anomaly detection, stuck state recovery |
+
+### Context Handoffs
+
+Workers now pass **structured context** between workflow stages:
+- BA → Architect: Requirements clarifications and user decisions
+- Architect → Dev: Architecture decisions, files to modify, dependencies
+- Dev → Reviewer: Implementation notes, files changed, warnings
+- Reviewer → Dev (rework): Blockers with file:line, suggestions
+
+Context is persisted in Joan comments (not in-memory), making it durable across coordinator restarts.
+
+See [Worker Result Schema](shared/joan-shared-specs/docs/workflow/worker-result-schema.md) for details.
 
 ## What's New in v4
 

@@ -4,14 +4,28 @@
   "projectName": "Joan Agents",
   "settings": {
     "model": "opus",
-    "pollingIntervalMinutes": 10,
-    "maxIdlePolls": 6,
-    "staleClaimMinutes": 60,
+    "pollingIntervalMinutes": 5,
+    "maxIdlePolls": 12,
+    "staleClaimMinutes": 120,
     "maxPollCyclesBeforeRestart": 10,
     "stuckStateMinutes": 120,
+    "contextRefresh": {
+      "trigger": "workflow-complete"
+    },
     "schedulerIntervalSeconds": 300,
     "schedulerStuckTimeoutSeconds": 600,
-    "schedulerMaxConsecutiveFailures": 3
+    "schedulerMaxConsecutiveFailures": 3,
+    "pipeline": {
+      "baQueueDraining": true,
+      "maxBaTasksPerCycle": 10
+    },
+    "workerTimeouts": {
+      "ba": 10,
+      "architect": 20,
+      "dev": 60,
+      "reviewer": 20,
+      "ops": 15
+    }
   },
   "agents": {
     "businessAnalyst": {
@@ -28,7 +42,7 @@
     },
     "devs": {
       "enabled": true,
-      "count": 2
+      "count": 1
     }
   }
 }

@@ -13,7 +13,6 @@ Load from `.joan-agents.json`:
 ```
 PROJECT_ID = config.projectId
 PROJECT_NAME = config.projectName
-DEV_COUNT = config.agents.devs.count
 ```
 
 If config missing, report error and exit.
@@ -45,6 +44,44 @@ If config missing, report error and exit.
 
    Check if SHUTDOWN_FILE exists:
      - If exists: SHUTDOWN_PENDING = true
+
+5. Check pipeline gate status (strict serial mode):
+   PIPELINE_BLOCKED = false
+   BLOCKING_TASK = null
+   BLOCKING_REASON = ""
+
+   For each task:
+     IF task in "Development" column:
+       IF hasTag("Planned") AND NOT hasTag("Claimed-Dev-1"):
+         # Planned but not yet claimed - pipeline is flowing
+         continue
+       IF hasTag("Claimed-Dev-1"):
+         PIPELINE_BLOCKED = true
+         BLOCKING_TASK = task.title
+         BLOCKING_REASON = "Dev implementing"
+         BREAK
+       IF hasTag("Implementation-Failed") OR hasTag("Worktree-Failed"):
+         PIPELINE_BLOCKED = true
+         BLOCKING_TASK = task.title
+         BLOCKING_REASON = "FAILED - needs manual fix"
+         BREAK
+
+     IF task in "Review" column:
+       IF NOT hasTag("Review-Approved"):
+         PIPELINE_BLOCKED = true
+         BLOCKING_TASK = task.title
+         BLOCKING_REASON = "In review"
+         BREAK
+       IF hasTag("Review-Approved") AND NOT hasTag("Ops-Ready"):
+         PIPELINE_BLOCKED = true
+         BLOCKING_TASK = task.title
+         BLOCKING_REASON = "Awaiting Ops-Ready tag"
+         BREAK
+       IF hasTag("Review-Approved") AND hasTag("Ops-Ready"):
+         PIPELINE_BLOCKED = true
+         BLOCKING_TASK = task.title
+         BLOCKING_REASON = "Awaiting Ops merge"
+         BREAK
 ```
 
 ## Step 2: Categorize Tasks
@@ -62,8 +99,8 @@ ANALYSE = tasks in "Analyse" column
   - plan_rejected: has Plan-Rejected tag
 
 DEVELOPMENT = tasks in "Development" column
-  - planned: has Planned, no Claimed-Dev-*
-  - claimed: has Claimed-Dev-* tag (note which dev)
+  - planned: has Planned, no Claimed-Dev-1
+  - claimed: has Claimed-Dev-1 tag (strict serial: only 1 dev)
   - rework: has Rework-Requested tag
   - conflict: has Merge-Conflict tag
   - failed: has Implementation-Failed or Worktree-Failed
@@ -87,8 +124,8 @@ From task tags, infer active workers:
 ACTIVE_WORKERS = []
 
 For each task:
-  IF has "Claimed-Dev-N" tag:
-    ACTIVE_WORKERS.push({type: "Dev", id: N, task: title, column: "Development"})
+  IF has "Claimed-Dev-1" tag:
+    ACTIVE_WORKERS.push({type: "Dev", task: title, column: "Development"})
 
   IF has "Review-In-Progress" tag:
     ACTIVE_WORKERS.push({type: "Reviewer", task: title, column: "Review"})
@@ -126,6 +163,22 @@ Output the following format:
   ─────────────────────────────────────────────────────────────
   {SCHEDULER_STATUS}
   {IF SHUTDOWN_PENDING}  ⚠ Shutdown pending (will stop after current cycle){END IF}
+  ─────────────────────────────────────────────────────────────
+
+  PIPELINE GATE (Strict Serial Mode)
+  ─────────────────────────────────────────────────────────────
+  {IF PIPELINE_BLOCKED}
+    Status: BLOCKED
+    Task:   {BLOCKING_TASK}
+    Reason: {BLOCKING_REASON}
+
+    → Architect will NOT plan new tasks until this completes
+    → BA tasks continue draining (no code dependencies)
+  {ELSE}
+    Status: CLEAR
+
+    → Architect can plan next Ready task
+  {END IF}
   ─────────────────────────────────────────────────────────────
 
   PIPELINE OVERVIEW
@@ -174,7 +227,7 @@ Output the following format:
   ─────────────────────────────────────────────────────────────
   {FOR task IN DEVELOPMENT}
     [{task.state}] {task.title}
-      {IF claimed} Claimed by Dev-{N} {END IF}
+      {IF claimed} Claimed by Dev (implementing) {END IF}
       {IF rework} Needs rework {END IF}
       {IF conflict} Has merge conflict {END IF}
       {IF failed} FAILED - needs manual fix {END IF}
