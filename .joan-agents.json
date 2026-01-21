@@ -7,14 +7,7 @@
     "pollingIntervalMinutes": 5,
     "maxIdlePolls": 12,
     "staleClaimMinutes": 120,
-    "maxPollCyclesBeforeRestart": 10,
     "stuckStateMinutes": 120,
-    "contextRefresh": {
-      "trigger": "workflow-complete"
-    },
-    "schedulerIntervalSeconds": 300,
-    "schedulerStuckTimeoutSeconds": 600,
-    "schedulerMaxConsecutiveFailures": 3,
     "pipeline": {
       "baQueueDraining": true,
       "maxBaTasksPerCycle": 10

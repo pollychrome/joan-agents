@@ -46,25 +46,6 @@
           "default": 60,
           "description": "Minutes before orphaned dev claims are auto-released (self-healing)"
         },
-        "maxPollCyclesBeforeRestart": {
-          "type": "integer",
-          "minimum": 3,
-          "maximum": 100,
-          "default": 10,
-          "description": "Poll cycles before coordinator restarts to clear context (fallback for poll-count trigger)"
-        },
-        "contextRefresh": {
-          "type": "object",
-          "description": "Context refresh strategy - controls when coordinator restarts with fresh context",
-          "properties": {
-            "trigger": {
-              "type": "string",
-              "enum": ["workflow-complete", "poll-count"],
-              "default": "workflow-complete",
-              "description": "When to refresh context: 'workflow-complete' (after task reaches Done) or 'poll-count' (after N polls)"
-            }
-          }
-        },
         "stuckStateMinutes": {
           "type": "integer",
           "minimum": 15,

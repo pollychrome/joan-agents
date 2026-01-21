@@ -34,9 +34,6 @@ STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes (default: 120)
 MAX_POLL_CYCLES = config.settings.maxPollCyclesBeforeRestart (default: 10)
 STUCK_STATE_MINUTES = config.settings.stuckStateMinutes (default: 120)
 
-# Context refresh settings
-CONTEXT_REFRESH_TRIGGER = config.settings.contextRefresh?.trigger (default: "workflow-complete")
-
 # Pipeline settings (strict serial mode)
 BA_DRAINING_ENABLED = config.settings.pipeline.baQueueDraining (default: true)
 MAX_BA_TASKS_PER_CYCLE = config.settings.pipeline.maxBaTasksPerCycle (default: 10)
@@ -82,7 +79,6 @@ LOOP_MODE = true if --loop flag present, else false
    TAG_CACHE = {}
    FORCE_REQUEUE = []  # Tasks flagged for priority re-processing
    INVOCATION_PENDING = false  # Set when agent invocation needs fast resolution
-   CONTEXT_REFRESH_REQUESTED = false  # Set when workflow completes (task reaches Done)
 ```
 
 ---
@@ -1554,14 +1550,6 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
     mcp__joan__update_task(task.id, column_id=COLUMN_CACHE[actions.move_to_column])
     Report: "  Moved to column: {actions.move_to_column}"
 
-    # 3e-ii. Detect workflow completion (for context refresh)
-    # If Ops moved task to Deploy or Done, a workflow is complete
-    IF worker == "ops" AND (actions.move_to_column == "Deploy" OR actions.move_to_column == "Done"):
-      IF CONTEXT_REFRESH_TRIGGER == "workflow-complete":
-        CONTEXT_REFRESH_REQUESTED = true
-        Report: "  ★ WORKFLOW COMPLETE: Task '{task.title}' reached {actions.move_to_column}"
-        Report: "  ★ Context refresh will occur at end of this cycle"
-
   # 3f. Create context handoff comment (if worker provided stage_context)
   IF parsed.stage_context:
     context = parsed.stage_context
@@ -1705,44 +1693,11 @@ IF NOT LOOP_MODE:
   Report: "Single pass complete. Exiting."
   EXIT
 
-# Context Refresh - Check workflow-complete trigger FIRST (highest priority)
-IF CONTEXT_REFRESH_REQUESTED:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  WORKFLOW COMPLETE: Task lifecycle finished                       ║"
-  Report: "║  Restarting coordinator with fresh context for next task...      ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
-  Report: "  Refresh trigger: workflow-complete (recommended)"
-  Report: "  Next task will start with clean context, no stale references"
-  Report: ""
-
-  # Exit with special code 100 = restart requested
-  EXIT with code 100
-
-# Context Window Management (fallback): Restart after N cycles if using poll-count trigger
-# This is the legacy approach - workflow-complete is recommended
-IF LOOP_MODE AND CONTEXT_REFRESH_TRIGGER == "poll-count" AND POLL_CYCLE_COUNT >= MAX_POLL_CYCLES:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  CONTEXT REFRESH: Reached {MAX_POLL_CYCLES} poll cycles.                          ║"
-  Report: "║  Restarting coordinator to clear context and prevent drift...   ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
-  Report: "  Note: Consider using 'workflow-complete' trigger for better context management"
-  Report: ""
-
-  # Exit with special code 100 = restart requested
-  EXIT with code 100
-
 # Continue to next iteration
 ```
 
-**Why context refresh matters:**
-- Long-running coordinators accumulate context that can cause instruction drift
-- After many poll cycles, the model may skip queue-building logic or misparse results
-- Restarting with fresh context ensures reliable workflow execution
-- Exit code 100 signals "restart requested" vs normal exit (0) or error (1)
+**Context Management:**
+The coordinator relies on Claude's auto-compact feature for long-running sessions. Key state (TAG_CACHE, COLUMN_CACHE) is rebuilt every poll cycle from Joan MCP, so context summarization doesn't affect correctness.
 
 ---
 
@@ -1754,7 +1709,7 @@ IF LOOP_MODE AND CONTEXT_REFRESH_TRIGGER == "poll-count" AND POLL_CYCLE_COUNT >=
 - NEVER pause to wait for user confirmation
 - Human interaction happens via TAGS in Joan UI, not via conversation
 - In loop mode: poll → dispatch → sleep → repeat (no interruptions)
-- Only exit when: (a) single-pass mode completes, (b) max idle polls reached, (c) workflow completes (if trigger=workflow-complete), or (d) max poll cycles reached (if trigger=poll-count)
+- Only exit when: (a) single-pass mode completes, or (b) max idle polls reached
 
 **Operational Rules:**
 - NEVER parse comments for triggers (tags only)

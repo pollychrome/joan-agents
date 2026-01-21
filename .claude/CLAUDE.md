@@ -1,4 +1,4 @@
-# Joan Multi-Agent System (v4.4 - Workflow-Complete Context Refresh)
+# Joan Multi-Agent System (v4.5 - Auto-Compact Context Management)
 
 This system uses **tag-based state transitions** (no comment parsing), a **single coordinator** that dispatches workers, and a **strict serial dev pipeline** to prevent merge conflicts.
 
@@ -13,8 +13,7 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 
 # 3. Run coordinator
 /agents:start              # Single pass
-/agents:start --loop       # Continuous operation (interactive sessions)
-/agents:scheduler          # External scheduler (overnight/long-running - recommended)
+/agents:start --loop       # Continuous operation (recommended)
 
 # Or equivalently:
 /agents:dispatch --loop
@@ -78,14 +77,7 @@ Agents read from `.joan-agents.json` in project root:
     "pollingIntervalMinutes": 5,
     "maxIdlePolls": 12,
     "staleClaimMinutes": 120,
-    "maxPollCyclesBeforeRestart": 10,
     "stuckStateMinutes": 120,
-    "contextRefresh": {
-      "trigger": "workflow-complete"
-    },
-    "schedulerIntervalSeconds": 300,
-    "schedulerStuckTimeoutSeconds": 600,
-    "schedulerMaxConsecutiveFailures": 3,
     "pipeline": {
       "baQueueDraining": true,
       "maxBaTasksPerCycle": 10
@@ -118,16 +110,11 @@ Run `/agents:init` to generate this file interactively.
 | `pollingIntervalMinutes` | 5 | Minutes between polls when queue is empty |
 | `maxIdlePolls` | 12 | Consecutive empty polls before auto-shutdown |
 | `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released |
-| `maxPollCyclesBeforeRestart` | 10 | Poll cycles before context refresh (only used if trigger=poll-count) |
 | `stuckStateMinutes` | 120 | Minutes before tasks are flagged as stuck in workflow |
 
-### Context Refresh Settings (v4.4)
+### Context Management
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `contextRefresh.trigger` | workflow-complete | When to refresh context: `workflow-complete` (after task reaches Done) or `poll-count` (after N polls) |
-
-**Recommended: `workflow-complete`** - This ensures each new task starts with fresh context, preventing stale references to previous tasks' files and comments.
+The coordinator relies on Claude's **auto-compact** feature for long-running sessions. Key state (TAG_CACHE, COLUMN_CACHE) is rebuilt every poll cycle from Joan MCP, so context summarization doesn't affect correctness. The loop continues indefinitely until max idle polls is reached.
 
 ### Pipeline Settings (Strict Serial Mode)
 
