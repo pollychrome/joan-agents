@@ -89,24 +89,53 @@ The coordinator provides a work package with:
    - Find "**Branch:** `feature/{name}`" or "Branch: `feature/{name}`"
    - BRANCH = extracted branch name
 
-2. Setup branch:
+2. Pre-flight checks:
+   # Check for dirty working tree
+   if [[ -n $(git status --porcelain) ]]; then
+     Return BRANCH_SETUP_FAILURE result:
+       error: "Working tree has uncommitted changes. Clean or stash before claiming task."
+       suggestion: "Run: git status, then git stash or commit changes"
+   fi
+
+3. Setup branch with validation:
    git fetch origin
+   CURRENT=$(git branch --show-current)
 
    IF MODE == "implement" (fresh implementation):
-     # Start from current develop
-     git checkout develop
-     git pull origin develop
-     git checkout -b "$BRANCH"
+     # Check if target branch already exists locally
+     if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+       # Branch exists - is it current?
+       if [[ "$CURRENT" == "$BRANCH" ]]; then
+         Report: "Already on feature branch $BRANCH, updating from develop"
+         git checkout develop
+         git pull origin develop
+         git checkout "$BRANCH"
+         git merge develop --no-edit || {
+           Return BRANCH_SETUP_FAILURE result:
+             error: "Merge conflict when updating feature branch with develop"
+             suggestion: "Branch may have been partially implemented. Delete branch and recreate, or resolve conflicts manually."
+         }
+       else
+         Return BRANCH_SETUP_FAILURE result:
+           error: "Branch $BRANCH already exists but is not current branch ($CURRENT)"
+           suggestion: "Delete existing branch: git branch -D $BRANCH, or use different task name"
+       fi
+     else
+       # Fresh branch creation
+       git checkout develop
+       git pull origin develop
+       git checkout -b "$BRANCH"
+     fi
 
    ELSE (rework or conflict - branch already exists):
      # Checkout existing branch
      git checkout "$BRANCH"
      git pull origin "$BRANCH" --rebase || git pull origin "$BRANCH"
 
-3. Install dependencies (if needed):
+4. Install dependencies (if needed):
    npm install 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
 
-4. IF branch setup fails:
+5. IF branch setup fails at any point:
    Return BRANCH_SETUP_FAILURE result (see Output Format)
 ```
 

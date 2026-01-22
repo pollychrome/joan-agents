@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# DEPRECATED: This script is legacy. Use `/agents:dispatch --loop` directly in Claude Code.
+# This script is kept for backward compatibility only.
+
 # Joan Coordinator Launcher (iTerm2 - v4 Single Coordinator Pattern)
 # Usage: ./start-agents-iterm.sh [--max-idle=N]
 #
@@ -53,7 +56,7 @@ if ! osascript -e 'tell application "iTerm2" to version' &>/dev/null; then
 fi
 
 # Build the command
-COMMAND="/agents:start --loop"
+COMMAND="/agents:dispatch --loop"
 if [ -n "$MAX_IDLE_ARG" ]; then
     COMMAND="$COMMAND $MAX_IDLE_ARG"
 fi

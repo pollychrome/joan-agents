@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# DEPRECATED: This script is legacy. Use `/agents:dispatch --loop` directly in Claude Code.
+# This script is kept for backward compatibility only.
+
 # Joan Coordinator Launcher (v4 - Single Coordinator Pattern)
 # Usage: ./start-agents.sh [--max-idle=N]
 #
@@ -51,7 +54,7 @@ echo "📁 Log directory: $LOG_DIR"
 echo ""
 
 # Build the command
-COMMAND="/agents:start --loop"
+COMMAND="/agents:dispatch --loop"
 if [ -n "$MAX_IDLE_ARG" ]; then
     COMMAND="$COMMAND $MAX_IDLE_ARG"
 fi

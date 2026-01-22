@@ -215,7 +215,7 @@ This prevents permission prompts from interrupting the agent loop. The file is g
 # Extended idle threshold (e.g., 2 hours at 5-min intervals)
 /agents:dispatch --loop --max-idle=24
 
-# Note: /agents:start is an alias for /agents:dispatch (backward compatible)
+# Note: /agents:start is deprecated (use /agents:dispatch instead, kept for backward compatibility)
 
 # Check agent status
 /agents:status
@@ -254,20 +254,24 @@ The `/agents:clean-project` command is a comprehensive tool that handles:
 /agents:dispatch --loop
 ```
 
-### Shell Scripts (macOS)
+### Shell Scripts (macOS) - Legacy
+
+> **Note:** These shell scripts are legacy and kept for backward compatibility. The recommended approach is to use `/agents:dispatch --loop` directly in Claude Code.
 
 ```bash
 chmod +x ~/joan-agents/*.sh
 
-# iTerm2 (opens tabs)
+# iTerm2 (opens tabs) - DEPRECATED
 ~/joan-agents/start-agents-iterm.sh [--max-idle=N]
 
-# Terminal.app
+# Terminal.app - DEPRECATED
 ~/joan-agents/start-agents.sh [--max-idle=N]
 
 # Stop agents
 ~/joan-agents/stop-agents.sh
 ```
+
+These scripts now call `/agents:dispatch --loop` internally.
 
 ---
 

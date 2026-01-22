@@ -1747,14 +1747,12 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
       # Add failure tag for visibility
       mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Implementation-Failed"])
 
-    # Release dev claims on failure
+    # Release dev claims on failure (DEPRECATED: workers now handle this via joan_actions)
     IF worker == "dev" AND dev_id:
       claim_tag = "Claimed-Dev-{dev_id}"
       IF TAG_CACHE[claim_tag]:
         mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE[claim_tag])
         Report: "  Released claim {claim_tag}"
-
-    CONTINUE
 
   # 3. Execute joan_actions
   actions = parsed.joan_actions
