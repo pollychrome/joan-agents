@@ -65,6 +65,47 @@ Parse arguments:
 LOOP_MODE = true if --loop flag present, else false
 ```
 
+## Configuration Validation
+
+**CRITICAL: Validate config before starting coordinator**
+
+```
+ERRORS = []
+
+# Enforce strict serial mode
+IF DEV_COUNT !== 1:
+  ERRORS.push("devs.count must be 1 for strict serial mode (found: " + DEV_COUNT + "). " +
+              "This prevents merge conflicts. Update .joan-agents.json.")
+
+# Validate required settings exist
+IF !STUCK_STATE_MINUTES:
+  ERRORS.push("Missing settings.stuckStateMinutes - add default 120")
+
+IF !BA_DRAINING_ENABLED OR !MAX_BA_TASKS_PER_CYCLE:
+  ERRORS.push("Missing settings.pipeline - add: { baQueueDraining: true, maxBaTasksPerCycle: 10 }")
+
+# Validate worker timeouts exist
+REQUIRED_WORKERS = ["ba", "architect", "dev", "reviewer", "ops"]
+MISSING_TIMEOUTS = []
+FOR worker IN REQUIRED_WORKERS:
+  IF !config.settings.workerTimeouts[worker]:
+    MISSING_TIMEOUTS.push(worker)
+
+IF MISSING_TIMEOUTS.length > 0:
+  ERRORS.push("Missing worker timeouts for: " + MISSING_TIMEOUTS.join(", "))
+
+# Report validation results
+IF ERRORS.length > 0:
+  Report: "❌ Configuration validation failed:"
+  FOR error IN ERRORS:
+    Report: "  • " + error
+  Report: ""
+  Report: "Fix .joan-agents.json and try again, or run /agents:init to regenerate config."
+  EXIT with error code
+
+Report: "✓ Configuration validated"
+```
+
 ## Initialization
 
 ```

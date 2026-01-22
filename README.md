@@ -222,6 +222,9 @@ This prevents permission prompts from interrupting the agent loop. The file is g
 # Check agent status
 /agents:status
 
+# Check if coordinator is running
+/agents:running
+
 # Change model for all agents
 /agents:model
 ```
@@ -395,6 +398,7 @@ To Do → Analyse → Development → Review → Deploy → Done
 | [Setup Guide](shared/joan-shared-specs/docs/joan-agents/setup.md) | Full installation walkthrough |
 | [Global Installation](shared/joan-shared-specs/docs/joan-agents/global-installation.md) | Symlink-based setup |
 | [Troubleshooting](shared/joan-shared-specs/docs/joan-agents/troubleshooting.md) | Common issues and fixes |
+| [Prevention Strategies](docs/PREVENTION_STRATEGIES.md) | How to prevent common workflow failures |
 | [Best Practices](shared/joan-shared-specs/docs/joan-agents/best-practices.md) | Workflow optimization tips |
 | [Architecture](shared/joan-shared-specs/docs/joan-agents/architecture.md) | System design details |
 | [Agentic Workflow](shared/joan-shared-specs/docs/workflow/agentic-workflow.md) | Task lifecycle spec |
