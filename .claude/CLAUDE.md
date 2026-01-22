@@ -146,7 +146,7 @@ With defaults: agents auto-shutdown after 1 hour of inactivity (12 polls × 5 mi
 
 Override per-run with `--max-idle=N`:
 ```bash
-/agents:start --loop --max-idle=24  # Shutdown after 2 hours idle
+/agents:dispatch --loop --max-idle=24  # Shutdown after 2 hours idle
 ```
 
 ## Invocation Modes

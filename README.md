@@ -119,7 +119,7 @@ cp ~/joan-agents/.claude/CLAUDE.md .claude/CLAUDE.md
 # Initialize and run
 claude
 > /agents:init
-> /agents:start --loop
+> /agents:dispatch --loop
 ```
 
 ### Joan MCP Configuration
@@ -206,19 +206,16 @@ This prevents permission prompts from interrupting the agent loop. The file is g
 /agents:clean-project         # Dry run - preview changes
 /agents:clean-project --apply # Apply all fixes
 
-# Run coordinator (single pass)
-/agents:start
+# Run coordinator (single pass - testing/debugging)
 /agents:dispatch
 
-# Run coordinator (continuous - recommended)
-/agents:start --loop
+# Run coordinator (continuous - recommended for production)
 /agents:dispatch --loop
 
-# External scheduler (context-safe for long-running operations)
-/agents:scheduler
+# Extended idle threshold (e.g., 2 hours at 5-min intervals)
+/agents:dispatch --loop --max-idle=24
 
-# Extended idle threshold (e.g., 2 hours)
-/agents:start --loop --max-idle=12
+# Note: /agents:start is an alias for /agents:dispatch (backward compatible)
 
 # Check agent status
 /agents:status
@@ -254,7 +251,7 @@ The `/agents:clean-project` command is a comprehensive tool that handles:
 /agents:clean-project --apply
 
 # 3. Start agents
-/agents:start --loop
+/agents:dispatch --loop
 ```
 
 ### Shell Scripts (macOS)
