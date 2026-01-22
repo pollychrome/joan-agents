@@ -1,6 +1,6 @@
 ---
 description: Run coordinator (single pass or continuous) - recommended mode
-argument-hint: [--loop] [--max-idle=N] [--interval=N]
+argument-hint: [--loop] [--max-idle=N] [--interval=N] [--mode=standard|yolo]
 allowed-tools: Bash, Read
 ---
 
@@ -32,6 +32,7 @@ The coordinator is the **recommended way** to run the Joan agent system. It:
 - No flag → Single pass (dispatch once, then exit)
 - `--max-idle=N` → Max consecutive idle polls before shutdown (default: 12)
 - `--interval=N` → Poll interval in seconds for loop mode (default: 300 = 5 minutes)
+- `--mode=standard|yolo` → Override workflow mode (default: read from config)
 
 ## Configuration
 
@@ -42,6 +43,7 @@ PROJECT_NAME = config.projectName
 POLL_INTERVAL = config.settings.pollingIntervalMinutes (default: 5)
 MAX_IDLE = --max-idle override or config.settings.maxIdlePolls (default: 12)
 MODEL = config.settings.model (default: "opus")
+MODE = --mode override or config.settings.mode (default: "standard")
 DEV_COUNT = config.agents.devs.count (default: 1)  # STRICT SERIAL: Must be 1
 STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes (default: 120)
 MAX_POLL_CYCLES = config.settings.maxPollCyclesBeforeRestart (default: 10)
@@ -80,7 +82,17 @@ Parse arguments:
 LOOP_MODE = true if --loop flag present, else false
 MAX_IDLE_OVERRIDE = --max-idle value if present, else null
 INTERVAL_OVERRIDE = --interval value if present, else null
+MODE_OVERRIDE = --mode value if present, else null
 ```
+
+## Parse CLI Parameters
+
+Extract mode override if provided:
+- Look for `--mode=standard` or `--mode=yolo` in command arguments
+- If found: MODE = cli_value
+- Else: MODE = CONFIG.settings.mode || "standard"
+
+Report: "Running in {MODE} mode"
 
 **Branch based on LOOP_MODE:**
 
@@ -928,6 +940,89 @@ For each task in tasks:
 Report queue sizes:
 "Queues: BA={BA_QUEUE.length}, Architect={ARCHITECT_QUEUE.length}, Dev={DEV_QUEUE.length}, Reviewer={REVIEWER_QUEUE.length}, Ops={OPS_QUEUE.length}"
 ```
+
+---
+
+## Step 3a: YOLO Mode Auto-Approval (Pre-Dispatch)
+
+In YOLO mode, auto-approve any pending approvals BEFORE dispatch begins.
+This handles both fresh approvals (just added this cycle) and stale approvals (from previous cycles).
+
+```
+IF MODE == "yolo":
+  Report: "YOLO mode: scanning for pending approvals..."
+
+  auto_approved_count = 0
+
+  # Auto-approve plans
+  For each task in tasks:
+    IF hasTag(task, "Plan-Pending-Approval") AND inColumn(task, "Analyse"):
+      # Check if Plan-Approved already exists
+      IF NOT hasTag(task, "Plan-Approved"):
+        Report: "  Auto-approving plan for task '{task.title}'"
+
+        # Add Plan-Approved tag
+        IF TAG_CACHE["Plan-Approved"]:
+          mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Plan-Approved"])
+
+          # Add audit comment
+          mcp__joan__create_task_comment(task.id,
+            "ALS/1
+            actor: coordinator
+            intent: decision
+            action: auto-approve-plan
+            tags.add: [Plan-Approved]
+            tags.remove: []
+            summary: Plan auto-approved (YOLO mode active).
+            details:
+            - mode: yolo
+            - reason: Auto-approval bypasses human review gate
+            - next: Architect will finalize on next poll
+            - trigger: pre-dispatch scan detected Plan-Pending-Approval tag")
+
+          auto_approved_count++
+          Report: "    ✓ Added Plan-Approved tag + audit comment"
+
+  # Auto-approve merges
+  For each task in tasks:
+    IF hasTag(task, "Review-Approved") AND inColumn(task, "Review"):
+      # Check if Ops-Ready already exists
+      IF NOT hasTag(task, "Ops-Ready"):
+        Report: "  Auto-approving merge for task '{task.title}'"
+
+        # Add Ops-Ready tag
+        IF TAG_CACHE["Ops-Ready"]:
+          mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Ops-Ready"])
+
+          # Add audit comment
+          mcp__joan__create_task_comment(task.id,
+            "ALS/1
+            actor: coordinator
+            intent: decision
+            action: auto-approve-merge
+            tags.add: [Ops-Ready]
+            tags.remove: []
+            summary: Merge auto-approved (YOLO mode active).
+            details:
+            - mode: yolo
+            - reason: Auto-approval bypasses human merge gate
+            - next: Ops will merge on next poll
+            - trigger: pre-dispatch scan detected Review-Approved tag")
+
+          auto_approved_count++
+          Report: "    ✓ Added Ops-Ready tag + audit comment"
+
+  IF auto_approved_count > 0:
+    Report: "YOLO mode: {auto_approved_count} approval(s) auto-added"
+  ELSE:
+    Report: "YOLO mode: no pending approvals found"
+```
+
+**Why this location?**
+- Runs after queue building (we know which tasks need attention)
+- Runs before pipeline gate (updated tags affect gate logic)
+- Runs before dispatch (workers see updated state)
+- Handles both fresh AND stale approvals from previous cycles
 
 ---
 
@@ -1892,7 +1987,72 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
     mcp__joan__create_task_comment(task.id, handoff_comment)
     Report: "  Created context handoff: {context.from_stage} → {context.to_stage}"
 
-  # 3g. Handle agent invocation (cross-agent consultation)
+  # 3g. Auto-Approval Post-Dispatch (YOLO Mode)
+  # NOTE: This catches approvals added by workers in THIS cycle.
+  # Pre-dispatch approval (Step 3a) catches approvals from PREVIOUS cycles.
+  # Both are needed for complete YOLO coverage.
+  IF MODE == "yolo":
+    Report: "YOLO mode: checking for post-dispatch auto-approval opportunities"
+
+    # Auto-approve plans
+    IF worker == "architect" AND actions.add_tags?.includes("Plan-Pending-Approval"):
+      Report: "  Auto-approving plan (YOLO mode)"
+
+      # Fetch updated task to check current state
+      updated_task = mcp__joan__get_task(task.id)
+
+      # Add Plan-Approved tag if not already present
+      IF TAG_CACHE["Plan-Approved"] AND NOT task_has_tag(updated_task, "Plan-Approved"):
+        mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Plan-Approved"])
+
+        # Add audit comment
+        mcp__joan__create_task_comment(task.id,
+          "ALS/1
+          actor: coordinator
+          intent: decision
+          action: auto-approve-plan
+          tags.add: [Plan-Approved]
+          tags.remove: []
+          summary: Plan auto-approved (YOLO mode active).
+          details:
+          - mode: yolo
+          - reason: Auto-approval bypasses human review gate
+          - next: Architect will finalize on next poll")
+
+        Report: "  ✓ Added Plan-Approved tag"
+      ELSE:
+        Report: "  Plan-Approved already present, skipping"
+
+    # Auto-approve merges
+    IF worker == "reviewer" AND actions.add_tags?.includes("Review-Approved"):
+      Report: "  Auto-approving merge (YOLO mode)"
+
+      # Fetch updated task to check current state
+      updated_task = mcp__joan__get_task(task.id)
+
+      # Add Ops-Ready tag if not already present
+      IF TAG_CACHE["Ops-Ready"] AND NOT task_has_tag(updated_task, "Ops-Ready"):
+        mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Ops-Ready"])
+
+        # Add audit comment
+        mcp__joan__create_task_comment(task.id,
+          "ALS/1
+          actor: coordinator
+          intent: decision
+          action: auto-approve-merge
+          tags.add: [Ops-Ready]
+          tags.remove: []
+          summary: Merge auto-approved (YOLO mode active).
+          details:
+          - mode: yolo
+          - reason: Auto-approval bypasses human merge gate
+          - next: Ops will merge on next poll")
+
+        Report: "  ✓ Added Ops-Ready tag"
+      ELSE:
+        Report: "  Ops-Ready already present, skipping"
+
+  # 3h. Handle agent invocation (cross-agent consultation)
   IF parsed.invoke_agent:
     invocation = parsed.invoke_agent
     Report: "  Processing agent invocation: {worker} → {invocation.agent_type}"
