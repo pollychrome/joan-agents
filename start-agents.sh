@@ -43,14 +43,11 @@ echo ""
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs/$PROJECT_NAME"
-WORKTREE_DIR="$(pwd)/../worktrees"
 
 # Create directories
 mkdir -p "$LOG_DIR"
-mkdir -p "$WORKTREE_DIR"
 
 echo "📁 Log directory: $LOG_DIR"
-echo "📁 Worktree directory: $WORKTREE_DIR"
 echo ""
 
 # Build the command
@@ -87,7 +84,7 @@ echo "│           • Ops Worker (merge & deploy)                    │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
 echo "Workers are single-pass: they process one task and exit."
-echo "Worktrees will be created in: $WORKTREE_DIR"
+echo "Feature branches are managed directly in the main directory (strict serial mode)."
 echo ""
 echo "To stop: ./stop-agents.sh or Ctrl+C in the coordinator terminal"
 echo "To view logs: tail -f $LOG_DIR/coordinator.log"

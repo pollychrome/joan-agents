@@ -37,11 +37,9 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs/$PROJECT_NAME"
-WORKTREE_DIR="$(pwd)/../worktrees"
 CURRENT_DIR="$(pwd)"
 
 mkdir -p "$LOG_DIR"
-mkdir -p "$WORKTREE_DIR"
 
 echo "🚀 Starting Joan Coordinator (v4 - iTerm2)"
 echo "   Project: $PROJECT_NAME"
@@ -93,7 +91,7 @@ echo "│           • Ops Worker (merge & deploy)                    │"
 echo "└─────────────────────────────────────────────────────────────┘"
 echo ""
 echo "Workers are single-pass: they process one task and exit."
-echo "Worktrees will be created in: $WORKTREE_DIR"
+echo "Feature branches are managed directly in the main directory (strict serial mode)."
 echo ""
 echo "Logs: $LOG_DIR/coordinator.log"
 echo "Stop: Close iTerm2 window or ./stop-agents.sh"

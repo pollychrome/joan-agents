@@ -60,7 +60,7 @@ If config missing, report error and exit.
          BLOCKING_TASK = task.title
          BLOCKING_REASON = "Dev implementing"
          BREAK
-       IF hasTag("Implementation-Failed") OR hasTag("Worktree-Failed"):
+       IF hasTag("Implementation-Failed") OR hasTag("Branch-Setup-Failed"):
          PIPELINE_BLOCKED = true
          BLOCKING_TASK = task.title
          BLOCKING_REASON = "FAILED - needs manual fix"
@@ -103,7 +103,7 @@ DEVELOPMENT = tasks in "Development" column
   - claimed: has Claimed-Dev-1 tag (strict serial: only 1 dev)
   - rework: has Rework-Requested tag
   - conflict: has Merge-Conflict tag
-  - failed: has Implementation-Failed or Worktree-Failed
+  - failed: has Implementation-Failed or Branch-Setup-Failed
 
 REVIEW = tasks in "Review" column
   - awaiting_review: has completion tags, no Review-In-Progress
@@ -146,7 +146,7 @@ For each task:
   IF has Needs-Clarification AND NOT Clarification-Answered:
     WAITING_HUMAN.push({task: title, waiting: "Clarification"})
 
-  IF has Implementation-Failed OR Worktree-Failed:
+  IF has Implementation-Failed OR Branch-Setup-Failed:
     WAITING_HUMAN.push({task: title, waiting: "Manual intervention"})
 ```
 

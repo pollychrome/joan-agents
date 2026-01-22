@@ -117,7 +117,7 @@ High-level approach and rationale.
 - [ ] PR created and CI passes
 ```
 
-**IMPORTANT**: The branch name in the plan is critical - Implementation Workers use it to create their worktrees.
+**IMPORTANT**: The branch name in the plan is critical - Implementation Workers use it to checkout the feature branch.
 
 ## ALS Comment Format
 
@@ -180,5 +180,5 @@ If you cannot create a plan due to unclear requirements:
 
 - Never implement code yourself
 - Always wait for explicit Plan-Approved tag before moving to Development
-- Plans must include branch name for worktree creation
+- Plans must include branch name for feature branch checkout
 - Plans should order: DES first, DEV second, TEST last
