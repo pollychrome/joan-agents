@@ -1,7 +1,7 @@
 ---
-description: Run coordinator (single pass or loop) - recommended mode
-argument-hint: [--loop] [--max-idle=N]
-allowed-tools: mcp__joan__*, Read, Task
+description: Run coordinator (single pass or continuous) - recommended mode
+argument-hint: [--loop] [--max-idle=N] [--interval=N]
+allowed-tools: Bash, Read
 ---
 
 # Coordinator (Dispatcher)
@@ -12,13 +12,26 @@ The coordinator is the **recommended way** to run the Joan agent system. It:
 - Claims dev tasks atomically before dispatching
 - Uses tags for all state transitions (no comment parsing)
 
-**IMPORTANT**: This command runs coordinator logic DIRECTLY (not as a subagent) to ensure MCP tool access. Workers are spawned as subagents with task data passed via prompt.
+## Execution Modes
+
+1. **Single Pass** (no `--loop` flag)
+   - Runs coordinator once, then exits
+   - Best for testing, debugging, manual intervention
+
+2. **Continuous Operation** (`--loop` flag)
+   - Uses external scheduler to spawn fresh coordinator processes
+   - Prevents context accumulation and degradation
+   - Each poll cycle starts with clean context
+   - Best for autonomous operation (overnight runs, multi-hour sessions)
+
+**IMPORTANT**: The `--loop` mode uses an external bash scheduler that spawns fresh Claude processes. This eliminates context bloat that causes reliability issues after 20-30 minutes.
 
 ## Arguments
 
-- `--loop` → Run continuously until idle threshold reached
+- `--loop` → Run continuously using external scheduler (recommended for >15 min runs)
 - No flag → Single pass (dispatch once, then exit)
-- `--max-idle=N` → Override idle threshold (only applies in loop mode)
+- `--max-idle=N` → Max consecutive idle polls before shutdown (default: 12)
+- `--interval=N` → Poll interval in seconds for loop mode (default: 300 = 5 minutes)
 
 ## Configuration
 
@@ -60,10 +73,59 @@ If config missing, report error and exit.
 - This prevents parallel dev work which causes merge conflicts
 - Plans always reference the current codebase state
 
+## Execution Branch
+
 Parse arguments:
 ```
 LOOP_MODE = true if --loop flag present, else false
+MAX_IDLE_OVERRIDE = --max-idle value if present, else null
+INTERVAL_OVERRIDE = --interval value if present, else null
 ```
+
+**Branch based on LOOP_MODE:**
+
+### If LOOP_MODE is TRUE (Continuous Operation)
+
+Execute external scheduler to prevent context accumulation:
+
+```
+# Get project name for file naming
+PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+
+# Build scheduler arguments
+INTERVAL = INTERVAL_OVERRIDE or config.settings.schedulerIntervalSeconds or 300
+STUCK_TIMEOUT = config.settings.schedulerStuckTimeoutSeconds or 600
+MAX_IDLE_ARG = MAX_IDLE_OVERRIDE or MAX_IDLE or 12
+MAX_FAILURES = config.settings.schedulerMaxConsecutiveFailures or 3
+
+Report: "Starting external scheduler for continuous operation"
+Report: "  Poll interval: {INTERVAL}s"
+Report: "  Max idle polls: {MAX_IDLE_ARG}"
+Report: "  Stuck timeout: {STUCK_TIMEOUT}s"
+Report: "  Logs: .claude/logs/scheduler.log"
+Report: ""
+Report: "To stop gracefully: touch /tmp/joan-agents-{PROJECT_SLUG}.shutdown"
+Report: ""
+
+# Execute the external scheduler script
+# This script will repeatedly spawn fresh `claude /agents:dispatch` processes
+Bash:
+  command: ./scripts/joan-scheduler.sh . --interval={INTERVAL} --stuck-timeout={STUCK_TIMEOUT} --max-idle={MAX_IDLE_ARG} --max-failures={MAX_FAILURES}
+  description: Run external scheduler for continuous coordinator execution
+
+# The script runs until shutdown signal or max idle reached
+EXIT
+```
+
+**Why external scheduler?**
+- Internal loop mode accumulates context over 20-30 minutes
+- Context bloat causes partial action execution and verification skips
+- External scheduler spawns fresh Claude processes with clean context
+- Each poll cycle maintains consistent behavior indefinitely
+
+### If LOOP_MODE is FALSE (Single Pass)
+
+Continue with single-pass coordinator logic below...
 
 ## Configuration Validation
 
@@ -106,41 +168,41 @@ IF ERRORS.length > 0:
 Report: "✓ Configuration validated"
 ```
 
-## Initialization
+## Initialization (Single Pass Only)
 
 ```
 1. Report: "Coordinator started for {PROJECT_NAME}"
-   Report: "Mode: {LOOP_MODE ? 'Loop' : 'Single pass'}"
+   Report: "Mode: Single pass"
    Report: "Dev workers available: {DEV_COUNT}"
    Report: "Enabled agents: {list enabled agents}"
 
 2. Initialize state:
-   IDLE_COUNT = 0
-   POLL_CYCLE_COUNT = 0
    TAG_CACHE = {}
+   COLUMN_CACHE = {}
    FORCE_REQUEUE = []  # Tasks flagged for priority re-processing
    INVOCATION_PENDING = false  # Set when agent invocation needs fast resolution
 ```
 
 ---
 
-## Main Loop
+## Single Pass Execution
+
+Execute one coordinator cycle, then exit:
 
 ```
-WHILE true:
-  Step 1: Cache Tags and Columns
-  Step 2: Fetch Tasks
-  Step 2a: Write Heartbeat (external scheduler support)
-  Step 2b: Recover Stale Claims (self-healing)
-  Step 2c: Detect and Clean Anomalies (self-healing)
-  Step 2d: Detect Stuck Workflow States (self-healing)
-  Step 2e: State Machine Validation (self-healing)
-  Step 3: Build Priority Queues
-  Step 4: Dispatch Workers
-  Step 5: Handle Idle / Exit / Restart
+Step 1: Cache Tags and Columns
+Step 2: Fetch Tasks
+Step 2a: Write Heartbeat (for external scheduler monitoring)
+Step 2b: Recover Stale Claims (self-healing)
+Step 2c: Detect and Clean Anomalies (self-healing)
+Step 2d: Detect Stuck Workflow States (self-healing)
+Step 2e: State Machine Validation (self-healing)
+Step 3: Build Priority Queues
+Step 3b: Serial Pipeline Gate Check
+Step 4: Dispatch Workers
+Step 5: Exit
 
-  IF not LOOP_MODE:
-    EXIT after one pass
+EXIT (external scheduler will respawn if in loop mode)
 ```
 
 ---
@@ -682,7 +744,7 @@ For each task in tasks:
      AND NOT isClaimedByAnyDev(task)
      AND NOT hasTag(task, "Rework-Requested")
      AND NOT hasTag(task, "Implementation-Failed")
-     AND NOT hasTag(task, "Worktree-Failed"):
+     AND NOT hasTag(task, "Branch-Setup-Failed"):
     DEV_QUEUE.push({task, mode: "implement"})
     CONTINUE
 
@@ -895,111 +957,105 @@ This pattern ensures workers are isolated, parallelizable, and fault-tolerant.
 DISPATCHED = 0
 RESULTS = []  # Collect worker results for batch processing
 
-# Helper: Build Work Package
-def build_work_package(task, mode, extra={}):
-  # Fetch full task details and comments
-  full_task = mcp__joan__get_task(task.id)
-  comments = mcp__joan__list_task_comments(task.id)
+# Helper: Get column name from COLUMN_CACHE
+def get_column_name_from_cache(column_id, COLUMN_CACHE):
+  FOR column_name, cached_id IN COLUMN_CACHE:
+    IF cached_id == column_id:
+      RETURN column_name
+  RETURN "Unknown"  # Fallback if not found
 
-  # Extract previous stage context based on mode
-  previous_stage_context = extract_stage_context(comments, mode)
+# Helper: Extract tag names from tag objects
+def extract_tag_names(tags):
+  tag_names = []
+  FOR tag IN tags:
+    tag_names.push(tag.name)
+  RETURN tag_names
 
-  return {
-    "task_id": task.id,
-    "task_title": task.title,
-    "task_description": full_task.description,
-    "task_tags": [t.name for t in full_task.tags],
-    "task_column": get_column_name(full_task.column_id),
-    "task_comments": comments,
-    "mode": mode,
-    "project_id": PROJECT_ID,
-    "project_name": PROJECT_NAME,
-    "previous_stage_context": previous_stage_context,  # NEW: Context from previous stage
-    **extra
-  }
-
-# Helper: Extract Stage Context from Comments
-def extract_stage_context(comments, mode):
+# Helper: Extract stage context from comments
+def extract_stage_context_from_comments(comments, expected_from, expected_to):
   """
-  Extract the most recent context handoff relevant to the current mode.
-
-  Context routing by mode:
-  - "plan" mode (architect)     → look for BA→Architect handoff
-  - "implement" mode (dev)      → look for Architect→Dev handoff
-  - "rework" mode (dev)         → look for Reviewer→Dev handoff
-  - "conflict" mode (dev)       → look for Reviewer→Dev handoff
-  - "review" mode (reviewer)    → look for Dev→Reviewer handoff
-  - "merge" mode (ops)          → look for Reviewer→Ops handoff
+  Scan comments in reverse chronological order to find the most recent
+  context handoff from expected_from stage to expected_to stage.
+  Returns the parsed context object or null if not found.
   """
-
-  # Define expected handoff source based on mode
-  expected_handoffs = {
-    "plan": ("ba", "architect"),
-    "finalize": ("ba", "architect"),
-    "revise": ("ba", "architect"),
-    "implement": ("architect", "dev"),
-    "rework": ("reviewer", "dev"),
-    "conflict": ("reviewer", "dev"),
-    "review": ("dev", "reviewer"),
-    "merge": ("reviewer", "ops"),
-  }
-
-  IF mode NOT IN expected_handoffs:
-    RETURN null
-
-  (expected_from, expected_to) = expected_handoffs[mode]
-
-  # Scan comments in reverse chronological order (newest first)
   FOR comment IN reversed(comments):
     content = comment.content
 
     # Check if this is a context handoff ALS block
     IF "intent: handoff" IN content AND "action: context-handoff" IN content:
+      # Extract from_stage and to_stage using simple string matching
+      from_stage = null
+      to_stage = null
 
-      # Extract from_stage and to_stage
-      from_stage = extract_yaml_field(content, "from_stage")
-      to_stage = extract_yaml_field(content, "to_stage")
+      FOR line IN content.split("\n"):
+        IF line starts with "from_stage:":
+          from_stage = line after "from_stage:" (trimmed)
+        IF line starts with "to_stage:":
+          to_stage = line after "to_stage:" (trimmed)
 
+      # Check if this is the handoff we're looking for
       IF from_stage == expected_from AND to_stage == expected_to:
-        # Found matching handoff - parse and return
-        RETURN parse_handoff_content(content)
+        # Parse the full handoff content
+        RETURN parse_handoff_from_comment(content)
 
   # No matching handoff found (backward compatible)
   RETURN null
 
-# Helper: Parse Handoff Content
-def parse_handoff_content(content):
+# Helper: Parse handoff content
+def parse_handoff_from_comment(content):
   """
-  Parse ALS handoff block into structured context object.
+  Parse an ALS handoff comment into a structured context object.
+  Extracts key_decisions, files_of_interest, warnings, dependencies, metadata.
   """
-  RETURN {
-    "from_stage": extract_yaml_field(content, "from_stage"),
-    "to_stage": extract_yaml_field(content, "to_stage"),
-    "summary": extract_yaml_field(content, "summary"),
-    "key_decisions": extract_yaml_list(content, "key_decisions"),
-    "files_of_interest": extract_yaml_list(content, "files_of_interest"),
-    "warnings": extract_yaml_list(content, "warnings"),
-    "dependencies": extract_yaml_list(content, "dependencies"),
-    "metadata": extract_yaml_object(content, "metadata"),
+  context = {
+    "from_stage": null,
+    "to_stage": null,
+    "summary": null,
+    "key_decisions": [],
+    "files_of_interest": [],
+    "warnings": [],
+    "dependencies": [],
+    "metadata": {}
   }
 
-# Helper: Extract YAML field (simple string value)
-def extract_yaml_field(content, field_name):
-  # Look for "field_name: value" pattern
-  # Return null if not found
-  ...
+  lines = content.split("\n")
+  current_section = null
 
-# Helper: Extract YAML list (bulleted items under a field)
-def extract_yaml_list(content, field_name):
-  # Look for "field_name:\n- item1\n- item2" pattern
-  # Return empty array if not found
-  ...
+  FOR line IN lines:
+    trimmed = line.trim()
 
-# Helper: Extract YAML object (nested key-values)
-def extract_yaml_object(content, field_name):
-  # Look for "field_name:\n  key1: value1\n  key2: value2" pattern
-  # Return empty object if not found
-  ...
+    # Extract scalar fields
+    IF trimmed starts with "from_stage:":
+      context.from_stage = trimmed after "from_stage:" (trimmed)
+    ELIF trimmed starts with "to_stage:":
+      context.to_stage = trimmed after "to_stage:" (trimmed)
+    ELIF trimmed starts with "summary:":
+      context.summary = trimmed after "summary:" (trimmed)
+
+    # Detect section headers (ending with :)
+    ELIF trimmed == "key_decisions:":
+      current_section = "key_decisions"
+    ELIF trimmed == "files_of_interest:":
+      current_section = "files_of_interest"
+    ELIF trimmed == "warnings:":
+      current_section = "warnings"
+    ELIF trimmed == "dependencies:":
+      current_section = "dependencies"
+    ELIF trimmed == "metadata:":
+      current_section = "metadata"
+
+    # Parse list items (lines starting with -)
+    ELIF trimmed starts with "- " AND current_section IN ["key_decisions", "files_of_interest", "warnings", "dependencies"]:
+      item = trimmed after "- " (trimmed)
+      context[current_section].push(item)
+
+    # Parse metadata key-value pairs (indented lines with :)
+    ELIF current_section == "metadata" AND ":" IN trimmed:
+      key = trimmed before ":"
+      value = trimmed after ":" (trimmed)
+      context.metadata[key] = value
+
+  RETURN context
 
 # Helper: Format Handoff Comment
 def format_handoff_comment(context):
@@ -1117,23 +1173,48 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
     # Process ALL BA tasks (up to max per cycle)
     WHILE BA_QUEUE.length > 0 AND ba_count < MAX_BA_TASKS_PER_CYCLE:
       item = BA_QUEUE.shift()
-      work_package = build_work_package(item.task, item.mode)
+
+      # EXPLICIT WORK PACKAGE BUILDING (not pseudocode - actual MCP calls)
+      # Fetch full task details via MCP
+      full_task = mcp__joan__get_task(item.task.id)
+      task_comments = mcp__joan__list_task_comments(item.task.id)
+
+      # Get column name from COLUMN_CACHE
+      task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
+
+      # Build work package JSON
+      work_package = {
+        "task_id": full_task.id,
+        "task_title": full_task.title,
+        "task_description": full_task.description || "",
+        "task_tags": extract_tag_names(full_task.tags),
+        "task_column": task_column_name,
+        "task_comments": task_comments,
+        "mode": item.mode,
+        "project_id": PROJECT_ID,
+        "project_name": PROJECT_NAME,
+        "previous_stage_context": null  // BA is first stage
+      }
 
       Report: "BA [{ba_count + 1}/{MAX_BA_TASKS_PER_CYCLE}] Dispatching for '{item.task.title}' (mode: {item.mode})"
 
+      # Dispatch worker with work package in prompt
       result = Task tool call:
         subagent_type: "business-analyst"
         model: MODEL
         prompt: |
           You are a Business Analyst worker. Process this task and return a structured JSON result.
 
+          **IMPORTANT: You do NOT have access to MCP tools. All task data is provided in the work package below.**
+
           ## Work Package
           ```json
-          {work_package as JSON}
+          {JSON.stringify(work_package, null, 2)}
           ```
 
           ## Instructions
           Follow /agents:ba-worker logic for mode "{item.mode}".
+          Analyze the task data provided above and determine if requirements are complete.
 
           ## Required Output
           Return ONLY a JSON object with this structure (no markdown, no explanation):
@@ -1148,7 +1229,7 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
               "move_to_column": "column name or null"
             },
             "worker_type": "ba",
-            "task_id": "{task.id}",
+            "task_id": "{full_task.id}",
             "needs_human": "reason if blocked, or null"
           }
           ```
@@ -1172,7 +1253,24 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
   ELSE:
     # Legacy single-task mode (for debugging or if draining disabled)
     item = BA_QUEUE.shift()
-    work_package = build_work_package(item.task, item.mode)
+
+    # EXPLICIT WORK PACKAGE BUILDING
+    full_task = mcp__joan__get_task(item.task.id)
+    task_comments = mcp__joan__list_task_comments(item.task.id)
+    task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
+
+    work_package = {
+      "task_id": full_task.id,
+      "task_title": full_task.title,
+      "task_description": full_task.description || "",
+      "task_tags": extract_tag_names(full_task.tags),
+      "task_column": task_column_name,
+      "task_comments": task_comments,
+      "mode": item.mode,
+      "project_id": PROJECT_ID,
+      "project_name": PROJECT_NAME,
+      "previous_stage_context": null
+    }
 
     Report: "Dispatching BA worker for '{item.task.title}' (mode: {item.mode})"
 
@@ -1182,9 +1280,11 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
       prompt: |
         You are a Business Analyst worker. Process this task and return a structured JSON result.
 
+        **IMPORTANT: You do NOT have access to MCP tools. All task data is provided in the work package below.**
+
         ## Work Package
         ```json
-        {work_package as JSON}
+        {JSON.stringify(work_package, null, 2)}
         ```
 
         ## Instructions
@@ -1203,7 +1303,7 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
             "move_to_column": "column name or null"
           },
           "worker_type": "ba",
-          "task_id": "{task.id}",
+          "task_id": "{full_task.id}",
           "needs_human": "reason if blocked, or null"
         }
         ```
@@ -1226,7 +1326,27 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
   Report: ""
 
   item = ARCHITECT_QUEUE.shift()  # Take first (oldest) Ready task
-  work_package = build_work_package(item.task, item.mode)
+
+  # EXPLICIT WORK PACKAGE BUILDING
+  full_task = mcp__joan__get_task(item.task.id)
+  task_comments = mcp__joan__list_task_comments(item.task.id)
+  task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
+
+  # Extract previous stage context (BA → Architect handoff)
+  previous_stage_context = extract_stage_context_from_comments(task_comments, "ba", "architect")
+
+  work_package = {
+    "task_id": full_task.id,
+    "task_title": full_task.title,
+    "task_description": full_task.description || "",
+    "task_tags": extract_tag_names(full_task.tags),
+    "task_column": task_column_name,
+    "task_comments": task_comments,
+    "mode": item.mode,
+    "project_id": PROJECT_ID,
+    "project_name": PROJECT_NAME,
+    "previous_stage_context": previous_stage_context
+  }
 
   Report: "Dispatching Architect worker for '{item.task.title}' (mode: {item.mode})"
 
@@ -1236,9 +1356,11 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
     prompt: |
       You are an Architect worker. Process this task and return a structured JSON result.
 
+      **IMPORTANT: You do NOT have access to MCP tools. All task data is provided in the work package below.**
+
       ## Work Package
       ```json
-      {work_package as JSON}
+      {JSON.stringify(work_package, null, 2)}
       ```
 
       ## Instructions
@@ -1258,7 +1380,7 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
           "update_description": "new description with plan, or null"
         },
         "worker_type": "architect",
-        "task_id": "{task.id}",
+        "task_id": "{full_task.id}",
         "needs_human": "reason if blocked, or null"
       }
       ```
@@ -1296,7 +1418,28 @@ IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
     updated_task = mcp__joan__get_task(task.id)
 
     IF claim verified (Claimed-Dev-{dev_id} tag present):
-      work_package = build_work_package(task, item.mode, {"dev_id": dev_id})
+      # EXPLICIT WORK PACKAGE BUILDING
+      full_task = mcp__joan__get_task(task.id)
+      task_comments = mcp__joan__list_task_comments(task.id)
+      task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
+
+      # Extract previous stage context (Architect → Dev or Reviewer → Dev for rework)
+      expected_from = (item.mode == "rework" OR item.mode == "conflict") ? "reviewer" : "architect"
+      previous_stage_context = extract_stage_context_from_comments(task_comments, expected_from, "dev")
+
+      work_package = {
+        "task_id": full_task.id,
+        "task_title": full_task.title,
+        "task_description": full_task.description || "",
+        "task_tags": extract_tag_names(full_task.tags),
+        "task_column": task_column_name,
+        "task_comments": task_comments,
+        "mode": item.mode,
+        "project_id": PROJECT_ID,
+        "project_name": PROJECT_NAME,
+        "dev_id": dev_id,
+        "previous_stage_context": previous_stage_context
+      }
 
       Report: "Dispatching Dev worker for '{task.title}' (mode: {item.mode})"
 
@@ -1306,14 +1449,15 @@ IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
         prompt: |
           You are the Dev Worker. Implement this task and return a structured JSON result.
 
+          **IMPORTANT: You do NOT have access to MCP tools. All task data is provided in the work package below.**
+
           ## Work Package
           ```json
-          {work_package as JSON}
+          {JSON.stringify(work_package, null, 2)}
           ```
 
           ## Instructions
           Follow /agents:dev-worker logic for mode "{item.mode}".
-          IMPORTANT: Create a git worktree at ../worktrees/{task.id} for isolated development.
 
           ## Required Output
           Return ONLY a JSON object:
@@ -1334,7 +1478,7 @@ IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
               "pr_created": {"number": N, "url": "..."}
             },
             "worker_type": "dev",
-            "task_id": "{task.id}",
+            "task_id": "{full_task.id}",
             "needs_human": null
           }
           ```
@@ -1360,7 +1504,27 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
   Report: ""
 
   item = REVIEWER_QUEUE.shift()
-  work_package = build_work_package(item.task, "review")
+
+  # EXPLICIT WORK PACKAGE BUILDING
+  full_task = mcp__joan__get_task(item.task.id)
+  task_comments = mcp__joan__list_task_comments(item.task.id)
+  task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
+
+  # Extract previous stage context (Dev → Reviewer handoff)
+  previous_stage_context = extract_stage_context_from_comments(task_comments, "dev", "reviewer")
+
+  work_package = {
+    "task_id": full_task.id,
+    "task_title": full_task.title,
+    "task_description": full_task.description || "",
+    "task_tags": extract_tag_names(full_task.tags),
+    "task_column": task_column_name,
+    "task_comments": task_comments,
+    "mode": "review",
+    "project_id": PROJECT_ID,
+    "project_name": PROJECT_NAME,
+    "previous_stage_context": previous_stage_context
+  }
 
   Report: "Dispatching Reviewer worker for '{item.task.title}'"
 
@@ -1370,9 +1534,11 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
     prompt: |
       You are a Code Reviewer worker. Review this task and return a structured JSON result.
 
+      **IMPORTANT: You do NOT have access to MCP tools. All task data is provided in the work package below.**
+
       ## Work Package
       ```json
-      {work_package as JSON}
+      {JSON.stringify(work_package, null, 2)}
       ```
 
       ## Instructions
@@ -1391,7 +1557,7 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
           "move_to_column": null or "Development" if rework needed
         },
         "worker_type": "reviewer",
-        "task_id": "{task.id}",
+        "task_id": "{full_task.id}",
         "needs_human": null
       }
       ```
@@ -1413,7 +1579,27 @@ IF OPS_ENABLED AND OPS_QUEUE.length > 0:
   Report: ""
 
   item = OPS_QUEUE.shift()
-  work_package = build_work_package(item.task, item.mode)
+
+  # EXPLICIT WORK PACKAGE BUILDING
+  full_task = mcp__joan__get_task(item.task.id)
+  task_comments = mcp__joan__list_task_comments(item.task.id)
+  task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
+
+  # Extract previous stage context (Reviewer → Ops handoff)
+  previous_stage_context = extract_stage_context_from_comments(task_comments, "reviewer", "ops")
+
+  work_package = {
+    "task_id": full_task.id,
+    "task_title": full_task.title,
+    "task_description": full_task.description || "",
+    "task_tags": extract_tag_names(full_task.tags),
+    "task_column": task_column_name,
+    "task_comments": task_comments,
+    "mode": item.mode,
+    "project_id": PROJECT_ID,
+    "project_name": PROJECT_NAME,
+    "previous_stage_context": previous_stage_context
+  }
 
   Report: "Dispatching Ops worker for '{item.task.title}' (mode: {item.mode})"
 
@@ -1423,9 +1609,11 @@ IF OPS_ENABLED AND OPS_QUEUE.length > 0:
     prompt: |
       You are an Ops worker. Handle integration operations and return a structured JSON result.
 
+      **IMPORTANT: You do NOT have access to MCP tools. All task data is provided in the work package below.**
+
       ## Work Package
       ```json
-      {work_package as JSON}
+      {JSON.stringify(work_package, null, 2)}
       ```
 
       ## Instructions
@@ -1448,7 +1636,7 @@ IF OPS_ENABLED AND OPS_QUEUE.length > 0:
           "commit_sha": "..."
         },
         "worker_type": "ops",
-        "task_id": "{task.id}",
+        "task_id": "{full_task.id}",
         "needs_human": null or "reason"
       }
       ```
@@ -1678,67 +1866,28 @@ RETURN available
 
 ---
 
-## Step 5: Handle Idle / Exit / Restart
+## Step 5: Exit
 
 ```
-# Track poll cycles for context management
-POLL_CYCLE_COUNT++
-
-# Calculate pending work (tasks waiting for human tags)
+# Calculate work summary
 PENDING_HUMAN = count tasks with:
   - Plan-Pending-Approval (no Plan-Approved) → waiting for human approval
   - Review-Approved (no Ops-Ready) → waiting for human merge approval
   - Implementation-Failed or Branch-Setup-Failed → waiting for human fix
 
-# Check for invocation pending (skip sleep for fast resolution)
-IF INVOCATION_PENDING:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  INVOCATION PENDING - Skipping sleep for fast resolution        ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
-  INVOCATION_PENDING = false  # Reset for next cycle
-  # Skip directly to next poll iteration (no sleep, no idle increment)
-  CONTINUE  # Back to start of WHILE loop
+Report: ""
+Report: "Poll complete: dispatched {DISPATCHED} workers"
+IF PENDING_HUMAN > 0:
+  Report: "  {PENDING_HUMAN} tasks awaiting human action in Joan UI"
 
 IF DISPATCHED == 0:
-  IDLE_COUNT++
+  Report: "No work dispatched (all queues empty or pipeline blocked)"
 
-  Report: "Poll complete: dispatched 0 workers"
-  IF PENDING_HUMAN > 0:
-    Report: "  {PENDING_HUMAN} tasks awaiting human action in Joan UI"
-  Report: "  Idle count: {IDLE_COUNT}/{MAX_IDLE}"
-  Report: "  Poll cycle: {POLL_CYCLE_COUNT}/{MAX_POLL_CYCLES}"
-
-  IF NOT LOOP_MODE:
-    Report: "Single pass complete. Exiting."
-    EXIT
-
-  IF IDLE_COUNT >= MAX_IDLE:
-    Report: "Max idle polls reached. Shutting down coordinator."
-    EXIT
-
-  Report: "Sleeping {POLL_INTERVAL} minutes..."
-  Wait POLL_INTERVAL minutes
-
-ELSE:
-  IDLE_COUNT = 0  # Reset on activity
-  Report: "Poll complete: dispatched {DISPATCHED} workers"
-  Report: "  Poll cycle: {POLL_CYCLE_COUNT}/{MAX_POLL_CYCLES}"
-
-  IF LOOP_MODE:
-    Report: "Re-polling in 30 seconds..."
-    Wait 30 seconds
-
-IF NOT LOOP_MODE:
-  Report: "Single pass complete. Exiting."
-  EXIT
-
-# Continue to next iteration
+Report: "Single pass complete. Exiting."
+EXIT
 ```
 
-**Context Management:**
-The coordinator relies on Claude's auto-compact feature for long-running sessions. Key state (TAG_CACHE, COLUMN_CACHE) is rebuilt every poll cycle from Joan MCP, so context summarization doesn't affect correctness.
+**Note:** If this coordinator was spawned by the external scheduler (via `--loop` mode), the scheduler will automatically respawn a fresh coordinator process after the configured interval. This ensures continuous operation without context accumulation.
 
 ---
 
@@ -1762,8 +1911,8 @@ The coordinator relies on Claude's auto-compact feature for long-running session
 **CRITICAL - Worker Dispatch Format:**
 - ALWAYS use the EXACT command format: `/agents:dev-worker --task=... --dev=... --mode=...`
 - NEVER create custom prompts with instructions like "checkout the branch" or task lists
-- The worker commands (dev-worker.md) contain ALL the logic including worktree creation
-- Custom prompts bypass worktree creation and cause branch conflicts between parallel workers
+- The worker commands (dev-worker.md) contain ALL the logic including branch setup
+- Custom prompts bypass proper branch management and can cause issues
 - The "Task Details" section is ONLY contextual reference - do NOT expand it into instructions
 
 ---
@@ -1774,11 +1923,16 @@ The coordinator relies on Claude's auto-compact feature for long-running session
 # Single pass - dispatch workers once, then exit
 /agents:dispatch
 
-# Continuous loop - dispatch until idle
+# Continuous operation - external scheduler with fresh context
 /agents:dispatch --loop
 
-# Extended idle threshold (2 hours at 10-min intervals)
-/agents:dispatch --loop --max-idle=12
+# Custom poll interval (every 3 minutes)
+/agents:dispatch --loop --interval=180
+
+# Extended idle threshold (2 hours at 5-min intervals)
+/agents:dispatch --loop --max-idle=24
 ```
+
+**Recommended for production:** Use `--loop` mode for any operation lasting longer than 15 minutes. The external scheduler eliminates context bloat issues that occur in long-running sessions.
 
 Begin coordination now.

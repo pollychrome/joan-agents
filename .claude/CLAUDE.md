@@ -12,12 +12,11 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 /agents:status             # Dashboard view of queues and workers
 
 # 3. Run coordinator
-/agents:start              # Single pass
-/agents:start --loop       # Continuous operation (recommended)
-
-# Or equivalently:
-/agents:dispatch --loop
+/agents:dispatch           # Single pass (testing/debugging)
+/agents:dispatch --loop    # Continuous operation (recommended for production)
 ```
+
+**Important:** For any run longer than 15 minutes, always use `--loop` mode. It uses an external scheduler that prevents context accumulation issues.
 
 ## Architecture
 
@@ -152,37 +151,24 @@ Override per-run with `--max-idle=N`:
 
 ## Invocation Modes
 
-The coordinator supports two modes via the `--loop` flag:
+The coordinator supports two modes:
 
 ### Single Pass (default)
 ```bash
-/agents:start
 /agents:dispatch
 ```
 - Process all available tasks once
 - Exit when queue is empty
 - Best for: ad-hoc runs, testing, manual intervention
 
-### Loop Mode (--loop)
+### Continuous Operation (--loop)
 ```bash
-/agents:start --loop
 /agents:dispatch --loop
 ```
-- Poll continuously until max idle reached
-- Auto-shutdown after N empty polls
-- Best for: autonomous operation, overnight runs
-
-### External Scheduler (Recommended for Long-Running Operations)
-
-**Problem:** Internal `--loop` mode accumulates context within the Claude session. After many poll cycles, the context window fills → model becomes unresponsive or erratic.
-
-**Solution:** Use `/agents:scheduler` which spawns fresh coordinator processes with clean context:
-
-```bash
-/agents:scheduler                    # Run with defaults
-/agents:scheduler --interval=120     # Poll every 2 minutes
-/agents:scheduler --max-idle=48      # Extended operation (4 hours)
-```
+- Uses external scheduler to spawn fresh coordinator processes
+- Each poll cycle starts with clean context (prevents context bloat)
+- Auto-shutdown after N consecutive idle polls
+- Best for: autonomous operation, overnight runs, any session >15 minutes
 
 **How it works:**
 ```
@@ -194,14 +180,26 @@ External Scheduler (bash script)
 └── ... (each invocation starts clean)
 ```
 
+**Why external scheduler?**
+- Internal loop mode accumulated context causing failures after 20-30 minutes
+- Context bloat led to partial action execution and verification skips
+- External scheduler ensures consistent behavior indefinitely
+
 **When to use:**
 
-| Scenario | Recommended Mode |
-|----------|------------------|
-| Short interactive session | `/agents:dispatch --loop` |
-| Overnight autonomous operation | `/agents:scheduler` |
-| Multi-hour background processing | `/agents:scheduler --max-idle=48` |
-| Debugging/testing | `/agents:dispatch` (single pass) |
+| Scenario | Recommended Command |
+|----------|---------------------|
+| Quick test / debugging | `/agents:dispatch` (single pass) |
+| Any run longer than 15 minutes | `/agents:dispatch --loop` |
+| Overnight autonomous operation | `/agents:dispatch --loop` |
+| Multi-hour background processing | `/agents:dispatch --loop --max-idle=48` |
+
+**Options:**
+```bash
+/agents:dispatch --loop                      # Default settings
+/agents:dispatch --loop --interval=180       # Custom poll interval (3 min)
+/agents:dispatch --loop --max-idle=24        # Extended operation (2 hours)
+```
 
 **Scheduler settings** (in `.joan-agents.json`):
 | Setting | Default | Description |

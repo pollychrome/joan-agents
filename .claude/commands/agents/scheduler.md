@@ -1,21 +1,31 @@
 ---
-description: Start external scheduler for context-safe coordination
-argument-hint: [--interval=N] [--stuck-timeout=N] [--max-idle=N] [--max-failures=N]
+description: [DEPRECATED] Use /agents:dispatch --loop instead
+argument-hint: [--interval=N] [--max-idle=N]
 allowed-tools: Bash, Read
 ---
 
-# External Scheduler
+# External Scheduler (DEPRECATED)
 
-The external scheduler spawns fresh coordinator processes to prevent context overflow during long-running operations.
+**This command is deprecated. Use `/agents:dispatch --loop` instead.**
 
-## Why Use External Scheduling?
+The functionality of this command has been integrated directly into `/agents:dispatch`. When you run `/agents:dispatch --loop`, it automatically uses the external scheduler approach to prevent context overflow.
 
-The internal `--loop` mode accumulates context within the Claude session:
-- Each poll cycle adds task data, worker prompts, results
-- After N cycles, context window fills → model becomes unresponsive
-- Workers complete work but coordinator can't commit/PR due to overflow
+## Use Instead
 
-**Solution:** External bash loop spawns fresh Claude processes with clean context.
+```bash
+# Continuous operation with external scheduler
+/agents:dispatch --loop
+
+# Custom poll interval (every 3 minutes)
+/agents:dispatch --loop --interval=180
+
+# Extended idle threshold
+/agents:dispatch --loop --max-idle=24
+```
+
+## Why Deprecated?
+
+Having two separate commands (`/agents:dispatch --loop` and `/agents:scheduler`) was confusing. The `--loop` flag now automatically triggers the external scheduler behavior, providing a single, intuitive interface.
 
 ## Usage
 

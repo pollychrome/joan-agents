@@ -116,7 +116,7 @@ The workflow uses tags for agent communication. Create any missing tags:
 | `Rework-Complete` | #84CC16 (lime) | Dev finished rework (tag-trigger) |
 | `Merge-Conflict` | #F97316 (orange) | Merge conflict detected |
 | `Implementation-Failed` | #F43F5E (rose) | Dev couldn't complete (manual recovery) |
-| `Worktree-Failed` | #EC4899 (pink) | Worktree creation failed (manual recovery) |
+| `Branch-Setup-Failed` | #EC4899 (pink) | Branch setup failed (manual recovery) |
 | `Claimed-Dev-1` | #0EA5E9 (sky) | Dev worker claim tag (strict serial: only 1) |
 
 First, fetch existing tags:
@@ -157,7 +157,6 @@ The agents need permission to run git, npm, and test commands without prompting 
 {
   "permissions": {
     "allow": [
-      "Bash(git worktree:*)",
       "Bash(git fetch:*)",
       "Bash(git checkout:*)",
       "Bash(git merge:*)",
@@ -304,7 +303,7 @@ Tasks flow through 6 columns, each managed by a specialized agent:
 Each agent has ONE job:
   • BA: Validates requirements are clear and complete
   • Architect: Creates detailed implementation plans
-  • Dev: Implements the plan in isolated worktrees
+  • Dev: Implements the plan on feature branches
   • Reviewer: Deep code review, approves or requests changes
   • Ops: Merges approved code, tracks deployments
 ```
@@ -340,7 +339,7 @@ Ask: "Ready to learn about each agent's role? (Continue / Ask a question)"
 │ 💻 DEV                                                       │
 ├─────────────────────────────────────────────────────────────┤
 │ Watches: Development column (tasks with "Planned" tag)       │
-│ Action:  Claims task, creates worktree, implements plan      │
+│ Action:  Claims task, switches to feature branch, implements │
 │ Output:  Pull request with all sub-tasks completed           │
 │          Moves task to Review when done                      │
 └─────────────────────────────────────────────────────────────┘
@@ -378,17 +377,16 @@ running agents independently.
 INVOCATION MODES:
 ─────────────────────────────────────
   /agents:dispatch           Single pass (dispatch once, exit)
-  /agents:dispatch --loop    Continuous (interactive sessions)
-  /agents:scheduler          External scheduler (overnight/long-running)
+  /agents:dispatch --loop    Continuous operation (uses external scheduler)
 
 WHEN TO USE EACH:
 ─────────────────────────────────────
-  --loop mode:    Good for interactive sessions where you're watching
-  scheduler:      Best for overnight/multi-hour runs (prevents context overflow)
+  Single pass:    Testing, debugging, manual intervention
+  --loop mode:    Any run longer than 15 minutes (recommended for production)
 
-  The internal --loop accumulates context over time. After many cycles,
-  context can overflow causing issues. The external scheduler spawns
-  FRESH Claude processes each cycle, avoiding this problem.
+  The --loop flag automatically uses an external scheduler that spawns
+  FRESH Claude processes each cycle. This prevents context accumulation
+  that previously caused failures after 20-30 minutes.
 
 WHAT HAPPENS (Staged Pipeline):
 ─────────────────────────────────────
@@ -441,7 +439,7 @@ All human actions are done via TAGS in Joan UI (not comments):
    Tags show current state (Ready, Planned, Claimed-Dev-1)
 
 4. HANDLE FAILURES
-   Tasks tagged "Implementation-Failed" or "Worktree-Failed"
+   Tasks tagged "Implementation-Failed" or "Branch-Setup-Failed"
    need manual intervention. Check the failure comment,
    fix the issue, remove the failure tag, ensure "Planned" exists.
 
@@ -477,8 +475,7 @@ Ready to go! Here's your workflow:
 1. Create tasks in Joan's "To Do" column
 
 2. Start agents:
-   /agents:dispatch --loop    (interactive sessions)
-   /agents:scheduler          (overnight/long-running - recommended)
+   /agents:dispatch --loop    (recommended for all production runs)
 
 3. Watch tasks flow:
    To Do → BA adds "Ready" tag
@@ -490,8 +487,9 @@ Ready to go! Here's your workflow:
    Done!
 
 4. Stop agents:
-   --loop mode: Auto-shutdown after {calculated time} of inactivity, or Ctrl+C
-   scheduler:   touch /tmp/joan-agents-{project-name}.shutdown
+   Auto-shutdown after {calculated time} of inactivity
+   Or manually: touch /tmp/joan-agents-{project-name}.shutdown
+   Or: Ctrl+C
 
 Need help later? Run /agents:init again to see this tutorial.
 ```
@@ -504,12 +502,12 @@ After tutorial (or if skipped), show:
 
 ```
 Start agents with:
-  /agents:scheduler         - Recommended for overnight/long-running (fresh context each cycle)
-  /agents:dispatch --loop   - Interactive sessions (watch progress)
-  /agents:dispatch          - Single pass (dispatch once, exit)
+  /agents:dispatch --loop   - Continuous operation (recommended, uses external scheduler)
+  /agents:dispatch          - Single pass (testing/debugging only)
 
-Stop scheduler gracefully:
+Stop gracefully:
   touch /tmp/joan-agents-{project-name}.shutdown
+  Or: Ctrl+C
 
 Change model anytime with: /agents:model
 

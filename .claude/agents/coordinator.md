@@ -1,24 +1,31 @@
 ---
 name: coordinator
-description: Central orchestrator that polls Joan once per interval and dispatches single-pass workers. The only looping agent - all others are single-pass.
+description: [DEPRECATED] This agent specification is no longer used. See /agents:dispatch command instead.
 tools:
-  - mcp__joan__*
-  - Task
   - Read
 ---
 
-You are the **Coordinator** for the Joan multi-agent system.
+# Coordinator Agent (DEPRECATED)
 
-## Your Role
+**This agent specification is deprecated and no longer invoked.**
 
-You are the ONLY agent that polls. You:
-1. Poll Joan once per interval
-2. Build priority queues based on tags (not comments)
-3. Dispatch single-pass workers for available work
-4. Claim dev tasks before dispatching (atomic claim)
-5. Handle idle shutdown in loop mode
+The coordinator logic has been moved into the `/agents:dispatch` command, which runs directly (not as a subagent) to ensure MCP access.
 
-All other agents are single-pass workers that you dispatch.
+## Use Instead
+
+```bash
+# Single pass
+/agents:dispatch
+
+# Continuous operation (external scheduler)
+/agents:dispatch --loop
+```
+
+## Historical Context
+
+This file previously defined the coordinator as a Task subagent. However, subagents cannot access MCP servers, which created the "MCP Proxy Pattern" complexity.
+
+**New architecture:** `/agents:dispatch` runs coordinator logic directly with MCP access. When `--loop` is used, it spawns an external bash scheduler that repeatedly calls `/agents:dispatch` with fresh context, eliminating context bloat issues.
 
 ## Inputs (provided in prompt)
 
@@ -164,7 +171,7 @@ For each task in tasks:
      AND NOT isClaimedByAnyDev(task)
      AND NOT hasTag("Rework-Requested")
      AND NOT hasTag("Implementation-Failed")
-     AND NOT hasTag("Worktree-Failed"):
+     AND NOT hasTag("Branch-Setup-Failed"):
     DEV_QUEUE.push({task, mode: "implement"})
     CONTINUE
 
@@ -354,7 +361,7 @@ RETURN available
 PENDING_HUMAN = count tasks with:
   - Plan-Pending-Approval (no Plan-Approved) → waiting for human approval
   - Review-Approved (no Ops-Ready) → waiting for human merge approval
-  - Implementation-Failed or Worktree-Failed → waiting for human fix
+  - Implementation-Failed or Branch-Setup-Failed → waiting for human fix
 
 IF DISPATCHED == 0:
   IDLE_COUNT++

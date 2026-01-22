@@ -70,11 +70,13 @@ git push -u origin develop
 
 ```bash
 # In Claude Code:
-> /agents:start --loop    # Continuous operation (recommended)
-> /agents:status          # Check status anytime
+> /agents:dispatch --loop    # Continuous operation (recommended)
+> /agents:status             # Check status anytime
 ```
 
 **That's it!** Your agents are now monitoring your Joan board.
+
+> **Note:** The `--loop` flag uses an external scheduler that prevents context bloat. Always use `--loop` for runs longer than 15 minutes.
 
 ---
 
@@ -90,7 +92,7 @@ git push -u origin develop
 ☐ Symlinks created in ~/.claude/
 ☐ /agents:init completed for your project
 ☐ develop branch exists and pushed
-☐ /agents:start --loop running
+☐ /agents:dispatch --loop running
 ```
 
 ---
@@ -177,7 +179,6 @@ Created by `/agents:init`, this file controls agent behavior:
 {
   "permissions": {
     "allow": [
-      "Bash(git worktree:*)",
       "Bash(git fetch:*)",
       "Bash(git checkout:*)",
       "Bash(git merge:*)",
@@ -295,7 +296,7 @@ Coordinator ────► poll Joan ────► dispatch workers ───
 |-------|------|
 | **Business Analyst** | Evaluates requirements, asks clarifying questions |
 | **Architect** | Creates implementation plans with sub-tasks |
-| **Dev** (×N) | Claims tasks, implements in worktrees, creates PRs |
+| **Dev** (×1) | Claims tasks, implements on feature branches, creates PRs |
 | **Reviewer** | Code review, quality gate, approves or requests rework |
 | **Ops** | Merges to develop, tracks deployments |
 
@@ -317,7 +318,7 @@ Coordinator ────► poll Joan ────► dispatch workers ───
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Dev workers still use **worktrees** for isolation, but in strict serial mode only one task moves through the Architect→Dev→Review→Ops pipeline at a time. This prevents merge conflicts and ensures plans reference the current codebase state.
+In strict serial mode, only ONE task moves through the Architect→Dev→Review→Ops pipeline at a time. Devs work directly on feature branches (no worktrees needed). This prevents merge conflicts and ensures plans reference the current codebase state.
 
 ---
 
@@ -372,12 +373,9 @@ To Do → Analyse → Development → Review → Deploy → Done
 ~/your-project/                  # Any project using agents
 ├── .joan-agents.json            # Project config (created by /agents:init)
 └── ...
-
-../worktrees/                    # Created automatically by devs
-├── {task-id-1}/
-├── {task-id-2}/
-└── ...
 ```
+
+Note: Devs work directly on feature branches in the main directory (no worktrees needed in strict serial mode).
 
 ---
 
