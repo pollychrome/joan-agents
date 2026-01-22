@@ -1,4 +1,4 @@
-# Joan Multi-Agent Orchestration System (v4.2)
+# Joan Multi-Agent Orchestration System (v4.5)
 
 A multi-agent system that automates software development workflows using Claude Code. Agents handle requirements analysis, architecture planning, implementation, code review, and deployment—all orchestrated through your Joan project board.
 
@@ -201,6 +201,10 @@ This prevents permission prompts from interrupting the agent loop. The file is g
 # Initialize project configuration
 /agents:init
 
+# Onboard existing backlog & fix broken states (comprehensive cure-all)
+/agents:clean-project         # Dry run - preview changes
+/agents:clean-project --apply # Apply all fixes
+
 # Run coordinator (single pass)
 /agents:start
 /agents:dispatch
@@ -208,6 +212,9 @@ This prevents permission prompts from interrupting the agent loop. The file is g
 # Run coordinator (continuous - recommended)
 /agents:start --loop
 /agents:dispatch --loop
+
+# External scheduler (context-safe for long-running operations)
+/agents:scheduler
 
 # Extended idle threshold (e.g., 2 hours)
 /agents:start --loop --max-idle=12
@@ -217,6 +224,33 @@ This prevents permission prompts from interrupting the agent loop. The file is g
 
 # Change model for all agents
 /agents:model
+```
+
+### Project Cleanup & Recovery
+
+The `/agents:clean-project` command is a comprehensive tool that handles:
+
+✅ **Fresh backlog onboarding** - Integrates new tasks into workflow
+✅ **Broken state recovery** - Fixes incorrectly tagged tasks
+✅ **Column drift correction** - Moves misplaced tasks to correct columns
+✅ **Tag inconsistency cleanup** - Removes stale workflow tags
+
+**When to use:**
+- Initial project setup after `/agents:init`
+- After manual changes in Joan UI
+- Recovery from tagging errors
+- Periodic maintenance to prevent drift
+
+**Example workflow:**
+```bash
+# 1. See what will be fixed
+/agents:clean-project
+
+# 2. Review the output, then apply
+/agents:clean-project --apply
+
+# 3. Start agents
+/agents:start --loop
 ```
 
 ### Shell Scripts (macOS)
@@ -391,6 +425,28 @@ git pull
 ```
 
 Changes are immediately available in all projects via symlinks.
+
+---
+
+## What's New in v4.5
+
+| Feature | v4.2 | v4.5 |
+|---------|------|------|
+| Backlog onboarding | Manual tag application | Comprehensive `/agents:clean-project` cure-all |
+| State recovery | Manual intervention | Auto-detects and fixes broken states |
+| Evidence validation | Not checked | Validates completion evidence (PRs, commits) |
+| Column drift | No detection | Auto-corrects misplaced tasks |
+| Context management | Internal loop only | External scheduler for long-running ops |
+
+### Comprehensive Project Cleanup
+
+The new `/agents:clean-project` command replaces manual backlog setup with an intelligent cure-all that:
+- Detects tasks with incorrect end-stage tags (Review-Approved/Ops-Ready) but no completion evidence
+- Auto-corrects column misplacement (e.g., completed tasks in wrong columns)
+- Validates workflow state consistency
+- Provides detailed dry-run preview before making changes
+
+This eliminates common setup errors and enables self-service recovery from broken states.
 
 ---
 

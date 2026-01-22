@@ -1,0 +1,193 @@
+# Patch 1: Add Queue Building Validation to Coordinator
+
+This patch adds validation after queue building to detect silent failures.
+Applies to: .claude/commands/agents/dispatch.md
+
+## Location
+
+Insert after Step 3 (Build Priority Queues), before Step 3b (Serial Pipeline Gate Check)
+
+## Code to Add
+
+```typescript
+---
+
+## Step 3a: Validate Queue Building (Self-Check)
+
+Verify that tasks with workflow tags were properly queued.
+This catches silent failures in queue building logic.
+
+```
+# Build list of tasks that should have been queued
+SHOULD_BE_QUEUED = []
+
+FOR task IN tasks:
+  # Skip terminal columns
+  IF inColumn(task, "Done"):
+    CONTINUE
+
+  # Check if task has any workflow tags
+  has_workflow_tag = false
+  task_workflow_tags = []
+
+  FOR tag IN task.tags:
+    tag_name = tag.name
+    IF tag_name IN [
+      "Ready", "Needs-Clarification", "Clarification-Answered",
+      "Plan-Pending-Approval", "Plan-Approved", "Plan-Rejected", "Planned",
+      "Dev-Complete", "Design-Complete", "Test-Complete",
+      "Review-In-Progress", "Review-Approved", "Rework-Requested", "Rework-Complete",
+      "Merge-Conflict", "Ops-Ready", "Invoke-Architect", "Architect-Assist-Complete"
+    ]:
+      has_workflow_tag = true
+      task_workflow_tags.push(tag_name)
+
+  # Task has workflow tags - should it be queued?
+  IF has_workflow_tag:
+    # Exception: Deploy column tasks are often waiting for human action
+    IF inColumn(task, "Deploy"):
+      # Only expect queueing if has Ops-actionable tags
+      IF hasTag(task, "Review-Approved") AND hasTag(task, "Ops-Ready"):
+        SHOULD_BE_QUEUED.push({
+          task: task,
+          column: get_column_name(task.column_id),
+          tags: task_workflow_tags,
+          reason: "Has Review-Approved + Ops-Ready (Ops should merge)"
+        })
+      # Otherwise skip - waiting for human Ops-Ready tag
+      CONTINUE
+
+    # All other tasks with workflow tags should be queued
+    SHOULD_BE_QUEUED.push({
+      task: task,
+      column: get_column_name(task.column_id),
+      tags: task_workflow_tags,
+      reason: "Has workflow tags in active column"
+    })
+
+# Check which tasks were actually queued
+UNQUEUED_TASKS = []
+
+FOR item IN SHOULD_BE_QUEUED:
+  task = item.task
+
+  # Check if task appears in any queue
+  was_queued = false
+
+  # Check BA queue
+  FOR queued IN BA_QUEUE:
+    IF queued.task.id == task.id:
+      was_queued = true
+      BREAK
+
+  # Check Architect queue
+  IF NOT was_queued:
+    FOR queued IN ARCHITECT_QUEUE:
+      IF queued.task.id == task.id:
+        was_queued = true
+        BREAK
+
+  # Check Dev queue
+  IF NOT was_queued:
+    FOR queued IN DEV_QUEUE:
+      IF queued.task.id == task.id:
+        was_queued = true
+        BREAK
+
+  # Check Reviewer queue
+  IF NOT was_queued:
+    FOR queued IN REVIEWER_QUEUE:
+      IF queued.task.id == task.id:
+        was_queued = true
+        BREAK
+
+  # Check Ops queue
+  IF NOT was_queued:
+    FOR queued IN OPS_QUEUE:
+      IF queued.task.id == task.id:
+        was_queued = true
+        BREAK
+
+  # Task should be queued but isn't
+  IF NOT was_queued:
+    UNQUEUED_TASKS.push(item)
+
+# Report anomalies
+IF UNQUEUED_TASKS.length > 0:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  ⚠️  QUEUE BUILDING ANOMALY DETECTED                             ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+  Report: "{UNQUEUED_TASKS.length} tasks have workflow tags but weren't queued:"
+  Report: ""
+
+  FOR item IN UNQUEUED_TASKS:
+    Report: "  • Task #{item.task.task_number}: {item.task.title}"
+    Report: "    Column: {item.column}"
+    Report: "    Tags: {item.tags.join(', ')}"
+    Report: "    Reason: {item.reason}"
+    Report: ""
+
+  Report: "This indicates a queue building logic bug or helper function failure."
+  Report: "Possible causes:"
+  Report: "  - inColumn() helper not matching column_id correctly"
+  Report: "  - hasTag() helper not finding tags in task.tags array"
+  Report: "  - Queue condition logic has gaps"
+  Report: ""
+  Report: "📋 Please report this issue with the above task details."
+  Report: "───────────────────────────────────────────────────────────────────"
+  Report: ""
+
+ELSE:
+  Report: "Queue building validation: ✓ All tasks with workflow tags were properly queued"
+```
+
+---
+```
+
+## What This Does
+
+1. **After queue building**, scans all tasks for workflow tags
+2. **Identifies tasks** that should have been queued based on their column + tags
+3. **Checks if they were actually queued** in any of the 5 queues
+4. **Reports anomalies** with diagnostic details if discrepancies found
+
+## Benefits
+
+- ✅ **Immediate detection** - Catches queue building failures in real-time
+- ✅ **Diagnostic output** - Provides task numbers, columns, and tags for debugging
+- ✅ **Root cause hints** - Suggests which helper function might be failing
+- ✅ **No false positives** - Excludes Deploy column tasks waiting for human action
+- ✅ **Zero overhead** - Only reports when issues detected
+
+## Testing
+
+After applying this patch, run:
+
+```bash
+/agents:dispatch
+```
+
+If queue building is working correctly, you'll see:
+```
+Queue building validation: ✓ All tasks with workflow tags were properly queued
+```
+
+If there's a bug, you'll see:
+```
+⚠️  QUEUE BUILDING ANOMALY DETECTED
+3 tasks have workflow tags but weren't queued:
+  • Task #79: Round duration calibration
+    Column: Analyse
+    Tags: Plan-Pending-Approval, Plan-Approved
+    Reason: Has workflow tags in active column
+```
+
+## Application Instructions
+
+1. Open `.claude/commands/agents/dispatch.md`
+2. Find the line: `Report queue sizes:` (end of Step 3)
+3. Insert the new Step 3a code AFTER Step 3 and BEFORE Step 3b
+4. Save file
+5. Test with `/agents:dispatch`

@@ -1,0 +1,232 @@
+# Patch 2: Add Column Drift Detection to Self-Healing
+
+This patch adds automatic detection and correction of tasks in wrong columns.
+Applies to: .claude/commands/agents/dispatch.md
+
+## Location
+
+Insert in Step 2c (Detect and Clean Anomalies), after existing anomaly checks
+
+## Code to Add
+
+```typescript
+  # Anomaly 4: Column/Tag Mismatches (NEW)
+  # Tasks manually moved to wrong columns have tag combinations that don't match
+  # their column. Auto-correct these to restore proper workflow.
+
+  # Define valid tag patterns per column
+  COLUMN_TAG_RULES = {
+    "To Do": {
+      allowed: [],  # No workflow tags expected in To Do (BA adds Ready)
+      forbidden: ["Plan-Pending-Approval", "Planned", "Dev-Complete", "Review-Approved"]
+    },
+    "Analyse": {
+      allowed: ["Ready", "Needs-Clarification", "Clarification-Answered",
+                "Plan-Pending-Approval", "Plan-Approved", "Plan-Rejected"],
+      forbidden: ["Planned", "Dev-Complete", "Review-Approved", "Ops-Ready"]
+    },
+    "Development": {
+      allowed: ["Planned", "Rework-Requested", "Merge-Conflict", "Implementation-Failed"],
+      forbidden: ["Review-Approved", "Ops-Ready", "Plan-Pending-Approval", "Ready"]
+    },
+    "Review": {
+      allowed: ["Dev-Complete", "Design-Complete", "Test-Complete",
+                "Review-In-Progress", "Review-Approved", "Rework-Requested",
+                "Rework-Complete", "Ops-Ready"],
+      forbidden: ["Planned", "Ready", "Plan-Pending-Approval"]
+    },
+    "Deploy": {
+      allowed: [],  # Terminal column - no workflow tags
+      forbidden: WORKFLOW_TAGS  # All workflow tags should be removed
+    }
+  }
+
+  # Helper: infer correct column from task tags
+  def inferCorrectColumn(task):
+    """
+    Determine which column a task should be in based on its tags.
+    Returns column name or null if unable to determine.
+    """
+
+    # Priority 1: Has completion tags → Review
+    IF hasTag(task, "Dev-Complete") AND hasTag(task, "Design-Complete") AND hasTag(task, "Test-Complete"):
+      RETURN "Review"
+
+    # Priority 2: Has Planned or Rework-Requested → Development
+    IF hasTag(task, "Planned") OR hasTag(task, "Rework-Requested") OR hasTag(task, "Merge-Conflict"):
+      RETURN "Development"
+
+    # Priority 3: Has plan approval tags → Analyse
+    IF hasTag(task, "Plan-Pending-Approval") OR hasTag(task, "Plan-Approved") OR hasTag(task, "Plan-Rejected"):
+      RETURN "Analyse"
+
+    # Priority 4: Has Ready tag → Analyse
+    IF hasTag(task, "Ready"):
+      RETURN "Analyse"
+
+    # Priority 5: Has Needs-Clarification → Analyse
+    IF hasTag(task, "Needs-Clarification"):
+      RETURN "Analyse"
+
+    # Unable to determine - leave unchanged
+    RETURN null
+
+  # Check each task for column/tag mismatches
+  FOR task IN tasks:
+    current_column_name = get_column_name(task.column_id)
+
+    # Skip if no rule defined for this column
+    IF current_column_name NOT IN COLUMN_TAG_RULES:
+      CONTINUE
+
+    rule = COLUMN_TAG_RULES[current_column_name]
+
+    # Check for forbidden tags in this column
+    forbidden_found = []
+    FOR tag IN task.tags:
+      tag_name = tag.name
+
+      # Handle wildcard patterns (e.g., "Claimed-Dev-*")
+      FOR forbidden_pattern IN rule.forbidden:
+        IF forbidden_pattern ends with "*":
+          prefix = forbidden_pattern without "*"
+          IF tag_name starts with prefix:
+            forbidden_found.push(tag_name)
+            BREAK
+        ELSE:
+          IF tag_name == forbidden_pattern:
+            forbidden_found.push(tag_name)
+            BREAK
+
+    # If forbidden tags found, this is a mismatch
+    IF forbidden_found.length > 0:
+      # Infer correct column
+      correct_column = inferCorrectColumn(task)
+
+      IF correct_column AND correct_column != current_column_name:
+        Report: "COLUMN DRIFT: '{task.title}' in {current_column_name} has mismatched tags: {forbidden_found}"
+        Report: "  Auto-correcting: Moving to {correct_column}"
+
+        # Move task to correct column
+        mcp__joan__update_task(task.id, column_id=COLUMN_CACHE[correct_column])
+
+        # Add audit trail
+        comment = "ALS/1
+actor: coordinator
+intent: recovery
+action: column-drift-correction
+tags.add: []
+tags.remove: []
+summary: Detected column/tag mismatch and auto-corrected.
+details:
+- from_column: {current_column_name}
+- to_column: {correct_column}
+- mismatched_tags: {forbidden_found.join(', ')}
+- detection: Task tags indicate it should be in {correct_column}
+- cause: Likely manual move in Joan UI bypassed tag cleanup"
+
+        mcp__joan__create_task_comment(task.id, comment)
+
+        Report: "  ✓ Moved to {correct_column} and added audit comment"
+
+      ELSE IF NOT correct_column:
+        # Can't determine correct column - report for manual review
+        Report: "COLUMN DRIFT: '{task.title}' in {current_column_name} has mismatched tags: {forbidden_found}"
+        Report: "  Unable to auto-correct: Cannot infer correct column from tags"
+        Report: "  Manual review required"
+
+        # Add diagnostic comment
+        comment = "ALS/1
+actor: coordinator
+intent: diagnostic
+action: column-drift-detected
+tags.add: []
+tags.remove: []
+summary: Column/tag mismatch detected but unable to auto-correct.
+details:
+- current_column: {current_column_name}
+- mismatched_tags: {forbidden_found.join(', ')}
+- reason: Cannot infer correct column from current tags
+- action_required: Manual review and correction needed"
+
+        mcp__joan__create_task_comment(task.id, comment)
+
+Report: "Column drift detection complete"
+```
+
+## What This Does
+
+1. **Defines valid tag patterns** for each workflow column
+2. **Detects mismatches** - Tasks with tags that don't belong in their current column
+3. **Infers correct column** from the task's tag combination
+4. **Auto-corrects** by moving task to the right column
+5. **Adds audit trail** with explanation of what was fixed and why
+
+## Benefits
+
+- ✅ **Fixes manual moves** - Auto-corrects when users move tasks in Joan UI
+- ✅ **Restores workflow** - Gets tasks back into processable state
+- ✅ **Audit trail** - Documents every correction for transparency
+- ✅ **Smart inference** - Uses tag priority to determine correct column
+- ✅ **Handles edge cases** - Reports tasks that can't be auto-corrected
+
+## Example Scenarios Fixed
+
+### Scenario 1: Task with Planned tag manually moved to Review
+```
+Detection: Task in Review has forbidden tag: Planned
+Action: Auto-move to Development
+Reason: Planned indicates dev work needed
+```
+
+### Scenario 2: Task with completion tags in Deploy
+```
+Detection: Task in Deploy has forbidden tags: Dev-Complete, Design-Complete
+Action: Auto-move to Review
+Reason: Completion tags indicate needs code review
+```
+
+### Scenario 3: Task with Ready tag in Development
+```
+Detection: Task in Development has forbidden tag: Ready
+Action: Auto-move to Analyse
+Reason: Ready indicates waiting for Architect planning
+```
+
+## Testing
+
+After applying this patch, test with a known misplaced task:
+
+```bash
+# 1. Manually move a task with Planned tag to Review column
+#    (via Joan UI or direct MCP call)
+
+# 2. Run coordinator
+/agents:dispatch
+
+# 3. Should see:
+# COLUMN DRIFT: 'Task Title' in Review has mismatched tags: Planned
+#   Auto-correcting: Moving to Development
+#   ✓ Moved to Development and added audit comment
+
+# 4. Verify task is now in Development column with audit comment
+```
+
+## Application Instructions
+
+1. Open `.claude/commands/agents/dispatch.md`
+2. Find Step 2c (Detect and Clean Anomalies)
+3. Locate the line: `Report: "Anomaly detection complete"`
+4. Insert the new Anomaly 4 code BEFORE that line
+5. Save file
+6. Test with `/agents:dispatch`
+
+## Integration with Existing Anomaly Detection
+
+This new check runs **after** the existing anomaly checks:
+1. Anomaly 1: Completed tasks with stale workflow tags
+2. Anomaly 2: Conflicting approval/rejection tags
+3. Anomaly 3: Plan-Approved without Plan-Pending-Approval
+4. **Anomaly 4: Column/Tag Mismatches (NEW)**
+
+All four anomaly types are checked in every poll cycle, ensuring comprehensive self-healing.
