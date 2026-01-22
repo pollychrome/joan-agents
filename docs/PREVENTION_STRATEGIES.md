@@ -166,8 +166,8 @@ Coordinator process terminates silently - no visibility into whether loop is run
 
 #### Strategy A: Use External Scheduler (Recommended)
 ```bash
-# Instead of /agents:dispatch --loop, use:
-/agents:scheduler
+# Use loop mode (automatically uses external scheduler):
+/agents:dispatch --loop
 
 # Benefits:
 # - Fresh context every cycle (prevents context drift)
@@ -307,7 +307,7 @@ for (const stuckTask of stuckTasks) {
 1. ✅ Add config validation to `/agents:init` and `/agents:dispatch`
 2. ✅ Add `/agents:running` status check command
 3. ✅ Add warning in project CLAUDE.md about manual moves
-4. ✅ Use `/agents:scheduler` for long-running operations
+4. ✅ Use `/agents:dispatch --loop` for long-running operations (external scheduler)
 
 ### Medium Priority
 1. Add coordinator sub-task verification (post-condition checks)

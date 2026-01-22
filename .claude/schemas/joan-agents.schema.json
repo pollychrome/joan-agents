@@ -58,7 +58,7 @@
           "minimum": 60,
           "maximum": 3600,
           "default": 300,
-          "description": "Seconds between coordinator spawns when using external scheduler (/agents:scheduler)"
+          "description": "Seconds between coordinator spawns when using /agents:dispatch --loop"
         },
         "schedulerStuckTimeoutSeconds": {
           "type": "integer",

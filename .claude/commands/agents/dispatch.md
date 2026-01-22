@@ -285,7 +285,7 @@ Always use task.column_id with the inColumn() helper.
 ## Step 2a: Write Heartbeat (External Scheduler Support)
 
 Write current timestamp to heartbeat file for external scheduler monitoring.
-This allows `/agents:scheduler` to detect stuck coordinators and restart them.
+This allows `/agents:dispatch --loop` to detect stuck coordinators and restart them.
 
 ```
 # Get project name for heartbeat file naming (sanitize for filesystem)
@@ -298,7 +298,7 @@ Run bash command:
 ```
 
 **Why heartbeat?**
-- External scheduler (`/agents:scheduler`) spawns fresh Claude processes to avoid context overflow
+- External scheduler (used by `/agents:dispatch --loop`) spawns fresh Claude processes to avoid context overflow
 - Scheduler monitors heartbeat file to detect stuck coordinators
 - If heartbeat becomes stale (older than stuck_timeout), scheduler kills and restarts
 - Even single-pass coordinators write heartbeat - the freshness indicates activity

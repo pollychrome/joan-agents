@@ -242,7 +242,7 @@ Output the following format:
   ─────────────────────────────────────────────────────────────
 
 ═══════════════════════════════════════════════════════════════
-  /agents:scheduler (long-running) | /agents:dispatch --loop (interactive)
+  /agents:dispatch --loop (continuous) | /agents:dispatch (single pass)
   /agents:status to refresh
 ═══════════════════════════════════════════════════════════════
 ```
