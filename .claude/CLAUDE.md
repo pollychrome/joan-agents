@@ -1,4 +1,4 @@
-# Joan Multi-Agent System (v4.5 - Auto-Compact Context Management)
+# Joan Multi-Agent System (v4.6 - Enhanced Anomaly Detection & Recovery)
 
 This system uses **tag-based state transitions** (no comment parsing), a **single coordinator** that dispatches workers, and a **strict serial dev pipeline** to prevent merge conflicts.
 
@@ -50,6 +50,20 @@ Staged Pipeline Architecture (Strict Serial Mode)
   • Workers do NOT have MCP access - they return action requests
   • Self-healing: anomaly detection cleans stale tags automatically
 ```
+
+## What's New in v4.6
+
+**Enhanced Anomaly Detection & Recovery** - The coordinator now handles tasks that were manually moved between columns without proper workflow tags:
+
+**Key Improvements:**
+1. **Complete WORKFLOW_TAGS list** - Now includes all workflow tags (`Dev-Complete`, `Design-Complete`, `Test-Complete`, etc.) for proper cleanup
+2. **Diagnostic for untagged tasks** - Detects tasks in Review/Deploy columns missing required workflow tags
+3. **Auto-recovery for manually-moved tasks:**
+   - Tasks in Review with no tags → moved back to Development with `Planned` tag
+   - Tasks in Deploy with completion tags → moved back to Review for proper approval flow
+4. **Better visibility** - Enhanced diagnostics report tasks that don't match any queue
+
+**Why this matters:** Manual task moves (via Joan UI) bypass the agent workflow and leave tasks in inconsistent states. The enhanced detection now catches and auto-fixes these cases, eliminating stuck tasks from manual operations.
 
 ### Why MCP Proxy Pattern?
 

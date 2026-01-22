@@ -364,7 +364,12 @@ This step detects and auto-cleans anomalies to prevent stuck states.
 
 ```
 WORKFLOW_TAGS = ["Review-Approved", "Ops-Ready", "Plan-Approved", "Planned",
-                 "Plan-Pending-Approval", "Ready", "Rework-Requested"]
+                 "Plan-Pending-Approval", "Ready", "Rework-Requested",
+                 "Dev-Complete", "Design-Complete", "Test-Complete",
+                 "Review-In-Progress", "Rework-Complete", "Claimed-Dev-1",
+                 "Clarification-Answered", "Plan-Rejected", "Invoke-Architect",
+                 "Architect-Assist-Complete", "Merge-Conflict", "Implementation-Failed",
+                 "Branch-Setup-Failed"]
 TERMINAL_COLUMNS = ["Deploy", "Done"]
 
 For each task in tasks:
@@ -433,6 +438,63 @@ For each task in tasks:
         details:
         - reason: Plan-Approved was present but Plan-Pending-Approval was missing (likely worker crash)
         - effect: Task will now be queued for architect finalization")
+
+  # Anomaly 4: Tasks in Review column with no workflow tags
+  # These were likely manually moved without proper dev worker completion
+  IF inColumn(task, "Review"):
+    has_any_workflow_tag = false
+    FOR tagName IN WORKFLOW_TAGS:
+      IF hasTag(task, tagName):
+        has_any_workflow_tag = true
+        BREAK
+
+    IF NOT has_any_workflow_tag:
+      Report: "ANOMALY: '{task.title}' in Review column has NO workflow tags (likely manually moved)"
+      Report: "  This task cannot be processed - moving back to Development with Planned tag"
+
+      # Move back to Development with Planned tag for dev worker to handle
+      mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Development"])
+      mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Planned"])
+
+      mcp__joan__create_task_comment(task.id,
+        "ALS/1
+        actor: coordinator
+        intent: recovery
+        action: anomaly-recovery
+        tags.add: [Planned]
+        tags.remove: []
+        summary: Moved task back to Development (was in Review with no workflow tags).
+        details:
+        - reason: Task in Review column must have completion tags or rework state
+        - likely_cause: Manually moved without dev worker completion
+        - action: Dev worker will pick up and properly complete this task
+        - next_steps: Task will be implemented, checked off, and moved to Review with proper tags")
+
+  # Anomaly 5: Tasks in Deploy with completion tags (should be in Review awaiting Ops-Ready)
+  # These were likely manually moved before review/merge completed
+  IF inColumn(task, "Deploy"):
+    has_completion_tags = hasTag(task, "Dev-Complete") OR hasTag(task, "Design-Complete") OR hasTag(task, "Test-Complete")
+
+    IF has_completion_tags:
+      Report: "ANOMALY: '{task.title}' in Deploy has completion tags (should be in Review)"
+      Report: "  Moving back to Review for proper review/approval flow"
+
+      # Move back to Review - let review/ops flow handle properly
+      mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Review"])
+
+      mcp__joan__create_task_comment(task.id,
+        "ALS/1
+        actor: coordinator
+        intent: recovery
+        action: anomaly-recovery
+        tags.add: []
+        tags.remove: []
+        summary: Moved task from Deploy back to Review (had completion tags indicating incomplete workflow).
+        details:
+        - reason: Deploy column is for tasks awaiting production deployment only
+        - issue: Task still had Dev-Complete/Design-Complete/Test-Complete tags
+        - likely_cause: Manually moved before review/merge completed
+        - action: Task will now go through proper review → approval → Ops-Ready → merge flow")
 
 Report: "Anomaly detection complete"
 ```
@@ -838,6 +900,30 @@ For each task in tasks:
 
   IF workflow_tags_present.length > 0:
     Report: "UNQUEUED: '{task.title}' has tags {workflow_tags_present} in column '{task.column}' but didn't match any queue condition"
+
+  # DIAGNOSTIC: Tasks in workflow columns with no tags or incomplete tags
+  # This catches tasks that were manually moved without proper state transitions
+  IF inColumn(task, "Review"):
+    # Review column tasks should have completion tags OR rework tags
+    has_completion_tags = hasTag(task, "Dev-Complete") AND hasTag(task, "Design-Complete") AND hasTag(task, "Test-Complete")
+    has_rework_tags = hasTag(task, "Rework-Requested") OR hasTag(task, "Rework-Complete")
+    has_approval_tags = hasTag(task, "Review-Approved") OR hasTag(task, "Review-In-Progress")
+
+    IF NOT (has_completion_tags OR has_rework_tags OR has_approval_tags):
+      Report: "ANOMALY: '{task.title}' in Review column is missing expected tags (completion, rework, or review state)"
+      Report: "  Current tags: {workflow_tags_present or 'NONE'}"
+      Report: "  Expected: Dev-Complete+Design-Complete+Test-Complete OR Rework-Requested/Rework-Complete OR Review-Approved"
+      Report: "  Action: Task needs manual intervention - add appropriate tags or move to correct column"
+
+  IF inColumn(task, "Deploy"):
+    # Deploy column tasks should have NO workflow tags (they're awaiting production deployment)
+    IF workflow_tags_present.length > 0:
+      Report: "ANOMALY: '{task.title}' in Deploy has stale workflow tags: {workflow_tags_present}"
+      Report: "  Action: These will be auto-cleaned by anomaly detection"
+    ELSE:
+      # Deploy tasks with no tags is normal (awaiting production deployment)
+      # But if they have completion tags, they shouldn't be here yet
+      pass
 
 Report queue sizes:
 "Queues: BA={BA_QUEUE.length}, Architect={ARCHITECT_QUEUE.length}, Dev={DEV_QUEUE.length}, Reviewer={REVIEWER_QUEUE.length}, Ops={OPS_QUEUE.length}"
