@@ -109,8 +109,19 @@ Report: ""
 
 # Execute the external scheduler script
 # This script will repeatedly spawn fresh `claude /agents:dispatch` processes
+# Expand home directory path for joan-scheduler.sh
+SCHEDULER_SCRIPT="$HOME/joan-agents/scripts/joan-scheduler.sh"
+
+IF scheduler script does not exist at $SCHEDULER_SCRIPT:
+  Report: "ERROR: Scheduler script not found at {SCHEDULER_SCRIPT}"
+  Report: "Expected joan-agents repository at ~/joan-agents"
+  Report: ""
+  Report: "Installation issue - verify joan-agents is cloned to ~/joan-agents:"
+  Report: "  git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents"
+  EXIT with error
+
 Bash:
-  command: ./scripts/joan-scheduler.sh . --interval={INTERVAL} --stuck-timeout={STUCK_TIMEOUT} --max-idle={MAX_IDLE_ARG} --max-failures={MAX_FAILURES}
+  command: "$HOME/joan-agents/scripts/joan-scheduler.sh" . --interval={INTERVAL} --stuck-timeout={STUCK_TIMEOUT} --max-idle={MAX_IDLE_ARG} --max-failures={MAX_FAILURES}
   description: Run external scheduler for continuous coordinator execution
 
 # The script runs until shutdown signal or max idle reached
