@@ -13,8 +13,10 @@ This system uses **tag-based state transitions**, **webhook-driven dispatch** fo
 /agents:project-planner --interactive     # Guided task creation
 # Or add tasks manually in Joan web app
 
-# 3. Start the webhook receiver (event-driven, recommended)
-./scripts/webhook-receiver.sh --project-dir .
+# 3. Start the coordinator
+/agents:dispatch --loop                   # Webhook receiver (event-driven, recommended)
+/agents:dispatch --loop --mode=yolo       # Fully autonomous mode
+/agents:dispatch                          # Single pass (testing/debugging)
 
 # 4. Monitor live activity (from terminal, zero token cost)
 joan status                # Global view of all running instances
@@ -26,7 +28,7 @@ joan logs myproject        # Tail logs in real-time
 /agents:doctor --dry-run   # Preview fixes without applying
 ```
 
-**Why webhooks?** Zero token cost when idle, instant response to events, and cleaner architecture. The webhook receiver listens for Joan events and dispatches the appropriate handler immediately.
+**Why webhooks?** Zero token cost when idle, instant response to events, and cleaner architecture. The `--loop` mode starts a webhook receiver that listens for Joan events and dispatches handlers immediately.
 
 ## Architecture
 
@@ -76,12 +78,12 @@ Webhook-Driven Event Architecture
 4. **Better scalability** - No coordinator bottleneck, handlers run independently
 
 **Breaking Changes from v4.x:**
-- `joan-scheduler.sh` is deprecated (use `webhook-receiver.sh`)
-- `/agents:dispatch --loop` is deprecated (use webhook receiver)
+- `joan-scheduler.sh` is deprecated (internal script replaced by `webhook-receiver.sh`)
+- `/agents:dispatch --loop` now starts webhook receiver (not polling scheduler)
 - Polling-related settings (`pollingIntervalMinutes`, `maxIdlePolls`) are ignored
 - Self-healing now runs via `/agents:doctor` (schedule with cron if needed)
 
-**Migration:** Replace `/agents:dispatch --loop` with `./scripts/webhook-receiver.sh --project-dir .`
+**Migration:** Same command interface (`/agents:dispatch --loop --mode=yolo`), but now uses webhooks internally.
 
 ### How Webhook Dispatch Works
 

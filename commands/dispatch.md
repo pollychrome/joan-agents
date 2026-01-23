@@ -1,6 +1,6 @@
 ---
-description: Run coordinator (single pass or continuous) - recommended mode
-argument-hint: [--loop] [--max-idle=N] [--interval=N] [--mode=standard|yolo]
+description: Run coordinator (single pass or continuous webhook receiver)
+argument-hint: [--loop] [--port=N] [--mode=standard|yolo]
 allowed-tools: Bash, Read
 ---
 
@@ -8,10 +8,9 @@ allowed-tools: Bash, Read
 
 ## Arguments
 
-- `--loop` → Run continuously using external scheduler (recommended for >15 min runs)
-- No flag → Single pass (dispatch once, then exit)
-- `--max-idle=N` → Max consecutive idle polls before shutdown (default: 12)
-- `--interval=N` → Poll interval in seconds for loop mode (default: 300 = 5 minutes)
+- `--loop` → Start webhook receiver for event-driven dispatch (recommended)
+- No flag → Single pass (process all queues once, then exit)
+- `--port=N` → Webhook receiver port (default: 9847)
 - `--mode=standard|yolo` → Override workflow mode (default: read from config)
 
 ## Configuration
@@ -20,18 +19,14 @@ Load from `.joan-agents.json`:
 ```
 PROJECT_ID = config.projectId
 PROJECT_NAME = config.projectName
-POLL_INTERVAL = config.settings.pollingIntervalMinutes (default: 5)
-MAX_IDLE = --max-idle override or config.settings.maxIdlePolls (default: 12)
 MODEL = config.settings.model (default: "opus")
 MODE = --mode override or config.settings.mode (default: "standard")
 DEV_COUNT = config.agents.devs.count (default: 1)  # STRICT SERIAL: Must be 1
 STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes (default: 120)
-MAX_POLL_CYCLES = config.settings.maxPollCyclesBeforeRestart (default: 10)
-STUCK_STATE_MINUTES = config.settings.stuckStateMinutes (default: 120)
 
-# Pipeline settings (strict serial mode)
-BA_DRAINING_ENABLED = config.settings.pipeline.baQueueDraining (default: true)
-MAX_BA_TASKS_PER_CYCLE = config.settings.pipeline.maxBaTasksPerCycle (default: 10)
+# Webhook settings
+WEBHOOK_PORT = --port override or config.settings.webhook.port (default: 9847)
+WEBHOOK_SECRET = config.settings.webhook.secret (default: null)
 
 # Worker timeout settings (in minutes)
 WORKER_TIMEOUT_BA = config.settings.workerTimeouts.ba (default: 10)
@@ -55,8 +50,7 @@ If config missing, report error and exit.
 Parse arguments:
 ```
 LOOP_MODE = true if --loop flag present, else false
-MAX_IDLE_OVERRIDE = --max-idle value if present, else null
-INTERVAL_OVERRIDE = --interval value if present, else null
+PORT_OVERRIDE = --port value if present, else null
 MODE_OVERRIDE = --mode value if present, else null
 ```
 
@@ -71,25 +65,21 @@ Report: "Running in {MODE} mode"
 
 **Branch based on LOOP_MODE:**
 
-### If LOOP_MODE is TRUE (Continuous Operation)
+### If LOOP_MODE is TRUE (Webhook Receiver Mode)
 
-Execute external scheduler to prevent context accumulation:
+Start the webhook receiver for event-driven dispatch:
 
 ```
 # Get project name for file naming
 PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 
-# Build scheduler arguments
-INTERVAL = INTERVAL_OVERRIDE or config.settings.schedulerIntervalSeconds or 300
-STUCK_TIMEOUT = config.settings.schedulerStuckTimeoutSeconds or 600
-MAX_IDLE_ARG = MAX_IDLE_OVERRIDE or MAX_IDLE or 12
-MAX_FAILURES = config.settings.schedulerMaxConsecutiveFailures or 3
+# Build webhook receiver arguments
+PORT = PORT_OVERRIDE or WEBHOOK_PORT or 9847
 
-Report: "Starting external scheduler for continuous operation"
+Report: "Starting webhook receiver for event-driven dispatch"
 Report: "  Mode: {MODE}"
-Report: "  Poll interval: {INTERVAL}s"
-Report: "  Max idle polls: {MAX_IDLE_ARG}"
-Report: "  Stuck timeout: {STUCK_TIMEOUT}s"
+Report: "  Port: {PORT}"
+Report: "  Secret: {WEBHOOK_SECRET ? 'configured' : 'none'}"
 Report: ""
 Report: "═══════════════════════════════════════════════════════════════"
 Report: "  MONITORING"
@@ -98,33 +88,34 @@ Report: "  Live dashboard:  joan status {PROJECT_SLUG} -f"
 Report: "  Tail logs:       joan logs {PROJECT_SLUG}"
 Report: "  Global view:     joan status"
 Report: ""
-Report: "  Stop gracefully: touch /tmp/joan-agents-{PROJECT_SLUG}.shutdown"
+Report: "  Stop gracefully: Ctrl+C or kill the process"
 Report: "═══════════════════════════════════════════════════════════════"
 Report: ""
 
-# Execute the external scheduler script
-# This script will repeatedly spawn fresh `claude /agents:dispatch` processes
-# Expand home directory path for joan-scheduler.sh
-SCHEDULER_SCRIPT="$HOME/joan-agents/scripts/joan-scheduler.sh"
+# Execute the webhook receiver script
+RECEIVER_SCRIPT="$HOME/joan-agents/scripts/webhook-receiver.sh"
 
-IF scheduler script does not exist at $SCHEDULER_SCRIPT:
-  Report: "ERROR: Scheduler script not found at {SCHEDULER_SCRIPT}"
+IF receiver script does not exist at $RECEIVER_SCRIPT:
+  Report: "ERROR: Webhook receiver script not found at {RECEIVER_SCRIPT}"
   Report: "Expected joan-agents repository at ~/joan-agents"
   Report: ""
   Report: "Installation issue - verify joan-agents is cloned to ~/joan-agents:"
   Report: "  git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents"
   EXIT with error
 
-Bash:
-  command: "$HOME/joan-agents/scripts/joan-scheduler.sh" . --interval={INTERVAL} --stuck-timeout={STUCK_TIMEOUT} --max-idle={MAX_IDLE_ARG} --max-failures={MAX_FAILURES} --mode={MODE}
-  description: Run external scheduler for continuous coordinator execution
-  run_in_background: true
+# Build receiver arguments
+RECEIVER_ARGS = "--port={PORT} --project-dir=. --mode={MODE}"
+IF WEBHOOK_SECRET:
+  RECEIVER_ARGS += " --secret={WEBHOOK_SECRET}"
 
-# Scheduler is now running in background - exit immediately to stop token consumption
+Bash:
+  command: "$HOME/joan-agents/scripts/webhook-receiver.sh" {RECEIVER_ARGS}
+  description: Start webhook receiver for event-driven dispatch
+  # NOT run_in_background - we want to keep this session alive for monitoring
+
+# Receiver exited (user stopped it)
 Report: ""
-Report: "Scheduler started in background. This Claude instance will now exit."
-Report: "The scheduler will continue running independently."
-Report: ""
+Report: "Webhook receiver stopped."
 EXIT
 ```
 
@@ -141,13 +132,6 @@ ERRORS = []
 IF DEV_COUNT !== 1:
   ERRORS.push("devs.count must be 1 for strict serial mode (found: " + DEV_COUNT + "). " +
               "This prevents merge conflicts. Update .joan-agents.json.")
-
-# Validate required settings exist
-IF !STUCK_STATE_MINUTES:
-  ERRORS.push("Missing settings.stuckStateMinutes - add default 120")
-
-IF !BA_DRAINING_ENABLED OR !MAX_BA_TASKS_PER_CYCLE:
-  ERRORS.push("Missing settings.pipeline - add: { baQueueDraining: true, maxBaTasksPerCycle: 10 }")
 
 # Validate worker timeouts exist
 REQUIRED_WORKERS = ["ba", "architect", "dev", "reviewer", "ops"]

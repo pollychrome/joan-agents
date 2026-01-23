@@ -28,6 +28,7 @@ set -euo pipefail
 PORT="${JOAN_WEBHOOK_PORT:-9847}"
 PROJECT_DIR="${JOAN_PROJECT_DIR:-.}"
 SECRET="${JOAN_WEBHOOK_SECRET:-}"
+MODE="${JOAN_WORKFLOW_MODE:-standard}"
 LOG_FILE="${PROJECT_DIR}/.claude/logs/webhook-receiver.log"
 
 # Parse arguments
@@ -45,6 +46,10 @@ while [[ $# -gt 0 ]]; do
       SECRET="$2"
       shift 2
       ;;
+    --mode)
+      MODE="$2"
+      shift 2
+      ;;
     --help)
       echo "Joan Agents Webhook Receiver"
       echo ""
@@ -54,6 +59,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --port PORT         Port to listen on (default: 9847)"
       echo "  --project-dir DIR   Project directory (default: current directory)"
       echo "  --secret SECRET     HMAC secret for signature verification"
+      echo "  --mode MODE         Workflow mode: standard or yolo (default: standard)"
       echo "  --help              Show this help message"
       exit 0
       ;;
@@ -194,12 +200,12 @@ dispatch_handler() {
   esac
 
   if [[ -n "$handler" ]]; then
-    log "Dispatching: $handler $handler_args"
+    log "Dispatching: $handler $handler_args --mode=$MODE"
 
     # Run handler in background to not block webhook response
     (
       cd "$PROJECT_DIR"
-      claude "/agents:dispatch/$handler" $handler_args 2>&1 | tee -a "$LOG_FILE"
+      JOAN_WORKFLOW_MODE="$MODE" claude "/agents:dispatch/$handler" $handler_args --mode="$MODE" 2>&1 | tee -a "$LOG_FILE"
     ) &
 
     log "Handler dispatched (PID: $!)"
@@ -275,6 +281,7 @@ process_webhook() {
 run_server() {
   log "Starting webhook receiver on port $PORT"
   log "Project directory: $PROJECT_DIR"
+  log "Workflow mode: $MODE"
   log "Secret configured: $(if [[ -n "$SECRET" ]]; then echo "yes"; else echo "no"; fi)"
 
   while true; do
