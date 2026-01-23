@@ -208,19 +208,53 @@ Report: "✓ Configuration validated"
 
 ---
 
+## Step 0: Immediate Heartbeat & Startup Diagnostics
+
+**CRITICAL**: Write heartbeat IMMEDIATELY at startup before any MCP calls.
+This allows the external scheduler to detect hangs during Step 1 (tag/column caching).
+
+```
+Report: "╔══════════════════════════════════════════════════════════════════╗"
+Report: "║  COORDINATOR STARTUP - {PROJECT_NAME}                           ║"
+Report: "╚══════════════════════════════════════════════════════════════════╝"
+Report: ""
+Report: "Step 0: Writing immediate heartbeat..."
+
+# Get project name for heartbeat file naming (sanitize for filesystem)
+PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+
+Run bash command:
+  echo $(date +%s) > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+
+Report: "  ✓ Heartbeat written to /tmp/joan-agents-{PROJECT_SLUG}.heartbeat"
+Report: ""
+```
+
+**Why immediate heartbeat?**
+- Previous heartbeat was in Step 2a (after tag caching and task fetch)
+- If coordinator hangs during MCP calls in Step 1, scheduler had no way to detect it
+- Now scheduler can detect hangs at ANY step, not just post-fetch
+- Heartbeat file freshness = coordinator is alive and progressing
+
+---
+
 ## Single Pass Execution
 
 Execute one coordinator cycle, then exit:
 
 ```
+Step 0: Immediate Heartbeat & Startup Diagnostics (FIRST - before any MCP calls)
 Step 1: Cache Tags and Columns
 Step 2: Fetch Tasks
-Step 2a: Write Heartbeat (for external scheduler monitoring)
+Step 2a: Update Heartbeat (for external scheduler monitoring)
 Step 2b: Recover Stale Claims (self-healing)
 Step 2c: Detect and Clean Anomalies (self-healing)
 Step 2d: Detect Stuck Workflow States (self-healing)
 Step 2e: State Machine Validation (self-healing)
+Step 2f: YOLO Auto-Complete (Deploy → Done) [YOLO mode only]
 Step 3: Build Priority Queues
+Step 3-Doctor: Doctor Diagnostic Pass (if queues empty OR stale claims detected)
+Step 3a: YOLO Mode Auto-Approval (Pre-Dispatch)
 Step 3b: Serial Pipeline Gate Check
 Step 4: Dispatch Workers
 Step 5: Exit
@@ -294,10 +328,10 @@ Always use task.column_id with the inColumn() helper.
 
 ---
 
-## Step 2a: Write Heartbeat (External Scheduler Support)
+## Step 2a: Update Heartbeat (External Scheduler Support)
 
-Write current timestamp to heartbeat file for external scheduler monitoring.
-This allows `/agents:dispatch --loop` to detect stuck coordinators and restart them.
+Update heartbeat timestamp after successful task fetch (Step 0 wrote the initial heartbeat).
+This allows `/agents:dispatch --loop` to track progress through the coordinator cycle.
 
 ```
 # Get project name for heartbeat file naming (sanitize for filesystem)
@@ -792,6 +826,56 @@ ELSE:
 
 ---
 
+## Step 2f: YOLO Auto-Complete (Deploy → Done)
+
+In YOLO mode, automatically advance merged tasks from Deploy to Done.
+This completes the fully-autonomous workflow (no human needed for deployment confirmation).
+
+```
+IF MODE == "yolo":
+  Report: "Step 2f: YOLO auto-complete check (Deploy → Done)..."
+
+  YOLO_COMPLETED = []
+
+  For each task in tasks:
+    # Task is in Deploy column with NO workflow tags = merge complete, ready to finish
+    IF inColumn(task, "Deploy") AND task.tags.length == 0:
+
+      Report: "  Auto-completing: '{task.title}' (merged, moving to Done)"
+
+      # Move to Done column
+      mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Done"])
+
+      # Add audit comment
+      mcp__joan__create_task_comment(task.id,
+        "ALS/1
+        actor: coordinator
+        intent: yolo-auto-complete
+        action: advance-to-done
+        column.move: Deploy → Done
+        summary: YOLO mode auto-complete - task merged and workflow finished.
+        details:
+        - mode: yolo
+        - reason: Task in Deploy with no workflow tags = merge complete
+        - trigger: Step 2f YOLO Auto-Complete")
+
+      YOLO_COMPLETED.push(task)
+
+  IF YOLO_COMPLETED.length > 0:
+    Report: "  ✓ YOLO auto-completed {YOLO_COMPLETED.length} task(s)"
+  ELSE:
+    Report: "  No tasks ready for auto-complete"
+```
+
+**Why this matters:**
+- YOLO mode has auto-approval for plans (Plan-Approved) and merges (Ops-Ready)
+- Without this step, tasks would pile up in Deploy indefinitely
+- Deploy → Done is the final gate - confirming "deployed to production"
+- In YOLO mode, we trust that merged = deployed (CI/CD handles actual deployment)
+- Standard mode still requires human to move to Done (manual deployment confirmation)
+
+---
+
 ## Step 3: Build Priority Queues
 
 Build queues in priority order. Each task goes into AT MOST one queue.
@@ -958,12 +1042,19 @@ Report queue sizes:
 
 ## Step 3-Doctor: Doctor Diagnostic Pass (Self-Healing)
 
-When all queues are empty but tasks exist in pipeline columns, run Doctor diagnostics to detect
-and fix stuck tasks that didn't match any queue condition. This catches the scenario where tasks
-have invalid tag combinations or got stuck due to worker failures.
+When any of the following conditions are true, run Doctor diagnostics to detect
+and fix stuck tasks:
+1. All queues are empty but tasks exist in pipeline columns
+2. Any task has a stale claim (even if it appears in DEV_QUEUE as "claimed")
+3. Any task is stuck in the same state for too long
+
+This catches scenarios where tasks have invalid tag combinations, stale claims that
+weren't released, or got stuck due to worker failures.
 
 ```
-# Check if Doctor pass is needed
+# Check if Doctor pass is needed - EXPANDED CONDITIONS
+
+# Condition 1: All queues empty but pipeline has work
 ALL_QUEUES_EMPTY = (BA_QUEUE.length == 0 AND ARCHITECT_QUEUE.length == 0 AND
                    DEV_QUEUE.length == 0 AND REVIEWER_QUEUE.length == 0 AND
                    OPS_QUEUE.length == 0)
@@ -975,19 +1066,94 @@ For each task in tasks:
      inColumn(task, "Review") OR inColumn(task, "Deploy"):
     PIPELINE_TASKS.push(task)
 
-# Doctor triggers when: queues empty BUT pipeline has tasks
-DOCTOR_TRIGGERED = ALL_QUEUES_EMPTY AND PIPELINE_TASKS.length > 0
+EMPTY_QUEUES_WITH_WORK = ALL_QUEUES_EMPTY AND PIPELINE_TASKS.length > 0
+
+# Condition 2: Any stale claims exist (even if they're in dev queue)
+# This catches claims that should have been released in Step 2b but weren't
+STALE_CLAIMS_EXIST = false
+STALE_CLAIM_TASKS = []
+
+For each task in tasks:
+  IF isClaimedByAnyDev(task):
+    FOR N in 1..DEV_COUNT:
+      claim_tag_name = "Claimed-Dev-{N}"
+      IF hasTag(task, claim_tag_name):
+        # Check claim age
+        claim_tag = find tag in task.tags where tag.name == claim_tag_name
+        IF claim_tag AND claim_tag.created_at:
+          claim_age_minutes = (NOW - claim_tag.created_at) in minutes
+        ELSE:
+          claim_age_minutes = (NOW - task.updated_at) in minutes
+
+        IF claim_age_minutes > STALE_CLAIM_MINUTES:
+          STALE_CLAIMS_EXIST = true
+          STALE_CLAIM_TASKS.push({task: task, claim_age: claim_age_minutes})
+        BREAK
+
+# Condition 3: Any task stuck in same workflow state too long
+# (This is tracked during Step 2d - Stuck State Detection)
+# STUCK_TASKS is populated during Step 2d if any tasks exceeded state timeouts
+
+# Doctor triggers on ANY of these conditions
+DOCTOR_TRIGGERED = EMPTY_QUEUES_WITH_WORK OR STALE_CLAIMS_EXIST OR (STUCK_TASKS AND STUCK_TASKS.length > 0)
 
 IF DOCTOR_TRIGGERED:
   Report: ""
   Report: "╔══════════════════════════════════════════════════════════════════╗"
   Report: "║  DOCTOR DIAGNOSTIC PASS                                          ║"
-  Report: "║  All queues empty but {PIPELINE_TASKS.length} tasks in pipeline - running diagnostics  ║"
   Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+  Report: "Trigger conditions:"
+  IF EMPTY_QUEUES_WITH_WORK:
+    Report: "  • All queues empty but {PIPELINE_TASKS.length} tasks in pipeline"
+  IF STALE_CLAIMS_EXIST:
+    Report: "  • Stale claims detected: {STALE_CLAIM_TASKS.length} task(s) with orphaned claims"
+    FOR item IN STALE_CLAIM_TASKS:
+      Report: "    - '{item.task.title}' claimed {item.claim_age} min ago (threshold: {STALE_CLAIM_MINUTES})"
+  IF STUCK_TASKS AND STUCK_TASKS.length > 0:
+    Report: "  • Stuck tasks detected: {STUCK_TASKS.length} task(s) exceeded state timeout"
   Report: ""
 
   DOCTOR_ISSUES = []
   DOCTOR_FIXES = []
+
+  # === Diagnosis 0: Stale Claims (release orphaned dev claims) ===
+  # This is a safety net - Step 2b should have caught these, but coordinator
+  # hangs or failures may have prevented Step 2b from completing
+  FOR item IN STALE_CLAIM_TASKS:
+    task = item.task
+    claim_age = item.claim_age
+
+    DOCTOR_ISSUES.push({
+      task: task,
+      type: "STALE_DEV_CLAIM",
+      severity: "HIGH",
+      description: "Orphaned claim for {claim_age} min (threshold: {STALE_CLAIM_MINUTES})"
+    })
+
+    # FIX: Release the stale claim
+    FOR N in 1..DEV_COUNT:
+      claim_tag_name = "Claimed-Dev-{N}"
+      IF hasTag(task, claim_tag_name):
+        mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE[claim_tag_name])
+
+        mcp__joan__create_task_comment(task.id,
+          "ALS/1
+          actor: doctor
+          intent: recovery
+          action: release-stale-claim
+          tags.add: []
+          tags.remove: [{claim_tag_name}]
+          summary: Doctor released stale claim after {claim_age} min (threshold: {STALE_CLAIM_MINUTES}).
+          details:
+          - issue_type: STALE_DEV_CLAIM
+          - trigger: Doctor diagnostic pass (Step 2b didn't catch this)
+          - root_cause: Coordinator likely hung or failed during stale claim check")
+
+        DOCTOR_FIXES.push({task: task, fix: "release-stale-claim", claim_age: claim_age})
+        Report: "  [HIGH] STALE_DEV_CLAIM: '{task.title}'"
+        Report: "    Fixed: Released {claim_tag_name} (claimed {claim_age} min ago)"
+        BREAK
 
   For each task in PIPELINE_TASKS:
 

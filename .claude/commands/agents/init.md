@@ -231,6 +231,85 @@ All required permissions already present.
 
 ---
 
+## Step 5b: Link Agent Commands (Single Source of Truth)
+
+**IMPORTANT**: Agent commands (dispatch.md, workers, etc.) should always reference the canonical
+versions in `~/joan-agents` to prevent drift across projects.
+
+### Create symlinks to joan-agents
+
+```bash
+# Create the agents command directory if it doesn't exist
+mkdir -p .claude/commands/agents
+
+# Remove any existing files (prevent stale copies)
+rm -f .claude/commands/agents/dispatch.md
+rm -f .claude/commands/agents/ba-worker.md
+rm -f .claude/commands/agents/architect-worker.md
+rm -f .claude/commands/agents/dev-worker.md
+rm -f .claude/commands/agents/reviewer-worker.md
+rm -f .claude/commands/agents/ops-worker.md
+rm -f .claude/commands/agents/doctor.md
+rm -f .claude/commands/agents/status.md
+rm -f .claude/commands/agents/model.md
+
+# Create symlinks to canonical versions in ~/joan-agents
+ln -sf ~/joan-agents/.claude/commands/agents/dispatch.md .claude/commands/agents/dispatch.md
+ln -sf ~/joan-agents/.claude/commands/agents/ba-worker.md .claude/commands/agents/ba-worker.md
+ln -sf ~/joan-agents/.claude/commands/agents/architect-worker.md .claude/commands/agents/architect-worker.md
+ln -sf ~/joan-agents/.claude/commands/agents/dev-worker.md .claude/commands/agents/dev-worker.md
+ln -sf ~/joan-agents/.claude/commands/agents/reviewer-worker.md .claude/commands/agents/reviewer-worker.md
+ln -sf ~/joan-agents/.claude/commands/agents/ops-worker.md .claude/commands/agents/ops-worker.md
+ln -sf ~/joan-agents/.claude/commands/agents/doctor.md .claude/commands/agents/doctor.md
+ln -sf ~/joan-agents/.claude/commands/agents/status.md .claude/commands/agents/status.md
+ln -sf ~/joan-agents/.claude/commands/agents/model.md .claude/commands/agents/model.md
+ln -sf ~/joan-agents/.claude/commands/agents/init.md .claude/commands/agents/init.md
+```
+
+**Verify symlinks created:**
+```bash
+ls -la .claude/commands/agents/
+```
+
+**Report the setup:**
+```
+✓ Agent Commands Linked
+
+All agent commands now reference ~/joan-agents (single source of truth).
+Updates to joan-agents will automatically apply to this project.
+
+Linked commands:
+  • dispatch.md → ~/joan-agents/.claude/commands/agents/dispatch.md
+  • ba-worker.md → ~/joan-agents/.claude/commands/agents/ba-worker.md
+  • architect-worker.md → ~/joan-agents/.claude/commands/agents/architect-worker.md
+  • dev-worker.md → ~/joan-agents/.claude/commands/agents/dev-worker.md
+  • reviewer-worker.md → ~/joan-agents/.claude/commands/agents/reviewer-worker.md
+  • ops-worker.md → ~/joan-agents/.claude/commands/agents/ops-worker.md
+  • doctor.md → ~/joan-agents/.claude/commands/agents/doctor.md
+  • status.md → ~/joan-agents/.claude/commands/agents/status.md
+  • model.md → ~/joan-agents/.claude/commands/agents/model.md
+  • init.md → ~/joan-agents/.claude/commands/agents/init.md
+```
+
+**Why symlinks?**
+- All projects use the same agent code (no drift)
+- Bug fixes in joan-agents automatically apply everywhere
+- No need to manually sync files across projects
+- Single place to update agent behavior
+
+**Prerequisite check:**
+If `~/joan-agents` doesn't exist, report:
+```
+❌ joan-agents repository not found at ~/joan-agents
+
+Please clone the repository:
+  git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
+
+Then re-run /agents:init
+```
+
+---
+
 ## Step 6: Write Configuration
 
 Create `.joan-agents.json` in project root with the user's selections:
@@ -300,6 +379,7 @@ Project Structure:
   • Columns: {N} workflow columns configured
   • Tags: {N} workflow tags configured
   • Permissions: {N} bash rules configured for autonomous operation
+  • Agent Commands: Symlinked to ~/joan-agents (single source of truth)
 ═══════════════════════════════════════════════════════════════
 ```
 
