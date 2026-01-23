@@ -49,7 +49,8 @@ class JoanMonitor:
         self.instances = {}
 
         try:
-            # Find all running joan-agents processes (webhook-receiver.sh or joan-scheduler.sh)
+            # Find all running joan-agents processes
+            # Supports: webhook-server.py (Python), webhook-receiver.sh (bash wrapper), joan-scheduler.sh (legacy)
             result = subprocess.run(
                 ["ps", "aux"],
                 capture_output=True,
@@ -58,27 +59,31 @@ class JoanMonitor:
             )
 
             for line in result.stdout.splitlines():
-                # Support both webhook receiver (new) and scheduler (legacy)
-                is_webhook = "webhook-receiver.sh" in line and "grep" not in line
+                # Support Python webhook server, bash wrapper, and legacy scheduler
+                is_python_webhook = "webhook-server.py" in line and "grep" not in line
+                is_bash_webhook = "webhook-receiver.sh" in line and "grep" not in line
                 is_scheduler = "joan-scheduler.sh" in line and "grep" not in line
+
+                is_webhook = is_python_webhook or is_bash_webhook
 
                 if is_webhook or is_scheduler:
                     # Extract PID and project directory from command line
                     pid_match = re.match(r'\S+\s+(\d+)', line)
-                    # Match either webhook-receiver.sh or joan-scheduler.sh with --project-dir
+                    # Match --project-dir argument (used by all webhook variants)
                     if is_webhook:
                         path_match = re.search(r'--project-dir[=\s]+([^\s]+)', line)
                     else:
                         path_match = re.search(r'joan-scheduler\.sh\s+([^\s]+)', line)
+
                     if path_match and pid_match:
                         raw_path = path_match.group(1)
                         pid = pid_match.group(1)
 
                         # If path is relative (. or ./something or doesn't start with /),
-                        # resolve it from the scheduler's actual working directory
+                        # resolve it from the process's actual working directory
                         if not raw_path.startswith('/'):
                             try:
-                                # Get the scheduler's working directory via lsof
+                                # Get the process's working directory via lsof
                                 lsof_result = subprocess.run(
                                     ["lsof", "-p", pid],
                                     capture_output=True,
@@ -90,8 +95,8 @@ class JoanMonitor:
                                         # Extract the directory path (last field)
                                         parts = lsof_line.split()
                                         if len(parts) >= 9:
-                                            scheduler_cwd = parts[-1]
-                                            project_dir = Path(scheduler_cwd) / raw_path
+                                            process_cwd = parts[-1]
+                                            project_dir = Path(process_cwd) / raw_path
                                             project_dir = project_dir.resolve()
                                             break
                                 else:
@@ -390,11 +395,15 @@ class JoanMonitor:
             # Find start time from first line
             if lines:
                 first_line = lines[0]
-                # Format: [2026-01-23T14:30:00+00:00] Starting webhook receiver
+                # Format: [2026-01-23T14:30:00] [INFO] Starting webhook receiver
+                # or: [2026-01-23T14:30:00-05:00] Starting webhook receiver
                 ts_match = re.match(r'\[([^\]]+)\]', first_line)
                 if ts_match:
                     try:
-                        stats["started_at"] = datetime.fromisoformat(ts_match.group(1).replace('+00:00', ''))
+                        ts_str = ts_match.group(1)
+                        # Handle various timezone formats
+                        ts_str = ts_str.replace('+00:00', '').replace('-05:00', '').replace('-04:00', '')
+                        stats["started_at"] = datetime.fromisoformat(ts_str)
                     except:
                         pass
 
@@ -403,17 +412,20 @@ class JoanMonitor:
 
             # Parse lines for events
             for line in lines:
-                # Extract timestamp
+                # Extract timestamp - handle format with [LEVEL] tag
+                # Format: [2026-01-23T14:30:00] [INFO] message
                 ts_match = re.match(r'\[([^\]]+)\]', line)
                 timestamp = None
                 if ts_match:
                     try:
-                        timestamp = datetime.fromisoformat(ts_match.group(1).replace('+00:00', ''))
+                        ts_str = ts_match.group(1)
+                        ts_str = ts_str.replace('+00:00', '').replace('-05:00', '').replace('-04:00', '')
+                        timestamp = datetime.fromisoformat(ts_str)
                     except:
                         pass
 
-                # Count received events
-                if "Received event:" in line:
+                # Count received events (support both old and new format)
+                if "Received event:" in line or "Webhook received:" in line:
                     stats["events_received"] += 1
                     if timestamp:
                         stats["last_event"] = timestamp
@@ -431,9 +443,6 @@ class JoanMonitor:
                         task_match = re.search(r'--task=([^\s]+)', line)
                         task_id = task_match.group(1) if task_match else "unknown"
 
-                        # Next line should have PID
-                        # We'll track this as potentially active
-
                 # Track handler completion via PID
                 if "Handler dispatched (PID:" in line:
                     pid_match = re.search(r'PID: (\d+)', line)
@@ -443,11 +452,17 @@ class JoanMonitor:
                         # We'd need to check if PID is still running to know if active
 
                 # Track completions from worker activity log patterns in webhook log
-                if "completed" in line.lower() and "worker" in line.lower():
+                if "completed" in line.lower() and ("worker" in line.lower() or "handler" in line.lower()):
                     stats["tasks_completed"] += 1
 
+                # Also count from CATCHUP messages
+                if "Single-pass dispatch complete" in line or "CATCHUP" in line:
+                    if timestamp:
+                        stats["last_event"] = timestamp
+
                 # Build recent events list
-                if any(kw in line for kw in ["Dispatching:", "Received event:", "completed", "error"]):
+                if any(kw in line for kw in ["Dispatching:", "Received event:", "Webhook received:",
+                                              "completed", "error", "CATCHUP", "Handler"]):
                     if timestamp:
                         stats["recent_events"].append({
                             "timestamp": timestamp,
