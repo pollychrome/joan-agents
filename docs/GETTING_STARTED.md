@@ -38,22 +38,29 @@ This guide walks you through setting up the complete Joan ecosystem from scratch
 
 ---
 
-## Step 2: Configure Joan MCP Server
+## Step 2: Install Joan MCP Server
 
 The MCP server lets Claude interact with your Joan projects.
 
 ```bash
-# Add Joan MCP to Claude Code
-claude mcp add joan --transport sse --url https://mcp.joan.ai/sse
+# Install and configure Joan MCP (one command does everything)
+npx @pollychrome/joan-mcp init
 ```
 
-Authenticate when prompted. You can verify it's working:
+This will:
+1. Open your browser to authenticate with Joan
+2. Store credentials securely on your machine
+3. Configure Claude Code automatically
+
+**Restart Claude Code** after setup, then verify:
 
 ```bash
 claude mcp list
 ```
 
 You should see `joan` in the list of configured servers.
+
+> **Alternative:** Global install with `npm install -g @pollychrome/joan-mcp` then run `joan-mcp init`
 
 ---
 
@@ -249,7 +256,9 @@ Agents also auto-shutdown after 12 consecutive idle polls (configurable).
 ### "MCP server not found"
 ```bash
 claude mcp list  # Verify joan is listed
-claude mcp add joan --transport sse --url https://mcp.joan.ai/sse
+
+# If missing, reinstall:
+npx @pollychrome/joan-mcp init
 ```
 
 ### "Plugin not found"
@@ -282,7 +291,7 @@ Check that `schedulerStuckTimeoutSeconds` (default: 3900) is longer than `worker
 ```
 SETUP
   1. joan.ai signup → create project
-  2. claude mcp add joan --transport sse --url https://mcp.joan.ai/sse
+  2. npx @pollychrome/joan-mcp init → restart Claude Code
   3. claude plugin add github:pollychrome/joan-agents
   4. cd /your/project && claude → /agents:init
   5. Add tasks to Joan "To Do" column
