@@ -37,9 +37,12 @@ except ImportError:
 class JoanMonitor:
     """Global monitor for all running joan-agents instances."""
 
+    PIPELINE_STAGES = ["BA", "Architect", "Dev", "Reviewer", "Ops"]
+
     def __init__(self):
         self.console = Console()
         self.instances = {}  # project_name -> instance_info
+        self.blink_state = False  # For animation
 
     def discover_instances(self):
         """Find all running joan-agents scheduler processes."""
@@ -706,8 +709,9 @@ class JoanMonitor:
         layout = Layout()
         layout.split_column(
             Layout(name="header", size=3),
-            Layout(name="middle", size=12),
-            Layout(name="workers", size=8),
+            Layout(name="pipeline", size=9),
+            Layout(name="middle", size=10),
+            Layout(name="workers", size=6),
             Layout(name="logs")
         )
 
@@ -728,6 +732,12 @@ class JoanMonitor:
 
         stats = info["stats"]
         metrics = info.get("metrics", {})
+
+        # Pipeline visualization
+        pipeline_visual = self.generate_pipeline_visual(stats)
+        layout["pipeline"].update(
+            Panel(pipeline_visual, title="🔄 Pipeline Status", border_style="magenta")
+        )
 
         # Stats
         stats_table = Table(show_header=False, box=None, padding=(0, 1))
@@ -843,6 +853,97 @@ class JoanMonitor:
             subprocess.run(["tail", "-f", str(log_file)])
         except KeyboardInterrupt:
             self.console.print("\n[yellow]Stopped tailing logs[/yellow]\n")
+
+    def generate_pipeline_visual(self, stats: dict) -> Text:
+        """Generate the pipeline visualization with blinking active stage."""
+        text = Text()
+
+        # Toggle blink state for animation
+        self.blink_state = not self.blink_state
+
+        # Find active stage from active workers
+        active_stage = None
+        active_task = None
+        doctor_active = False
+
+        for worker in stats.get("active_workers", []):
+            worker_type = worker.get("type", "")
+            # Map worker types to pipeline stages
+            stage_map = {"BA": "BA", "Architect": "Architect", "Dev": "Dev",
+                        "Reviewer": "Reviewer", "Ops": "Ops", "Doctor": None}
+            if worker_type == "Doctor":
+                doctor_active = True
+            elif worker_type in stage_map and stage_map[worker_type]:
+                active_stage = stage_map[worker_type]
+                active_task = worker.get("task", "")
+
+        # Build pipeline visualization
+        stages_display = []
+        for stage in self.PIPELINE_STAGES:
+            is_active = (stage == active_stage)
+
+            if is_active:
+                # Blinking effect - alternate between bright green and dim
+                if self.blink_state:
+                    style = "bold bright_green on green"
+                    icon = "●"
+                else:
+                    style = "bold green"
+                    icon = "○"
+            else:
+                style = "dim white"
+                icon = "○"
+
+            stages_display.append((stage, style, icon, is_active))
+
+        # Top border
+        text.append("  ")
+        for i, (stage, style, icon, is_active) in enumerate(stages_display):
+            width = max(len(stage) + 2, 8)
+            text.append("┌" + "─" * width + "┐", style if is_active else "dim")
+            if i < len(stages_display) - 1:
+                text.append("    ", "dim")
+        text.append("\n")
+
+        # Stage names with icons
+        text.append("  ")
+        for i, (stage, style, icon, is_active) in enumerate(stages_display):
+            width = max(len(stage) + 2, 8)
+            content = f"{icon} {stage}"
+            padding = width - len(content)
+            left_pad = padding // 2
+            right_pad = padding - left_pad
+            text.append("│" + " " * left_pad + content + " " * right_pad + "│", style)
+            if i < len(stages_display) - 1:
+                text.append("───►", "cyan" if is_active else "dim")
+        text.append("\n")
+
+        # Bottom border
+        text.append("  ")
+        for i, (stage, style, icon, is_active) in enumerate(stages_display):
+            width = max(len(stage) + 2, 8)
+            text.append("└" + "─" * width + "┘", style if is_active else "dim")
+            if i < len(stages_display) - 1:
+                text.append("    ", "dim")
+        text.append("\n")
+
+        # Current task indicator
+        if active_stage and active_task:
+            text.append("\n  ")
+            task_display = active_task[:50] + "..." if len(active_task) > 50 else active_task
+            text.append(f"  ▶ {active_stage}: ", "bold green")
+            text.append(task_display, "white")
+
+        # Doctor indicator (separate, blinking red when active)
+        if doctor_active:
+            text.append("\n\n  ")
+            if self.blink_state:
+                text.append("  🏥 DOCTOR ", "bold bright_red on red")
+            else:
+                text.append("  🏥 DOCTOR ", "bold red")
+            text.append(" Diagnosing issues...", "red")
+
+        return text
 
     def _format_duration(self, duration: timedelta) -> str:
         """Format duration as HH:MM:SS or MM:SS."""
