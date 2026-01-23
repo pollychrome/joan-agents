@@ -1346,6 +1346,7 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
         "task_column": task_column_name,
         "task_comments": task_comments,
         "mode": item.mode,
+        "workflow_mode": MODE,  // "standard" or "yolo"
         "project_id": PROJECT_ID,
         "project_name": PROJECT_NAME,
         "previous_stage_context": null  // BA is first stage
@@ -1422,6 +1423,7 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
       "task_column": task_column_name,
       "task_comments": task_comments,
       "mode": item.mode,
+      "workflow_mode": MODE,  // "standard" or "yolo"
       "project_id": PROJECT_ID,
       "project_name": PROJECT_NAME,
       "previous_stage_context": null
@@ -1487,6 +1489,7 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
     "task_column": task_column_name,
     "task_comments": task_comments,
     "mode": item.mode,
+    "workflow_mode": MODE,  // "standard" or "yolo"
     "project_id": PROJECT_ID,
     "project_name": PROJECT_NAME,
     "previous_stage_context": previous_stage_context
@@ -1566,6 +1569,7 @@ IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
         "task_column": task_column_name,
         "task_comments": task_comments,
         "mode": item.mode,
+        "workflow_mode": MODE,  // "standard" or "yolo"
         "project_id": PROJECT_ID,
         "project_name": PROJECT_NAME,
         "dev_id": dev_id,
@@ -1646,6 +1650,7 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
     "task_column": task_column_name,
     "task_comments": task_comments,
     "mode": "review",
+    "workflow_mode": MODE,  // "standard" or "yolo"
     "project_id": PROJECT_ID,
     "project_name": PROJECT_NAME,
     "previous_stage_context": previous_stage_context
@@ -1711,6 +1716,7 @@ IF OPS_ENABLED AND OPS_QUEUE.length > 0:
     "task_column": task_column_name,
     "task_comments": task_comments,
     "mode": item.mode,
+    "workflow_mode": MODE,  // "standard" or "yolo"
     "project_id": PROJECT_ID,
     "project_name": PROJECT_NAME,
     "previous_stage_context": previous_stage_context

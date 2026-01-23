@@ -21,6 +21,7 @@ The coordinator provides a work package with:
   "task_column": "To Do" | "Analyse",
   "task_comments": [...],
   "mode": "evaluate" | "reevaluate",
+  "workflow_mode": "standard" | "yolo",
   "project_id": "uuid",
   "project_name": "string",
   "previous_stage_context": null  // BA is first stage, no previous context
@@ -31,6 +32,16 @@ The coordinator provides a work package with:
 
 ## Processing Logic
 
+### YOLO Mode Behavior
+
+**If `workflow_mode == "yolo"`**: Do NOT request clarification. Instead:
+1. Make autonomous, creative decisions on any ambiguous requirements
+2. Document your assumptions in the stage_context.key_decisions
+3. Always mark the task Ready
+4. Include a note in the comment about autonomous decisions made
+
+This enables fully autonomous operation where agents exercise creative judgment rather than blocking on human input.
+
 ### Mode: evaluate (new task from To Do)
 
 1. **Analyze task requirements:**
@@ -38,11 +49,16 @@ The coordinator provides a work package with:
    - Are acceptance criteria defined?
    - Are there open questions?
 
-2. **IF requirements INCOMPLETE:**
+2. **IF workflow_mode == "yolo":**
+   - Make autonomous decisions on any ambiguities
+   - Document assumptions in stage_context.key_decisions
+   - Return result requesting "Ready" tag (always proceed)
+
+3. **IF workflow_mode == "standard" AND requirements INCOMPLETE:**
    - Return result requesting "Needs-Clarification" tag
    - Include specific questions in the comment
 
-3. **IF requirements COMPLETE:**
+4. **IF requirements COMPLETE:**
    - Return result requesting "Ready" tag
    - Task will be moved to Analyse column
 
@@ -117,7 +133,42 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
 - `warnings`: Any concerns or caveats about the requirements
 - `metadata.clarifications_made`: Number of Q&A cycles with the user
 
-### Requirements INCOMPLETE (Needs Clarification)
+### YOLO Mode: Autonomous Decision (Always Ready)
+
+When `workflow_mode == "yolo"`, make autonomous decisions and always mark Ready:
+
+```json
+{
+  "success": true,
+  "summary": "YOLO: Made autonomous decisions on ambiguous requirements; ready for planning",
+  "joan_actions": {
+    "add_tags": ["Ready"],
+    "remove_tags": ["Needs-Clarification", "Clarification-Answered"],
+    "add_comment": "ALS/1\nactor: ba\nintent: decision\naction: yolo-auto-ready\ntags.add: [Ready]\nsummary: YOLO mode - autonomous requirements interpretation.\ndetails:\n- Ambiguity 1: [description] → Decision: [what we chose]\n- Ambiguity 2: [description] → Decision: [what we chose]\n- Proceeding with creative interpretation",
+    "move_to_column": "Analyse"
+  },
+  "stage_context": {
+    "from_stage": "ba",
+    "to_stage": "architect",
+    "key_decisions": [
+      "YOLO Decision: [specific interpretation made]",
+      "YOLO Decision: [another interpretation]"
+    ],
+    "files_of_interest": [],
+    "warnings": [
+      "Requirements were ambiguous - autonomous decisions made"
+    ],
+    "metadata": {
+      "clarifications_made": 0,
+      "yolo_decisions": 2
+    }
+  },
+  "worker_type": "ba",
+  "task_id": "{task_id from work package}"
+}
+```
+
+### Requirements INCOMPLETE (Needs Clarification) - Standard Mode Only
 
 ```json
 {
