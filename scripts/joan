@@ -197,8 +197,8 @@ class JoanMonitor:
                                 "started_at": timestamp or datetime.now()
                             })
 
-                # Detect from "actively being implemented" messages
-                if "actively being implemented" in line.lower():
+                # Detect from "actively being implemented" or "is implementing" messages
+                if "actively being implemented" in line.lower() or "is implementing" in line.lower():
                     match = re.search(r'by (Dev|BA|Architect|Reviewer|Ops)[-\s]?(\d)?', line, re.IGNORECASE)
                     task_match = re.search(r'[\'"]([^\'"]+)[\'"]|Task #?(\d+)', line)
                     if match:
@@ -206,6 +206,26 @@ class JoanMonitor:
                         task_name = ""
                         if task_match:
                             task_name = task_match.group(1) or f"Task #{task_match.group(2)}" or ""
+                        if worker_type not in completed_workers and worker_type not in [w["type"] for w in stats["active_workers"]]:
+                            stats["active_workers"].append({
+                                "type": worker_type,
+                                "task": task_name,
+                                "started_at": timestamp or datetime.now()
+                            })
+
+                # Detect from "is claimed by Dev-N" pattern
+                # Pattern: Task #7 "STRETCH: Multiple Game Modes" is claimed by Dev-1
+                if "is claimed by" in line.lower():
+                    match = re.search(r'is claimed by (Dev|BA|Architect|Reviewer|Ops)[-\s]?(\d)?', line, re.IGNORECASE)
+                    task_match = re.search(r'Task #?(\d+)\s*[\'"]([^\'"]+)[\'"]|[\'"]([^\'"]+)[\'"]', line)
+                    if match:
+                        worker_type = match.group(1).capitalize()
+                        task_name = ""
+                        if task_match:
+                            if task_match.group(1) and task_match.group(2):
+                                task_name = f"#{task_match.group(1)} {task_match.group(2)}"
+                            elif task_match.group(3):
+                                task_name = task_match.group(3)
                         if worker_type not in completed_workers and worker_type not in [w["type"] for w in stats["active_workers"]]:
                             stats["active_workers"].append({
                                 "type": worker_type,
