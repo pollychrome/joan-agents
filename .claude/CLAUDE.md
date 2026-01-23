@@ -16,6 +16,15 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 /agents:dispatch --loop                # Continuous operation (recommended for production)
 /agents:dispatch --mode=yolo           # Fully autonomous (YOLO mode)
 /agents:dispatch --loop --mode=yolo    # Continuous YOLO mode
+
+# 4. Monitor live activity (from terminal, not Claude)
+joan status                # Global view of all running instances
+joan status yolo-test      # Detailed view of specific project
+joan logs yolo-test        # Tail logs in real-time
+
+# 5. Diagnose and recover invalid task states
+/agents:doctor             # Scan all tasks for issues
+/agents:doctor --dry-run   # Preview fixes without applying
 ```
 
 **Important:** For any run longer than 15 minutes, always use `--loop` mode. It uses an external scheduler that prevents context accumulation issues.
@@ -482,6 +491,63 @@ This makes the system self-healing - no manual intervention needed when workers 
 - `Implementation-Failed` tag (dev hit unrecoverable error)
 - `Branch-Setup-Failed` tag (git branch setup failed)
 
+### Doctor Agent (Manual Recovery Tool)
+
+For complex recovery scenarios beyond automatic self-healing, use the **Doctor agent**:
+
+```bash
+/agents:doctor             # Diagnose and fix all tasks
+/agents:doctor --dry-run   # Preview issues without fixing
+/agents:doctor --task=ID   # Diagnose specific task
+/agents:doctor --verbose   # Show detailed diagnostics
+```
+
+**What Doctor diagnoses:**
+
+| Issue Type | Description | Auto-Fix |
+|------------|-------------|----------|
+| Invalid tag combinations | Conflicting tags like `Ready` + `Planned` | Remove stale tag |
+| Column/tag mismatch | Task in wrong column for its tags | Move or add missing tag |
+| Stale claims | `Claimed-Dev-1` orphaned for >2 hours | Release claim |
+| Pipeline blockers | Approved tasks not progressing | Flag for agent attention |
+| Orphaned approvals | `Plan-Approved` without `Plan-Pending-Approval` | Restore paired tags |
+| PR state mismatch | PR merged but task not in Deploy | Move to Deploy |
+
+**When to use Doctor:**
+- Pipeline stuck with no apparent cause
+- Scheduler reports idle despite pending work
+- After coordinator crashes or context overflow
+- Manual task moves left tasks in limbo
+- Tasks have conflicting or missing tags
+
+**Example output:**
+```
+═══════════════════════════════════════════════════════════════
+DIAGNOSTIC REPORT
+═══════════════════════════════════════════════════════════════
+
+Issues found: 2
+Warnings: 1
+
+──────────────────────────────────────────────────────────────
+[HIGH] STUCK_PLAN_FINALIZATION
+Task: #6 Add user preferences
+Column: Analyse
+Tags: Plan-Pending-Approval, Plan-Approved
+Problem: Plan approved 3 hours ago but not finalized
+Fix: flag_for_architect - Architect needs to finalize and move to Development
+
+──────────────────────────────────────────────────────────────
+[HIGH] ORPHANED_IN_ANALYSE
+Task: #7 Implement dark mode
+Column: Analyse
+Tags: Ready
+Problem: Task in Analyse with Ready tag for >1 hour
+Fix: flag_for_architect - Architect should plan this task
+```
+
+Doctor changes are logged as ALS comments for audit trail.
+
 ### Comment Convention (ALS Breadcrumbs)
 
 **IMPORTANT:** In v4, comments are WRITE-ONLY breadcrumbs. Agents never parse comments to determine state - they use tags exclusively.
@@ -704,6 +770,95 @@ To Do → Analyse → Development → Review → Deploy → Done
 - **Reviewer → Ops**: Must pass code review, tests, and merge conflict check
 - **Ops merge gate**: Human must add `Ops-Ready` tag to approve merge
 - **Ops → Done**: Must be deployed to production
+
+## Monitoring with `joan` CLI
+
+The `joan` command-line tool provides global monitoring of all running agent instances across all projects.
+
+### Installation
+
+```bash
+cd ~/joan-agents
+./scripts/install-joan-cli.sh
+```
+
+This creates a global `joan` command available from any directory.
+
+### Commands
+
+**Global View** - See all running instances at a glance:
+```bash
+joan status       # Static snapshot
+joan status -f    # Live updating view with recent logs
+```
+
+Output (static):
+```
+                          Joan Agents - Global Status
+╭─┬───────────┬──────┬──────┬────────┬───────────┬──────────┬───────────────╮
+│#│ Project   │ Cycle│ Idle │ Active │ Completed │ Runtime  │ Status        │
+├─┼───────────┼──────┼──────┼────────┼───────────┼──────────┼───────────────┤
+│1│ yolo-test │   42 │ 0/12 │   2    │    18     │ 02:15:30 │ 🔄 2 workers  │
+│2│ prod-app  │  128 │ 2/12 │   0    │    94     │ 08:42:10 │ 💤 Idle (2/12)│
+╰─┴───────────┴──────┴──────┴────────┴───────────┴──────────┴───────────────╯
+```
+
+Live view (`-f`) adds:
+- Auto-refreshing table (2x per second)
+- Recent activity panel showing log events from all projects, interleaved by timestamp
+- Current time in header
+- Press Ctrl+C to exit
+
+**Project Detail** - Drill into specific project:
+```bash
+joan status yolo-test       # Static snapshot
+joan status yolo-test -f    # Live view with logs
+```
+
+Shows:
+- Configuration (model, mode, poll interval)
+- Runtime statistics (cycle, idle count, tasks completed)
+- Active workers with duration
+- Log file location
+- In live mode (`-f`): recent log lines update in real-time
+
+**Tail Logs** - Live log streaming:
+```bash
+joan logs yolo-test
+```
+
+Streams the scheduler log in real-time (equivalent to `tail -f`).
+
+### Features
+
+- **Auto-discovery**: Finds all running instances by scanning `ps` for scheduler processes
+- **Global visibility**: Monitor multiple projects from a single command
+- **Zero tokens**: Pure local operation, no Claude API calls
+- **Project matching**: Partial name matching (e.g., `joan status yolo` matches `yolo-test`)
+- **Rich metrics**: Runtime, cycle count, tasks completed, active workers
+
+### Tips
+
+```bash
+# Live dashboard - see everything update in real-time
+joan status -f
+
+# Live view of specific project
+joan status yolo-test -f
+
+# Quick health check (static)
+joan status | grep "🔄"  # Show only projects with active workers
+
+# Monitor all projects in background
+joan status -f > /dev/null 2>&1 &
+```
+
+**Live Mode Features:**
+- Updates 2x per second
+- Shows recent activity from ALL projects, sorted by timestamp
+- Displays which project each log line came from
+- Auto-scrolls to show latest events
+- Zero token cost - just reads local log files
 
 ## Agent Responsibilities
 

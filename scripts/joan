@@ -1,0 +1,902 @@
+#!/usr/bin/env python3
+"""
+Joan CLI - Global monitoring for joan-agents
+=============================================
+
+Usage:
+    joan status              # Global view of all running agents
+    joan status <project>    # Detailed view of specific project
+    joan logs <project>      # Tail logs for specific project
+"""
+
+import sys
+import os
+import re
+import subprocess
+from pathlib import Path
+from datetime import datetime, timedelta
+from collections import defaultdict
+import time
+import argparse
+import json
+
+try:
+    from rich.console import Console
+    from rich.live import Live
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.layout import Layout
+    from rich.text import Text
+    from rich import box
+except ImportError:
+    print("Error: Rich library not installed")
+    print("Install with: python3 -m pip install --user --break-system-packages rich")
+    sys.exit(1)
+
+
+class JoanMonitor:
+    """Global monitor for all running joan-agents instances."""
+
+    def __init__(self):
+        self.console = Console()
+        self.instances = {}  # project_name -> instance_info
+
+    def discover_instances(self):
+        """Find all running joan-agents scheduler processes."""
+        self.instances = {}
+
+        try:
+            # Find all running joan-scheduler.sh processes
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            for line in result.stdout.splitlines():
+                if "joan-scheduler.sh" in line and "grep" not in line:
+                    # Extract project directory from command line
+                    match = re.search(r'joan-scheduler\.sh\s+([^\s]+)', line)
+                    if match:
+                        project_dir = Path(match.group(1)).resolve()
+                        if project_dir.exists():
+                            self._add_instance(project_dir, line)
+
+        except subprocess.CalledProcessError:
+            pass
+
+    def _add_instance(self, project_dir: Path, ps_line: str):
+        """Add a discovered instance to the tracking dict."""
+        config_file = project_dir / ".joan-agents.json"
+        if not config_file.exists():
+            return
+
+        # Read config
+        import json
+        try:
+            with open(config_file) as f:
+                config = json.load(f)
+        except:
+            return
+
+        project_name = config.get("projectName", project_dir.name)
+        log_file = project_dir / ".claude/logs/scheduler.log"
+
+        # Parse log for stats
+        stats = self._parse_log_stats(log_file) if log_file.exists() else {}
+
+        # Parse metrics for Doctor/rework tracking
+        metrics_file = project_dir / ".claude/logs/agent-metrics.jsonl"
+        metrics = self._parse_metrics(metrics_file) if metrics_file.exists() else {}
+
+        # Extract PID from ps line
+        pid_match = re.match(r'\S+\s+(\d+)', ps_line)
+        pid = pid_match.group(1) if pid_match else "unknown"
+
+        self.instances[project_name] = {
+            "project_dir": project_dir,
+            "config": config,
+            "log_file": log_file,
+            "metrics_file": metrics_file,
+            "pid": pid,
+            "stats": stats,
+            "metrics": metrics
+        }
+
+    def _parse_log_stats(self, log_file: Path):
+        """Parse log file to extract runtime statistics."""
+        if not log_file.exists():
+            return {}
+
+        stats = {
+            "cycle": 0,
+            "idle_count": 0,
+            "max_idle": 12,
+            "last_poll": None,
+            "started_at": None,
+            "active_workers": [],
+            "tasks_completed": 0,
+            "workers_dispatched": 0,
+            "recent_events": []
+        }
+
+        try:
+            with open(log_file, 'r') as f:
+                lines = f.readlines()
+
+            # Find start time
+            if lines:
+                first_line = lines[0]
+                ts_match = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', first_line)
+                if ts_match:
+                    stats["started_at"] = datetime.strptime(ts_match.group(1), '%Y-%m-%d %H:%M:%S')
+
+            # Parse from end for most recent info
+            for line in reversed(lines[-200:]):  # Last 200 lines
+                # Extract timestamp
+                ts_match = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', line)
+                timestamp = None
+                if ts_match:
+                    timestamp = datetime.strptime(ts_match.group(1), '%Y-%m-%d %H:%M:%S')
+
+                # Cycle number
+                if "Cycle" in line and "starting" in line and stats["cycle"] == 0:
+                    match = re.search(r'Cycle (\d+)', line)
+                    if match:
+                        stats["cycle"] = int(match.group(1))
+                        if timestamp:
+                            stats["last_poll"] = timestamp
+
+                # Idle count
+                if "idle count:" in line:
+                    match = re.search(r'idle count: (\d+)/(\d+)', line)
+                    if match:
+                        stats["idle_count"] = int(match.group(1))
+                        stats["max_idle"] = int(match.group(2))
+
+                # Active workers
+                if "**" in line and "worker" in line.lower():
+                    match = re.search(r'\*\*(\w+) worker (dispatched|claimed) for [\'"]([^\'"]+)[\'"]\*\*', line)
+                    if match:
+                        worker_type = match.group(1)
+                        task_name = match.group(3)
+                        if worker_type not in [w["type"] for w in stats["active_workers"]]:
+                            stats["active_workers"].append({
+                                "type": worker_type,
+                                "task": task_name,
+                                "started_at": timestamp or datetime.now()
+                            })
+
+                # Completed workers
+                if "**" in line and "completed" in line:
+                    match = re.search(r'\*\*(\w+) worker completed', line)
+                    if match:
+                        stats["tasks_completed"] += 1
+
+                # Dispatched count
+                if "Dispatched **" in line or "dispatched **" in line:
+                    match = re.search(r'[Dd]ispatched \*\*(\d+)\*\* worker', line)
+                    if match:
+                        count = int(match.group(1))
+                        stats["workers_dispatched"] += count
+
+        except Exception as e:
+            pass
+
+        return stats
+
+    def _parse_metrics(self, metrics_file: Path):
+        """Parse agent-metrics.jsonl for Doctor invocations and reworks."""
+        if not metrics_file.exists():
+            return {}
+
+        metrics = {
+            "doctor_invocations": 0,
+            "doctor_fixes": 0,
+            "reworks": 0,
+            "completions": 0,
+            "failures": 0,
+            "recent_doctor_events": [],  # Last 5 Doctor invocations
+            "recent_reworks": [],        # Last 5 rework events
+            "workflow_step_issues": defaultdict(int),  # Count by workflow step
+        }
+
+        try:
+            with open(metrics_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                        event_type = event.get("event")
+                        timestamp_str = event.get("timestamp", "")
+
+                        # Parse timestamp
+                        timestamp = None
+                        if timestamp_str:
+                            try:
+                                timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                            except:
+                                pass
+
+                        if event_type == "doctor_invocation":
+                            metrics["doctor_invocations"] += 1
+                            metrics["doctor_fixes"] += event.get("fixes_applied", 0)
+
+                            # Track workflow steps where issues occurred
+                            for issue in event.get("issues", []):
+                                step = issue.get("workflow_step", "Unknown")
+                                metrics["workflow_step_issues"][step] += 1
+
+                            # Keep recent events
+                            metrics["recent_doctor_events"].append({
+                                "timestamp": timestamp,
+                                "trigger": event.get("trigger", "unknown"),
+                                "issues_found": event.get("issues_found", 0),
+                                "fixes_applied": event.get("fixes_applied", 0),
+                                "mode": event.get("mode", "fix"),
+                                "issues": event.get("issues", [])[:3]  # Keep up to 3 issues for display
+                            })
+                            # Keep only last 5
+                            metrics["recent_doctor_events"] = metrics["recent_doctor_events"][-5:]
+
+                        elif event_type == "rework_requested":
+                            metrics["reworks"] += 1
+                            metrics["recent_reworks"].append({
+                                "timestamp": timestamp,
+                                "task_title": event.get("task_title", "Unknown"),
+                                "workflow_step": event.get("workflow_step", "Review→Development"),
+                                "reason": event.get("reason", "")[:100]  # Truncate reason
+                            })
+                            # Keep only last 5
+                            metrics["recent_reworks"] = metrics["recent_reworks"][-5:]
+
+                        elif event_type == "task_completed":
+                            metrics["completions"] += 1
+
+                        elif event_type == "implementation_failed":
+                            metrics["failures"] += 1
+
+                    except json.JSONDecodeError:
+                        continue
+
+        except Exception as e:
+            pass
+
+        return metrics
+
+    def show_global_view(self, live_mode: bool = False):
+        """Display global view of all running instances."""
+        if live_mode:
+            try:
+                with Live(self._generate_global_layout(), refresh_per_second=2, console=self.console) as live:
+                    while True:
+                        self.discover_instances()
+                        live.update(self._generate_global_layout())
+                        time.sleep(0.5)
+            except KeyboardInterrupt:
+                self.console.print("\n[yellow]Stopped monitoring[/yellow]\n")
+            return
+
+        # Static view
+        self.discover_instances()
+
+        if not self.instances:
+            self.console.print("\n[yellow]No running joan-agents instances found[/yellow]")
+            self.console.print("\nStart agents with: [cyan]/agents:dispatch --loop[/cyan]\n")
+            return
+
+        self.console.print()
+        self.console.print(self._generate_global_table())
+        self.console.print()
+        self.console.print("[dim]Run [cyan]joan status <project> -f[/cyan] for live view[/dim]")
+        self.console.print("[dim]Run [cyan]joan status -f[/cyan] for live global view[/dim]")
+        self.console.print("[dim]Run [cyan]joan logs <project>[/cyan] to tail logs[/dim]\n")
+
+    def _generate_global_table(self) -> Table:
+        """Generate the global status table."""
+        table = Table(
+            title="Joan Agents - Global Status",
+            box=box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan"
+        )
+
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Project", style="cyan", width=20)
+        table.add_column("Cycle", justify="right", width=6)
+        table.add_column("Idle", justify="right", width=7)
+        table.add_column("Active", justify="center", width=6)
+        table.add_column("Done", justify="right", width=5)
+        table.add_column("🩺", justify="right", width=4)  # Doctor invocations
+        table.add_column("↩️", justify="right", width=4)   # Reworks
+        table.add_column("Runtime", justify="right", width=9)
+        table.add_column("Status", width=18)
+
+        now = datetime.now()
+        for idx, (proj_name, info) in enumerate(sorted(self.instances.items()), 1):
+            stats = info["stats"]
+            metrics = info.get("metrics", {})
+
+            # Format runtime
+            if stats.get("started_at"):
+                runtime = now - stats["started_at"]
+                runtime_str = self._format_duration(runtime)
+            else:
+                runtime_str = "N/A"
+
+            # Status
+            active_count = len(stats.get("active_workers", []))
+            if active_count > 0:
+                status = f"🔄 {active_count} worker{'s' if active_count > 1 else ''}"
+                status_style = "green"
+            elif stats.get("idle_count", 0) > 0:
+                status = f"💤 Idle ({stats['idle_count']}/{stats.get('max_idle', 12)})"
+                status_style = "yellow"
+            else:
+                status = "✓ Working"
+                status_style = "green"
+
+            # Doctor/Rework counts with color coding
+            doctor_count = metrics.get("doctor_invocations", 0)
+            rework_count = metrics.get("reworks", 0)
+
+            # Color code based on count (higher = more attention needed)
+            doctor_style = "red" if doctor_count >= 5 else "yellow" if doctor_count >= 2 else "dim"
+            rework_style = "red" if rework_count >= 5 else "yellow" if rework_count >= 2 else "dim"
+
+            table.add_row(
+                str(idx),
+                proj_name[:18] + ".." if len(proj_name) > 18 else proj_name,
+                str(stats.get("cycle", 0)),
+                f"{stats.get('idle_count', 0)}/{stats.get('max_idle', 12)}",
+                str(active_count),
+                str(stats.get("tasks_completed", 0)),
+                f"[{doctor_style}]{doctor_count}[/{doctor_style}]",
+                f"[{rework_style}]{rework_count}[/{rework_style}]",
+                runtime_str,
+                f"[{status_style}]{status}[/{status_style}]"
+            )
+
+        return table
+
+    def _generate_global_layout(self) -> Layout:
+        """Generate Rich layout for live global view."""
+        if not self.instances:
+            return Panel(
+                "[yellow]No running joan-agents instances found[/yellow]\n\nStart with: [cyan]/agents:dispatch --loop[/cyan]",
+                title="Joan Agents - Global Status"
+            )
+
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="table"),
+            Layout(name="logs", size=12)
+        )
+
+        # Header with timestamp
+        now = datetime.now()
+        header_text = Text(
+            f"Joan Agents - Global Status (Live)  {now.strftime('%H:%M:%S')}",
+            style="bold cyan",
+            justify="center"
+        )
+        layout["header"].update(Panel(header_text, border_style="cyan"))
+
+        # Table
+        layout["table"].update(self._generate_global_table())
+
+        # Recent logs from all projects
+        logs_text = self._get_combined_recent_logs()
+        layout["logs"].update(
+            Panel(logs_text, title="Recent Activity (All Projects)", border_style="blue")
+        )
+
+        return layout
+
+    def _get_combined_recent_logs(self, lines: int = 8) -> Text:
+        """Get recent log lines from all projects, interleaved by time."""
+        all_logs = []
+
+        for proj_name, info in self.instances.items():
+            log_file = info["log_file"]
+            if not log_file.exists():
+                continue
+
+            try:
+                with open(log_file, 'r') as f:
+                    recent_lines = f.readlines()[-20:]  # Get last 20 lines
+
+                for line in recent_lines:
+                    # Extract timestamp
+                    ts_match = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', line)
+                    if ts_match:
+                        timestamp = datetime.strptime(ts_match.group(1), '%Y-%m-%d %H:%M:%S')
+                        # Only include interesting events
+                        if any(keyword in line for keyword in [
+                            "worker", "Cycle", "dispatched", "completed",
+                            "Idle", "Starting", "Shutdown"
+                        ]):
+                            all_logs.append({
+                                'timestamp': timestamp,
+                                'project': proj_name,
+                                'line': line.strip()
+                            })
+            except:
+                pass
+
+        # Sort by timestamp (most recent last)
+        all_logs.sort(key=lambda x: x['timestamp'])
+
+        # Take last N entries
+        recent = all_logs[-lines:]
+
+        # Format as text
+        text = Text()
+        now = datetime.now()
+        for entry in recent:
+            elapsed = now - entry['timestamp']
+            elapsed_str = self._format_duration(elapsed)
+
+            # Extract message part (after [INFO])
+            msg = entry['line']
+            if "[INFO]" in msg:
+                msg = msg.split("[INFO]", 1)[1].strip()
+
+            # Color code by project
+            proj_short = entry['project'][:12]
+            text.append(f"{elapsed_str:>8} ago ", style="dim")
+            text.append(f"[{proj_short:12}] ", style="cyan")
+            text.append(msg[:60] + "\n", style="white")
+
+        if not recent:
+            text.append("No recent activity", style="dim")
+
+        return text
+
+    def show_project_view(self, project_name: str, follow: bool = False):
+        """Display detailed view for a specific project."""
+        self.discover_instances()
+
+        # Find matching project (case-insensitive partial match)
+        matches = [
+            (name, info) for name, info in self.instances.items()
+            if project_name.lower() in name.lower()
+        ]
+
+        if not matches:
+            self.console.print(f"\n[red]No running instance found for '{project_name}'[/red]\n")
+            return
+
+        if len(matches) > 1:
+            self.console.print(f"\n[yellow]Multiple matches found:[/yellow]")
+            for name, _ in matches:
+                self.console.print(f"  - {name}")
+            self.console.print("\n[dim]Be more specific[/dim]\n")
+            return
+
+        proj_name, info = matches[0]
+
+        if follow:
+            # Live updating view
+            self._show_live_project_view(proj_name, info)
+        else:
+            # Static snapshot
+            self._show_static_project_view(proj_name, info)
+
+    def _show_static_project_view(self, proj_name: str, info: dict):
+        """Show a static snapshot of project details."""
+        stats = info["stats"]
+        config = info["config"]
+        now = datetime.now()
+
+        # Header
+        self.console.print()
+        self.console.rule(f"[bold cyan]{proj_name}[/bold cyan]", style="cyan")
+        self.console.print()
+
+        # Config info
+        config_table = Table(show_header=False, box=None, padding=(0, 2))
+        config_table.add_column("Key", style="cyan")
+        config_table.add_column("Value")
+
+        config_table.add_row("Project Directory", str(info["project_dir"]))
+        config_table.add_row("PID", info["pid"])
+        config_table.add_row("Model", config.get("settings", {}).get("model", "N/A"))
+        config_table.add_row("Mode", config.get("settings", {}).get("mode", "standard"))
+        config_table.add_row("Poll Interval", f"{config.get('settings', {}).get('pollingIntervalMinutes', 1)} min")
+
+        self.console.print(Panel(config_table, title="Configuration", border_style="blue"))
+        self.console.print()
+
+        # Runtime stats
+        stats_table = Table(show_header=False, box=None, padding=(0, 2))
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value")
+
+        if stats.get("started_at"):
+            runtime = now - stats["started_at"]
+            stats_table.add_row("Runtime", self._format_duration(runtime))
+            stats_table.add_row("Started", stats["started_at"].strftime("%Y-%m-%d %H:%M:%S"))
+        else:
+            stats_table.add_row("Runtime", "N/A")
+
+        stats_table.add_row("Current Cycle", str(stats.get("cycle", 0)))
+        stats_table.add_row("Idle Count", f"{stats.get('idle_count', 0)}/{stats.get('max_idle', 12)}")
+        stats_table.add_row("Tasks Completed", str(stats.get("tasks_completed", 0)))
+        stats_table.add_row("Workers Dispatched", str(stats.get("workers_dispatched", 0)))
+
+        if stats.get("last_poll"):
+            elapsed = (now - stats["last_poll"]).total_seconds()
+            stats_table.add_row("Last Poll", f"{int(elapsed)}s ago")
+
+        self.console.print(Panel(stats_table, title="Runtime Statistics", border_style="green"))
+        self.console.print()
+
+        # Active workers
+        if stats.get("active_workers"):
+            workers_table = Table(show_header=True, box=box.ROUNDED)
+            workers_table.add_column("Worker", style="cyan")
+            workers_table.add_column("Task", style="white")
+            workers_table.add_column("Duration", style="yellow")
+
+            for worker in stats["active_workers"]:
+                duration = now - worker["started_at"]
+                workers_table.add_row(
+                    worker["type"],
+                    worker["task"],
+                    self._format_duration(duration)
+                )
+
+            self.console.print(Panel(workers_table, title="Active Workers", border_style="yellow"))
+            self.console.print()
+
+        # Agent Health Metrics (Doctor invocations, reworks)
+        metrics = info.get("metrics", {})
+        if metrics:
+            self._show_metrics_panel(metrics, now)
+
+        # Log file location
+        self.console.print(f"[dim]Log file: {info['log_file']}[/dim]")
+        self.console.print(f"[dim]Metrics file: {info.get('metrics_file', 'N/A')}[/dim]")
+        self.console.print(f"[dim]Tail logs: [cyan]joan logs {proj_name}[/cyan][/dim]\n")
+
+    def _show_metrics_panel(self, metrics: dict, now: datetime):
+        """Display agent health metrics panel with Doctor and rework details."""
+        # Summary row
+        summary_table = Table(show_header=False, box=None, padding=(0, 2))
+        summary_table.add_column("Metric", style="cyan")
+        summary_table.add_column("Value")
+
+        doctor_count = metrics.get("doctor_invocations", 0)
+        doctor_fixes = metrics.get("doctor_fixes", 0)
+        rework_count = metrics.get("reworks", 0)
+        completions = metrics.get("completions", 0)
+        failures = metrics.get("failures", 0)
+
+        # Health indicator based on rework/completion ratio
+        if completions > 0:
+            rework_ratio = rework_count / completions
+            if rework_ratio < 0.1:
+                health = "[green]Excellent[/green]"
+            elif rework_ratio < 0.25:
+                health = "[yellow]Good[/yellow]"
+            elif rework_ratio < 0.5:
+                health = "[yellow]Needs Attention[/yellow]"
+            else:
+                health = "[red]Poor[/red]"
+        else:
+            health = "[dim]N/A[/dim]"
+
+        summary_table.add_row("Agent Health", health)
+        summary_table.add_row("Doctor Invocations", f"{doctor_count} ({doctor_fixes} fixes applied)")
+        summary_table.add_row("Rework Requests", str(rework_count))
+        summary_table.add_row("Tasks Completed", str(completions))
+        summary_table.add_row("Impl. Failures", str(failures) if failures else "[dim]0[/dim]")
+
+        self.console.print(Panel(summary_table, title="🩺 Agent Health Metrics", border_style="magenta"))
+        self.console.print()
+
+        # Workflow step issue distribution (if any)
+        workflow_issues = metrics.get("workflow_step_issues", {})
+        if workflow_issues:
+            issue_table = Table(show_header=True, box=box.SIMPLE)
+            issue_table.add_column("Workflow Step", style="cyan")
+            issue_table.add_column("Issues", justify="right", style="yellow")
+
+            for step, count in sorted(workflow_issues.items(), key=lambda x: -x[1]):
+                issue_table.add_row(step, str(count))
+
+            self.console.print(Panel(issue_table, title="📍 Issues by Workflow Step", border_style="blue"))
+            self.console.print()
+
+        # Recent Doctor events
+        recent_doctor = metrics.get("recent_doctor_events", [])
+        if recent_doctor:
+            doctor_table = Table(show_header=True, box=box.SIMPLE)
+            doctor_table.add_column("When", style="dim", width=12)
+            doctor_table.add_column("Trigger", style="cyan", width=15)
+            doctor_table.add_column("Found", justify="right", width=6)
+            doctor_table.add_column("Fixed", justify="right", width=6)
+            doctor_table.add_column("Issues", width=40)
+
+            for event in reversed(recent_doctor[-5:]):  # Most recent first
+                timestamp = event.get("timestamp")
+                if timestamp:
+                    # Handle timezone-aware datetime
+                    if timestamp.tzinfo is not None:
+                        timestamp = timestamp.replace(tzinfo=None)
+                    elapsed = now - timestamp
+                    when = self._format_duration(elapsed) + " ago"
+                else:
+                    when = "Unknown"
+
+                # Summarize issues
+                issues = event.get("issues", [])
+                if issues:
+                    issue_summary = ", ".join([
+                        f"{i.get('type', 'unknown')[:20]}" for i in issues[:2]
+                    ])
+                    if len(issues) > 2:
+                        issue_summary += f" +{len(issues)-2} more"
+                else:
+                    issue_summary = "-"
+
+                doctor_table.add_row(
+                    when,
+                    event.get("trigger", "unknown")[:15],
+                    str(event.get("issues_found", 0)),
+                    str(event.get("fixes_applied", 0)),
+                    issue_summary[:40]
+                )
+
+            self.console.print(Panel(doctor_table, title="🩺 Recent Doctor Invocations", border_style="yellow"))
+            self.console.print()
+
+        # Recent reworks
+        recent_reworks = metrics.get("recent_reworks", [])
+        if recent_reworks:
+            rework_table = Table(show_header=True, box=box.SIMPLE)
+            rework_table.add_column("When", style="dim", width=12)
+            rework_table.add_column("Task", style="cyan", width=30)
+            rework_table.add_column("Step", style="yellow", width=20)
+            rework_table.add_column("Reason", width=25)
+
+            for event in reversed(recent_reworks[-5:]):  # Most recent first
+                timestamp = event.get("timestamp")
+                if timestamp:
+                    if timestamp.tzinfo is not None:
+                        timestamp = timestamp.replace(tzinfo=None)
+                    elapsed = now - timestamp
+                    when = self._format_duration(elapsed) + " ago"
+                else:
+                    when = "Unknown"
+
+                rework_table.add_row(
+                    when,
+                    event.get("task_title", "Unknown")[:30],
+                    event.get("workflow_step", "Review→Dev")[:20],
+                    event.get("reason", "-")[:25]
+                )
+
+            self.console.print(Panel(rework_table, title="↩️  Recent Rework Requests", border_style="red"))
+            self.console.print()
+
+    def _show_live_project_view(self, proj_name: str, info: dict):
+        """Show live-updating project view (for logs command)."""
+        try:
+            with Live(self._generate_project_layout(proj_name, info), refresh_per_second=1, console=self.console) as live:
+                while True:
+                    self.discover_instances()
+                    if proj_name in self.instances:
+                        info = self.instances[proj_name]
+                        live.update(self._generate_project_layout(proj_name, info))
+                    else:
+                        self.console.print("\n[yellow]Instance stopped[/yellow]\n")
+                        break
+                    time.sleep(1)
+        except KeyboardInterrupt:
+            self.console.print("\n[yellow]Stopped monitoring[/yellow]\n")
+
+    def _generate_project_layout(self, proj_name: str, info: dict) -> Layout:
+        """Generate Rich layout for live project view."""
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="middle", size=12),
+            Layout(name="workers", size=8),
+            Layout(name="logs")
+        )
+
+        # Split middle into stats and metrics side by side
+        layout["middle"].split_row(
+            Layout(name="stats"),
+            Layout(name="metrics")
+        )
+
+        # Header
+        now = datetime.now()
+        header_text = Text(
+            f"Joan Agents - {proj_name}  {now.strftime('%H:%M:%S')}",
+            style="bold cyan",
+            justify="center"
+        )
+        layout["header"].update(Panel(header_text, border_style="cyan"))
+
+        stats = info["stats"]
+        metrics = info.get("metrics", {})
+
+        # Stats
+        stats_table = Table(show_header=False, box=None, padding=(0, 1))
+        stats_table.add_column("Key", style="cyan", width=18)
+        stats_table.add_column("Value")
+
+        stats_table.add_row("Cycle", str(stats.get("cycle", 0)))
+        stats_table.add_row("Idle", f"{stats.get('idle_count', 0)}/{stats.get('max_idle', 12)}")
+        stats_table.add_row("Tasks Completed", str(stats.get("tasks_completed", 0)))
+        stats_table.add_row("Workers Dispatched", str(stats.get("workers_dispatched", 0)))
+
+        if stats.get("last_poll"):
+            elapsed = (now - stats["last_poll"]).total_seconds()
+            stats_table.add_row("Last Poll", f"{int(elapsed)}s ago")
+
+        layout["stats"].update(Panel(stats_table, title="Stats", border_style="green"))
+
+        # Metrics panel (Agent Health)
+        metrics_table = Table(show_header=False, box=None, padding=(0, 1))
+        metrics_table.add_column("Metric", style="cyan", width=18)
+        metrics_table.add_column("Value")
+
+        doctor_count = metrics.get("doctor_invocations", 0)
+        doctor_fixes = metrics.get("doctor_fixes", 0)
+        rework_count = metrics.get("reworks", 0)
+        completions = metrics.get("completions", 0)
+        failures = metrics.get("failures", 0)
+
+        # Health color
+        if completions > 0:
+            rework_ratio = rework_count / completions
+            if rework_ratio < 0.1:
+                health = "[green]Excellent[/green]"
+            elif rework_ratio < 0.25:
+                health = "[yellow]Good[/yellow]"
+            else:
+                health = "[red]Needs Attention[/red]"
+        else:
+            health = "[dim]N/A[/dim]"
+
+        metrics_table.add_row("Health", health)
+        doctor_style = "red" if doctor_count >= 5 else "yellow" if doctor_count >= 2 else "white"
+        metrics_table.add_row("🩺 Doctor", f"[{doctor_style}]{doctor_count}[/{doctor_style}] ({doctor_fixes} fixes)")
+        rework_style = "red" if rework_count >= 5 else "yellow" if rework_count >= 2 else "white"
+        metrics_table.add_row("↩️  Reworks", f"[{rework_style}]{rework_count}[/{rework_style}]")
+        metrics_table.add_row("❌ Failures", f"[red]{failures}[/red]" if failures else "[dim]0[/dim]")
+
+        layout["metrics"].update(Panel(metrics_table, title="Agent Health", border_style="magenta"))
+
+        # Workers
+        if stats.get("active_workers"):
+            workers_table = Table(show_header=True, box=None)
+            workers_table.add_column("Worker", style="cyan")
+            workers_table.add_column("Task")
+            workers_table.add_column("Duration", style="yellow")
+
+            for worker in stats["active_workers"]:
+                duration = now - worker["started_at"]
+                workers_table.add_row(
+                    worker["type"],
+                    worker["task"][:40],
+                    self._format_duration(duration)
+                )
+
+            layout["workers"].update(Panel(workers_table, title="Active Workers", border_style="yellow"))
+        else:
+            layout["workers"].update(Panel("No active workers", title="Active Workers", border_style="dim"))
+
+        # Recent log lines
+        if info["log_file"].exists():
+            try:
+                with open(info["log_file"], 'r') as f:
+                    lines = f.readlines()
+                recent = "".join(lines[-15:])
+                layout["logs"].update(Panel(Text(recent, style="dim"), title="Recent Logs", border_style="blue"))
+            except:
+                layout["logs"].update(Panel("Error reading logs", border_style="red"))
+
+        return layout
+
+    def tail_logs(self, project_name: str):
+        """Tail logs for a specific project."""
+        self.discover_instances()
+
+        matches = [
+            (name, info) for name, info in self.instances.items()
+            if project_name.lower() in name.lower()
+        ]
+
+        if not matches:
+            self.console.print(f"\n[red]No running instance found for '{project_name}'[/red]\n")
+            return
+
+        if len(matches) > 1:
+            self.console.print(f"\n[yellow]Multiple matches found:[/yellow]")
+            for name, _ in matches:
+                self.console.print(f"  - {name}")
+            self.console.print("\n[dim]Be more specific[/dim]\n")
+            return
+
+        proj_name, info = matches[0]
+        log_file = info["log_file"]
+
+        if not log_file.exists():
+            self.console.print(f"\n[red]Log file not found: {log_file}[/red]\n")
+            return
+
+        self.console.print(f"\n[cyan]Tailing logs for {proj_name}[/cyan]")
+        self.console.print(f"[dim]{log_file}[/dim]\n")
+        self.console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+        try:
+            subprocess.run(["tail", "-f", str(log_file)])
+        except KeyboardInterrupt:
+            self.console.print("\n[yellow]Stopped tailing logs[/yellow]\n")
+
+    def _format_duration(self, duration: timedelta) -> str:
+        """Format duration as HH:MM:SS or MM:SS."""
+        total_seconds = int(duration.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            return f"{minutes:02d}:{seconds:02d}"
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Joan Agents - Global monitoring and management",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "command",
+        choices=["status", "logs"],
+        help="Command to run"
+    )
+
+    parser.add_argument(
+        "project",
+        nargs="?",
+        help="Project name (partial match supported)"
+    )
+
+    parser.add_argument(
+        "-f", "--follow",
+        action="store_true",
+        help="Follow/live update (for status command)"
+    )
+
+    args = parser.parse_args()
+
+    monitor = JoanMonitor()
+
+    if args.command == "status":
+        if args.project:
+            monitor.show_project_view(args.project, follow=args.follow)
+        else:
+            monitor.show_global_view(live_mode=args.follow)
+    elif args.command == "logs":
+        if not args.project:
+            print("Error: Project name required for logs command")
+            sys.exit(1)
+        monitor.tail_logs(args.project)
+
+
+if __name__ == "__main__":
+    main()

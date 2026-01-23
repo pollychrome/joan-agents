@@ -248,13 +248,35 @@ main() {
             consecutive_failures=0
             log_info "Coordinator completed successfully"
 
-            # Check coordinator output for work status
-            # Look for "workers still running" message in recent log output
-            if tail -50 "$LOG_FILE" | grep -q "workers still running (not idle)"; then
-                idle_count=0
-                log_info "Workers still running, idle count reset"
-            elif tail -50 "$LOG_FILE" | grep -q "dispatched [1-9]"; then
-                # Dispatched 1 or more workers
+            # Check coordinator output for work status using multiple detection methods
+            # Method 1: Check for status file (most reliable)
+            STATUS_FILE="/tmp/joan-agents-${PROJECT_NAME}.status"
+            work_detected=false
+
+            if [[ -f "$STATUS_FILE" ]]; then
+                dispatched_count=$(grep -oP 'dispatched=\K\d+' "$STATUS_FILE" 2>/dev/null || echo "0")
+                if [[ "$dispatched_count" -gt 0 ]]; then
+                    work_detected=true
+                    log_info "Work detected via status file: $dispatched_count workers dispatched"
+                fi
+                rm -f "$STATUS_FILE"  # Clean up after reading
+            fi
+
+            # Method 2: Look for "workers still running" message
+            if [[ "$work_detected" == "false" ]] && tail -50 "$LOG_FILE" | grep -q "workers still running (not idle)"; then
+                work_detected=true
+                log_info "Workers still running detected"
+            fi
+
+            # Method 3: Flexible pattern matching for dispatch messages (case-insensitive)
+            # Matches: "dispatched N", "Dispatched N", "Dispatched: N", "dispatch.*N workers"
+            if [[ "$work_detected" == "false" ]] && tail -50 "$LOG_FILE" | grep -iqE "dispatch[^0-9]*[1-9]"; then
+                work_detected=true
+                log_info "Work detected via log pattern"
+            fi
+
+            # Update idle count based on detection
+            if [[ "$work_detected" == "true" ]]; then
                 idle_count=0
                 log_info "Work dispatched, idle count reset"
             else

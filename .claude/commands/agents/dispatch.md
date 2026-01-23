@@ -943,6 +943,220 @@ Report queue sizes:
 
 ---
 
+## Step 3-Doctor: Doctor Diagnostic Pass (Self-Healing)
+
+When all queues are empty but tasks exist in pipeline columns, run Doctor diagnostics to detect
+and fix stuck tasks that didn't match any queue condition. This catches the scenario where tasks
+have invalid tag combinations or got stuck due to worker failures.
+
+```
+# Check if Doctor pass is needed
+ALL_QUEUES_EMPTY = (BA_QUEUE.length == 0 AND ARCHITECT_QUEUE.length == 0 AND
+                   DEV_QUEUE.length == 0 AND REVIEWER_QUEUE.length == 0 AND
+                   OPS_QUEUE.length == 0)
+
+# Count tasks in pipeline columns (not To Do or Done)
+PIPELINE_TASKS = []
+For each task in tasks:
+  IF inColumn(task, "Analyse") OR inColumn(task, "Development") OR
+     inColumn(task, "Review") OR inColumn(task, "Deploy"):
+    PIPELINE_TASKS.push(task)
+
+# Doctor triggers when: queues empty BUT pipeline has tasks
+DOCTOR_TRIGGERED = ALL_QUEUES_EMPTY AND PIPELINE_TASKS.length > 0
+
+IF DOCTOR_TRIGGERED:
+  Report: ""
+  Report: "╔══════════════════════════════════════════════════════════════════╗"
+  Report: "║  DOCTOR DIAGNOSTIC PASS                                          ║"
+  Report: "║  All queues empty but {PIPELINE_TASKS.length} tasks in pipeline - running diagnostics  ║"
+  Report: "╚══════════════════════════════════════════════════════════════════╝"
+  Report: ""
+
+  DOCTOR_ISSUES = []
+  DOCTOR_FIXES = []
+
+  For each task in PIPELINE_TASKS:
+
+    # === Diagnosis 1: Stuck Plan Finalization ===
+    IF inColumn(task, "Analyse") AND hasTag(task, "Plan-Pending-Approval") AND hasTag(task, "Plan-Approved"):
+      state_age_hours = (NOW - task.updated_at) in hours
+      IF state_age_hours > 0.5:  # 30 minutes
+        DOCTOR_ISSUES.push({
+          task: task,
+          type: "STUCK_PLAN_FINALIZATION",
+          severity: "HIGH",
+          description: "Plan approved but not finalized for {state_age_hours} hours"
+        })
+
+        # FIX: Finalize the plan (remove approval tags, add Planned, move to Development)
+        mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Plan-Pending-Approval"])
+        mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Plan-Approved"])
+        mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Planned"])
+        mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Development"])
+
+        mcp__joan__create_task_comment(task.id,
+          "ALS/1
+          actor: doctor
+          intent: recovery
+          action: finalize-stuck-plan
+          tags.add: [Planned]
+          tags.remove: [Plan-Pending-Approval, Plan-Approved]
+          column.move: Analyse → Development
+          summary: Doctor auto-finalized stuck plan after {state_age_hours} hours.
+          details:
+          - issue_type: STUCK_PLAN_FINALIZATION
+          - trigger: Queue empty but pipeline has tasks
+          - root_cause: Worker/coordinator likely failed during finalization")
+
+        DOCTOR_FIXES.push({task: task, fix: "finalize-stuck-plan", workflow_step: "Analyse→Development"})
+        Report: "  [HIGH] STUCK_PLAN_FINALIZATION: '{task.title}'"
+        Report: "    Fixed: Finalized plan and moved to Development"
+
+    # === Diagnosis 2: Orphaned in Analyse with Ready ===
+    IF inColumn(task, "Analyse") AND hasTag(task, "Ready") AND NOT hasTag(task, "Plan-Pending-Approval"):
+      state_age_hours = (NOW - task.updated_at) in hours
+      IF state_age_hours > 1:  # 1 hour without being planned
+        DOCTOR_ISSUES.push({
+          task: task,
+          type: "READY_NOT_PLANNED",
+          severity: "MEDIUM",
+          description: "Task Ready for {state_age_hours} hours but not queued for Architect"
+        })
+        # This indicates the pipeline gate is blocking or Architect is disabled
+        # Don't auto-fix - just report (pipeline gate may be intentional)
+        Report: "  [MEDIUM] READY_NOT_PLANNED: '{task.title}'"
+        Report: "    Note: Pipeline gate may be blocking. Check for tasks in Development/Review."
+
+    # === Diagnosis 3: Orphaned in Development ===
+    IF inColumn(task, "Development"):
+      has_workflow_tag = hasTag(task, "Planned") OR hasTag(task, "Rework-Requested") OR
+                         hasTag(task, "Merge-Conflict") OR isClaimedByAnyDev(task) OR
+                         hasTag(task, "Implementation-Failed") OR hasTag(task, "Branch-Setup-Failed")
+      IF NOT has_workflow_tag:
+        DOCTOR_ISSUES.push({
+          task: task,
+          type: "ORPHANED_IN_DEVELOPMENT",
+          severity: "HIGH",
+          description: "Task in Development without any workflow tags"
+        })
+
+        # FIX: Check if task has a plan in description
+        IF task.description contains "## Implementation Plan" OR task.description contains "### Sub-Tasks":
+          mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Planned"])
+          mcp__joan__create_task_comment(task.id,
+            "ALS/1
+            actor: doctor
+            intent: recovery
+            action: restore-planned-tag
+            tags.add: [Planned]
+            summary: Doctor restored Planned tag (plan found in description).
+            details:
+            - issue_type: ORPHANED_IN_DEVELOPMENT
+            - trigger: Task had no workflow tags")
+          DOCTOR_FIXES.push({task: task, fix: "restore-planned-tag", workflow_step: "Development"})
+          Report: "  [HIGH] ORPHANED_IN_DEVELOPMENT: '{task.title}'"
+          Report: "    Fixed: Added Planned tag (plan exists in description)"
+        ELSE:
+          # No plan - move back to Analyse with Ready tag
+          mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Ready"])
+          mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Analyse"])
+          mcp__joan__create_task_comment(task.id,
+            "ALS/1
+            actor: doctor
+            intent: recovery
+            action: move-to-analyse
+            tags.add: [Ready]
+            column.move: Development → Analyse
+            summary: Doctor moved task to Analyse (no plan found).
+            details:
+            - issue_type: ORPHANED_IN_DEVELOPMENT
+            - trigger: Task had no workflow tags and no plan in description")
+          DOCTOR_FIXES.push({task: task, fix: "move-to-analyse", workflow_step: "Development→Analyse"})
+          Report: "  [HIGH] ORPHANED_IN_DEVELOPMENT: '{task.title}'"
+          Report: "    Fixed: Moved to Analyse with Ready tag (no plan found)"
+
+    # === Diagnosis 4: Orphaned in Review ===
+    IF inColumn(task, "Review"):
+      has_review_state = hasTag(task, "Dev-Complete") OR hasTag(task, "Review-Approved") OR
+                         hasTag(task, "Rework-Requested") OR hasTag(task, "Review-In-Progress") OR
+                         hasTag(task, "Rework-Complete")
+      IF NOT has_review_state:
+        DOCTOR_ISSUES.push({
+          task: task,
+          type: "ORPHANED_IN_REVIEW",
+          severity: "HIGH",
+          description: "Task in Review without completion or review tags"
+        })
+        # Already handled in Step 2c anomaly detection, but log if still present
+        Report: "  [HIGH] ORPHANED_IN_REVIEW: '{task.title}'"
+        Report: "    Note: Should have been fixed by anomaly detection"
+
+    # === Diagnosis 5: Stuck Ops Merge ===
+    IF inColumn(task, "Review") AND hasTag(task, "Review-Approved") AND hasTag(task, "Ops-Ready"):
+      state_age_hours = (NOW - task.updated_at) in hours
+      IF state_age_hours > 0.5:  # 30 minutes
+        DOCTOR_ISSUES.push({
+          task: task,
+          type: "STUCK_OPS_MERGE",
+          severity: "HIGH",
+          description: "Task ready for Ops merge for {state_age_hours} hours"
+        })
+        # Don't auto-fix - Ops should pick this up, just report
+        Report: "  [HIGH] STUCK_OPS_MERGE: '{task.title}'"
+        Report: "    Note: Task is ready for Ops, should be processed next cycle"
+
+  # === Write Doctor Metrics ===
+  IF DOCTOR_ISSUES.length > 0 OR DOCTOR_FIXES.length > 0:
+    METRICS_FILE = "{PROJECT_DIR}/.claude/logs/agent-metrics.jsonl"
+
+    # Write metrics entry (JSON Lines format)
+    metric_entry = {
+      "timestamp": NOW in ISO format,
+      "event": "doctor_invocation",
+      "project": PROJECT_NAME,
+      "trigger": "queues_empty_with_pipeline_tasks",
+      "pipeline_tasks_count": PIPELINE_TASKS.length,
+      "issues_found": DOCTOR_ISSUES.length,
+      "fixes_applied": DOCTOR_FIXES.length,
+      "issues": DOCTOR_ISSUES.map(i => ({type: i.type, severity: i.severity, task: i.task.title})),
+      "fixes": DOCTOR_FIXES.map(f => ({task: f.task.title, fix: f.fix, workflow_step: f.workflow_step}))
+    }
+
+    Run bash command:
+      echo '{JSON.stringify(metric_entry)}' >> {METRICS_FILE}
+
+    Report: ""
+    Report: "Doctor summary: {DOCTOR_ISSUES.length} issues found, {DOCTOR_FIXES.length} fixes applied"
+    Report: "Metrics logged to: {METRICS_FILE}"
+
+    # === Re-build queues after fixes ===
+    IF DOCTOR_FIXES.length > 0:
+      Report: ""
+      Report: "Re-fetching tasks and rebuilding queues after Doctor fixes..."
+
+      # Re-fetch all tasks (they've changed)
+      tasks = mcp__joan__list_tasks(project_id=PROJECT_ID)
+
+      # Clear and rebuild all queues
+      BA_QUEUE = []
+      ARCHITECT_QUEUE = []
+      DEV_QUEUE = []
+      REVIEWER_QUEUE = []
+      OPS_QUEUE = []
+
+      # ... (repeat queue building logic from Step 3)
+      # For brevity, this is a conceptual re-run - actual implementation
+      # would call a helper function or inline the logic
+
+      Report: "Queues rebuilt: BA={BA_QUEUE.length}, Architect={ARCHITECT_QUEUE.length}, Dev={DEV_QUEUE.length}, Reviewer={REVIEWER_QUEUE.length}, Ops={OPS_QUEUE.length}"
+
+  ELSE:
+    Report: "Doctor pass complete: No issues requiring fixes"
+```
+
+---
+
 ## Step 3a: YOLO Mode Auto-Approval (Pre-Dispatch)
 
 In YOLO mode, auto-approve any pending approvals BEFORE dispatch begins.
@@ -2052,6 +2266,77 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
       ELSE:
         Report: "  Ops-Ready already present, skipping"
 
+  # 3g-metrics. Track Reworks and Other Workflow Metrics
+  # Log metrics for reworks (Reviewer → Dev), Doctor fixes, and other workflow events
+  # These metrics help identify issues with agent prompts and workflow effectiveness
+
+  METRICS_FILE = "{PROJECT_DIR}/.claude/logs/agent-metrics.jsonl"
+
+  # Track rework requests (indicates review failures)
+  IF worker == "reviewer" AND actions.add_tags?.includes("Rework-Requested"):
+    Report: "  Logging rework metrics"
+
+    # Extract rework reason from the comment (if structured)
+    rework_reason = "Code review failed"
+    IF parsed.summary:
+      rework_reason = parsed.summary
+
+    rework_metric = {
+      "timestamp": NOW in ISO format,
+      "event": "rework_requested",
+      "project": PROJECT_NAME,
+      "task_id": task.id,
+      "task_title": task.title,
+      "workflow_step": "Review→Development",
+      "reason": rework_reason,
+      "reviewer_summary": parsed.summary,
+      "cycle_count": 1  # Would increment if tracking multiple rework cycles
+    }
+
+    Run bash command:
+      echo '{JSON.stringify(rework_metric)}' >> {METRICS_FILE}
+
+    Report: "  ✓ Rework metric logged"
+
+  # Track successful task completions (for velocity metrics)
+  IF worker == "ops" AND actions.move_to_column == "Deploy":
+    Report: "  Logging task completion metrics"
+
+    completion_metric = {
+      "timestamp": NOW in ISO format,
+      "event": "task_completed",
+      "project": PROJECT_NAME,
+      "task_id": task.id,
+      "task_title": task.title,
+      "workflow_step": "Review→Deploy",
+      "final_status": "merged"
+    }
+
+    Run bash command:
+      echo '{JSON.stringify(completion_metric)}' >> {METRICS_FILE}
+
+    Report: "  ✓ Completion metric logged"
+
+  # Track implementation failures (indicates dev worker issues)
+  IF worker == "dev" AND NOT parsed.success:
+    Report: "  Logging implementation failure metrics"
+
+    failure_metric = {
+      "timestamp": NOW in ISO format,
+      "event": "implementation_failed",
+      "project": PROJECT_NAME,
+      "task_id": task.id,
+      "task_title": task.title,
+      "workflow_step": "Development",
+      "failure_reason": parsed.needs_human OR parsed.summary OR "Unknown",
+      "dev_summary": parsed.summary
+    }
+
+    Run bash command:
+      echo '{JSON.stringify(failure_metric)}' >> {METRICS_FILE}
+
+    Report: "  ✓ Failure metric logged"
+
   # 3h. Handle agent invocation (cross-agent consultation)
   IF parsed.invoke_agent:
     invocation = parsed.invoke_agent
@@ -2131,6 +2416,17 @@ PENDING_HUMAN = count tasks with:
   - Implementation-Failed or Branch-Setup-Failed → waiting for human fix
 
 CLAIMED_TASKS = count tasks with Claimed-Dev-* tags (workers currently running)
+
+# Write status file for scheduler (reliable work detection)
+# This file is read by joan-scheduler.sh to determine if work was dispatched
+PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+STATUS_FILE = "/tmp/joan-agents-{PROJECT_SLUG}.status"
+
+Run bash command:
+  echo "dispatched={DISPATCHED}" > {STATUS_FILE}
+  echo "claimed={CLAIMED_TASKS}" >> {STATUS_FILE}
+  echo "pending_human={PENDING_HUMAN}" >> {STATUS_FILE}
+  echo "timestamp=$(date +%s)" >> {STATUS_FILE}
 
 Report: ""
 Report: "Poll complete: dispatched {DISPATCHED} workers"
