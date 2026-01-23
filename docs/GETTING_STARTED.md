@@ -67,11 +67,16 @@ You should see `joan` in the list of configured servers.
 ## Step 3: Install Joan Agents Plugin
 
 ```bash
-# Add the plugin from GitHub
-claude plugin add github:pollychrome/joan-agents
+# Step 1: Add the GitHub repo as a marketplace
+claude plugin marketplace add github:pollychrome/joan-agents
+
+# Step 2: Install the agents plugin from that marketplace
+claude plugin install agents@joan-agents
 ```
 
 This gives you access to all `/agents:*` commands in Claude Code.
+
+> **Verify installation:** Run `claude plugin list` to confirm `agents` appears.
 
 ---
 
@@ -319,8 +324,11 @@ npx @pollychrome/joan-mcp init
 
 ### "Plugin not found"
 ```bash
-claude plugins  # Verify joan-agents is listed
-claude plugin add github:pollychrome/joan-agents
+claude plugin list  # Verify agents is listed
+
+# If missing, add marketplace and install:
+claude plugin marketplace add github:pollychrome/joan-agents
+claude plugin install agents@joan-agents
 ```
 
 ### Tasks stuck in a column
@@ -348,7 +356,8 @@ Check that `schedulerStuckTimeoutSeconds` (default: 3900) is longer than `worker
 SETUP
   1. joan.ai signup → create project
   2. npx @pollychrome/joan-mcp init → restart Claude Code
-  3. claude plugin add github:pollychrome/joan-agents
+  3. claude plugin marketplace add github:pollychrome/joan-agents
+     claude plugin install agents@joan-agents
   4. cd /your/project && claude → /agents:init
   5. Add tasks:
      - /agents:project-planner --file=plan.md  (from file)
