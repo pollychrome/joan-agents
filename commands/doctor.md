@@ -273,6 +273,48 @@ For each task:
           recommendation: "May need manual intervention to determine next steps"
         })
 
+  # ═══════════════════════════════════════════════════════════════
+  # DIAGNOSIS 7: Webhook Configuration Health
+  # ═══════════════════════════════════════════════════════════════
+
+  # Only check webhooks once (not per-task)
+  IF NOT webhook_check_done:
+    webhook_check_done = true
+
+    # Load webhook config from .joan-agents.json
+    webhook_config = config.settings.webhooks
+
+    IF webhook_config AND webhook_config.enabled:
+      # Check if webhook receiver is running
+      receiver_running = Bash: pgrep -f "webhook-receiver" > /dev/null && echo "running" || echo "stopped"
+
+      IF receiver_running == "stopped":
+        WARNINGS.push({
+          type: "WEBHOOK_RECEIVER_NOT_RUNNING",
+          description: "Webhooks enabled but receiver is not running",
+          recommendation: "Start receiver with: ./scripts/webhook-receiver.sh --port {webhook_config.port}"
+        })
+
+      # Check for recent webhook log activity (if log exists)
+      webhook_log = "{PROJECT_DIR}/.claude/logs/webhook-receiver.log"
+      IF file_exists(webhook_log):
+        # Check if log was updated in last 24 hours
+        log_age_hours = Bash: find {webhook_log} -mtime -1 | wc -l
+        IF log_age_hours == 0:
+          WARNINGS.push({
+            type: "WEBHOOK_LOG_STALE",
+            description: "Webhook receiver log hasn't been updated in 24+ hours",
+            recommendation: "Check if webhook URL is correctly configured in Joan project settings"
+          })
+
+      # Check if webhook secret is configured
+      IF NOT webhook_config.secret:
+        WARNINGS.push({
+          type: "WEBHOOK_NO_SECRET",
+          description: "Webhooks enabled but no secret configured",
+          recommendation: "Run /agents:init to generate a webhook secret"
+        })
+
 Report: ""
 Report: "═══════════════════════════════════════════════════════════════"
 Report: "DIAGNOSTIC REPORT"

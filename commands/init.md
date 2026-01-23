@@ -254,6 +254,98 @@ Ready for scheduler and worker activity logging.
 
 ---
 
+## Step 5c: Webhook Configuration (Optional)
+
+Webhooks allow Joan to push real-time event notifications to the coordinator instead of relying solely on polling. This enables faster response times and more efficient event handling.
+
+### Ask User About Webhooks
+
+```
+AskUserQuestion: "Would you like to enable webhook notifications for real-time event handling?"
+Options:
+  - "Yes, configure webhooks (Recommended for faster responsiveness)"
+  - "No, use polling only (simpler setup)"
+```
+
+**If "No":**
+Skip to Step 6.
+
+**If "Yes":**
+
+### Generate Webhook Secret
+
+Generate a secure random HMAC secret (32 bytes hex):
+
+```bash
+WEBHOOK_SECRET=$(openssl rand -hex 32)
+```
+
+### Configure Webhook Settings
+
+The webhook receiver will listen on a local port. Default: `9847`
+
+```
+AskUserQuestion: "Which port should the webhook receiver use?"
+Options:
+  - "9847 (default, recommended)"
+  - "Custom port (I'll specify)"
+```
+
+If custom port selected, ask for the port number.
+
+### Display Configuration Instructions
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║  WEBHOOK CONFIGURATION                                        ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Webhook Secret: {WEBHOOK_SECRET}
+
+To complete setup, configure these settings in Joan:
+
+1. Open your project in Joan (https://joan.app)
+2. Go to Project Settings
+3. Add the webhook configuration:
+   - Webhook URL: http://localhost:{PORT}/webhook
+   - Webhook Secret: {WEBHOOK_SECRET}
+
+The webhook receiver can be started with:
+  ./scripts/webhook-receiver.sh --port {PORT}
+
+Or run automatically when using --loop mode (if receiverMode is "auto").
+```
+
+### Save Webhook Config
+
+Store webhook settings in `.joan-agents.json` under settings.webhooks:
+
+```json
+{
+  "settings": {
+    "webhooks": {
+      "enabled": true,
+      "port": {user-selected-port},
+      "secret": "{WEBHOOK_SECRET}",
+      "receiverMode": "manual"
+    }
+  }
+}
+```
+
+**Report:**
+```
+✓ Webhook Configuration Ready
+
+Port: {PORT}
+Secret: Generated (32 bytes)
+Mode: Manual (start receiver with ./scripts/webhook-receiver.sh)
+
+Remember to configure the webhook URL in Joan project settings!
+```
+
+---
+
 ## Note: Agent Commands
 
 **If you installed via the Claude Code plugin system** (recommended):
@@ -305,6 +397,12 @@ Create `.joan-agents.json` in project root with the user's selections:
       "dev": 60,
       "reviewer": 20,
       "ops": 15
+    },
+    "webhooks": {
+      "enabled": {true/false, from Step 5c},
+      "port": {webhook-port, default: 9847},
+      "secret": "{webhook-secret or null}",
+      "receiverMode": "manual"
     }
   },
   "agents": {
@@ -388,6 +486,12 @@ Project Structure:
   • Tags: {N} workflow tags configured
   • Permissions: {N} bash rules configured for autonomous operation
   • Agent Commands: Available via plugin (or symlinks if legacy install)
+
+Webhooks: {enabled/disabled}
+  {if enabled:}
+  • Port: {PORT}
+  • Receiver: Manual (./scripts/webhook-receiver.sh)
+  • Remember to configure webhook URL in Joan project settings!
 ═══════════════════════════════════════════════════════════════
 ```
 

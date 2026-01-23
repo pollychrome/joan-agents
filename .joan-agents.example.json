@@ -5,7 +5,13 @@
   "settings": {
     "model": "opus",
     "pollingIntervalMinutes": 10,
-    "maxIdlePolls": 6
+    "maxIdlePolls": 6,
+    "webhooks": {
+      "enabled": false,
+      "port": 9847,
+      "secret": null,
+      "receiverMode": "manual"
+    }
   },
   "agents": {
     "businessAnalyst": {
