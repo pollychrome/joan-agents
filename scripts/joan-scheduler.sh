@@ -166,10 +166,12 @@ run_coordinator() {
     # Build command with optional mode override
     # Mode must be inside the quoted command string so Claude Code treats it as
     # an argument to the slash command, not as a CLI option to `claude` itself
+    # IMPORTANT: --dangerously-skip-permissions is required for automated operation
+    # Without it, Claude prompts for permission on file/bash operations and hangs
     if [[ -n "$MODE" ]]; then
-        CLAUDE_CMD="claude '/agents:dispatch --mode=$MODE'"
+        CLAUDE_CMD="claude --dangerously-skip-permissions '/agents:dispatch --mode=$MODE'"
     else
-        CLAUDE_CMD="claude /agents:dispatch"
+        CLAUDE_CMD="claude --dangerously-skip-permissions /agents:dispatch"
     fi
 
     # Run single-pass coordinator in background
