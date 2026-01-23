@@ -45,11 +45,11 @@ class JoanMonitor:
         self.blink_state = False  # For animation
 
     def discover_instances(self):
-        """Find all running joan-agents scheduler processes."""
+        """Find all running joan-agents processes (webhook receiver or legacy scheduler)."""
         self.instances = {}
 
         try:
-            # Find all running joan-scheduler.sh processes
+            # Find all running joan-agents processes (webhook-receiver.sh or joan-scheduler.sh)
             result = subprocess.run(
                 ["ps", "aux"],
                 capture_output=True,
@@ -58,10 +58,18 @@ class JoanMonitor:
             )
 
             for line in result.stdout.splitlines():
-                if "joan-scheduler.sh" in line and "grep" not in line:
+                # Support both webhook receiver (new) and scheduler (legacy)
+                is_webhook = "webhook-receiver.sh" in line and "grep" not in line
+                is_scheduler = "joan-scheduler.sh" in line and "grep" not in line
+
+                if is_webhook or is_scheduler:
                     # Extract PID and project directory from command line
                     pid_match = re.match(r'\S+\s+(\d+)', line)
-                    path_match = re.search(r'joan-scheduler\.sh\s+([^\s]+)', line)
+                    # Match either webhook-receiver.sh or joan-scheduler.sh with --project-dir
+                    if is_webhook:
+                        path_match = re.search(r'--project-dir[=\s]+([^\s]+)', line)
+                    else:
+                        path_match = re.search(r'joan-scheduler\.sh\s+([^\s]+)', line)
                     if path_match and pid_match:
                         raw_path = path_match.group(1)
                         pid = pid_match.group(1)
@@ -95,12 +103,12 @@ class JoanMonitor:
                             project_dir = Path(raw_path).resolve()
 
                         if project_dir.exists():
-                            self._add_instance(project_dir, line)
+                            self._add_instance(project_dir, line, is_webhook=is_webhook)
 
         except subprocess.CalledProcessError:
             pass
 
-    def _add_instance(self, project_dir: Path, ps_line: str):
+    def _add_instance(self, project_dir: Path, ps_line: str, is_webhook: bool = False):
         """Add a discovered instance to the tracking dict."""
         config_file = project_dir / ".joan-agents.json"
         if not config_file.exists():
@@ -115,10 +123,18 @@ class JoanMonitor:
             return
 
         project_name = config.get("projectName", project_dir.name)
-        log_file = project_dir / ".claude/logs/scheduler.log"
 
-        # Parse log for stats
-        stats = self._parse_log_stats(log_file) if log_file.exists() else {}
+        # Use appropriate log file based on mode
+        if is_webhook:
+            log_file = project_dir / ".claude/logs/webhook-receiver.log"
+        else:
+            log_file = project_dir / ".claude/logs/scheduler.log"
+
+        # Parse log for stats (different parser for webhook mode)
+        if is_webhook:
+            stats = self._parse_webhook_log_stats(log_file) if log_file.exists() else {}
+        else:
+            stats = self._parse_log_stats(log_file) if log_file.exists() else {}
 
         # Parse metrics for Doctor/rework tracking
         metrics_file = project_dir / ".claude/logs/agent-metrics.jsonl"
@@ -141,7 +157,8 @@ class JoanMonitor:
             "pid": pid,
             "stats": stats,
             "metrics": metrics,
-            "worker_activity": worker_activity
+            "worker_activity": worker_activity,
+            "mode": "webhook" if is_webhook else "polling"
         }
 
     def _parse_log_stats(self, log_file: Path):
@@ -349,6 +366,102 @@ class JoanMonitor:
 
         return stats
 
+    def _parse_webhook_log_stats(self, log_file: Path):
+        """Parse webhook receiver log file to extract runtime statistics."""
+        if not log_file.exists():
+            return {}
+
+        stats = {
+            "mode": "webhook",
+            "started_at": None,
+            "last_event": None,
+            "events_received": 0,
+            "handlers_dispatched": 0,
+            "active_workers": [],
+            "tasks_completed": 0,
+            "recent_events": [],
+            "handlers_by_type": {},  # Count by handler type
+        }
+
+        try:
+            with open(log_file, 'r') as f:
+                lines = f.readlines()
+
+            # Find start time from first line
+            if lines:
+                first_line = lines[0]
+                # Format: [2026-01-23T14:30:00+00:00] Starting webhook receiver
+                ts_match = re.match(r'\[([^\]]+)\]', first_line)
+                if ts_match:
+                    try:
+                        stats["started_at"] = datetime.fromisoformat(ts_match.group(1).replace('+00:00', ''))
+                    except:
+                        pass
+
+            # Track active handlers (dispatched but not yet completed)
+            active_handlers = {}  # pid -> {type, task, started_at}
+
+            # Parse lines for events
+            for line in lines:
+                # Extract timestamp
+                ts_match = re.match(r'\[([^\]]+)\]', line)
+                timestamp = None
+                if ts_match:
+                    try:
+                        timestamp = datetime.fromisoformat(ts_match.group(1).replace('+00:00', ''))
+                    except:
+                        pass
+
+                # Count received events
+                if "Received event:" in line:
+                    stats["events_received"] += 1
+                    if timestamp:
+                        stats["last_event"] = timestamp
+
+                # Count and track dispatched handlers
+                if "Dispatching:" in line:
+                    stats["handlers_dispatched"] += 1
+                    # Extract handler type: "Dispatching: handle-architect --task=abc123"
+                    match = re.search(r'Dispatching: (handle-\w+)', line)
+                    if match:
+                        handler_type = match.group(1).replace("handle-", "").capitalize()
+                        stats["handlers_by_type"][handler_type] = stats["handlers_by_type"].get(handler_type, 0) + 1
+
+                        # Extract task ID
+                        task_match = re.search(r'--task=([^\s]+)', line)
+                        task_id = task_match.group(1) if task_match else "unknown"
+
+                        # Next line should have PID
+                        # We'll track this as potentially active
+
+                # Track handler completion via PID
+                if "Handler dispatched (PID:" in line:
+                    pid_match = re.search(r'PID: (\d+)', line)
+                    if pid_match:
+                        pid = pid_match.group(1)
+                        # This handler is now running
+                        # We'd need to check if PID is still running to know if active
+
+                # Track completions from worker activity log patterns in webhook log
+                if "completed" in line.lower() and "worker" in line.lower():
+                    stats["tasks_completed"] += 1
+
+                # Build recent events list
+                if any(kw in line for kw in ["Dispatching:", "Received event:", "completed", "error"]):
+                    if timestamp:
+                        stats["recent_events"].append({
+                            "timestamp": timestamp,
+                            "line": line.strip()
+                        })
+
+            # Keep only last 20 recent events
+            stats["recent_events"] = stats["recent_events"][-20:]
+
+        except Exception as e:
+            pass
+
+        return stats
+
     def _parse_metrics(self, metrics_file: Path):
         """Parse agent-metrics.jsonl for Doctor invocations and reworks."""
         if not metrics_file.exists():
@@ -505,6 +618,103 @@ class JoanMonitor:
 
         return activity
 
+    def _get_worker_progress_content(self, worker_log: Path, worker_type: str = None, max_lines: int = 15) -> Text:
+        """Get formatted worker progress content for display when a worker is active.
+
+        Shows a focused view of worker activity, filtering to the active worker type if specified.
+        """
+        text = Text()
+
+        if not worker_log.exists():
+            text.append("No worker activity log found\n", "dim")
+            text.append(f"Expected: {worker_log}", "dim")
+            return text
+
+        try:
+            with open(worker_log, 'r') as f:
+                lines = f.readlines()
+
+            # Parse and filter events
+            events = []
+            now = datetime.now()
+
+            for line in lines[-100:]:  # Check last 100 lines
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Pattern: [2026-01-23 11:07:15] [Dev] [START] task=#7 'Multiple Game Modes'
+                match = re.match(
+                    r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[(\w+)\] \[(\w+)\] (.+)',
+                    line
+                )
+                if match:
+                    timestamp_str = match.group(1)
+                    event_worker = match.group(2)
+                    status = match.group(3)
+                    message = match.group(4)
+
+                    # Filter to specific worker type if requested
+                    if worker_type and event_worker != worker_type:
+                        continue
+
+                    try:
+                        timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                    except:
+                        timestamp = now
+
+                    events.append({
+                        "timestamp": timestamp,
+                        "worker": event_worker,
+                        "status": status,
+                        "message": message
+                    })
+
+            # Take last N events
+            recent_events = events[-max_lines:]
+
+            if not recent_events:
+                text.append("No recent worker activity", "dim")
+                if worker_type:
+                    text.append(f"\n(Filtering for {worker_type} worker)", "dim")
+                return text
+
+            # Format events with color coding
+            for event in recent_events:
+                elapsed = now - event["timestamp"]
+                elapsed_str = self._format_duration(elapsed)
+
+                # Status icons and colors
+                status_config = {
+                    "START": ("▶", "bold green"),
+                    "PROGRESS": ("◆", "cyan"),
+                    "COMPLETE": ("✓", "bold green"),
+                    "FAIL": ("✗", "bold red"),
+                }
+                icon, style = status_config.get(event["status"], ("•", "white"))
+
+                # Time column
+                text.append(f"{elapsed_str:>8} ", "dim")
+
+                # Status icon
+                text.append(f"{icon} ", style)
+
+                # Worker tag (only if not filtering)
+                if not worker_type:
+                    text.append(f"[{event['worker']:10}] ", "cyan")
+
+                # Message - truncate if needed
+                msg = event["message"]
+                max_msg_len = 70 if worker_type else 55
+                if len(msg) > max_msg_len:
+                    msg = msg[:max_msg_len-3] + "..."
+                text.append(f"{msg}\n", "white")
+
+        except Exception as e:
+            text.append(f"Error reading worker log: {e}", "red")
+
+        return text
+
     def show_global_view(self, live_mode: bool = False):
         """Display global view of all running instances."""
         if live_mode:
@@ -523,7 +733,9 @@ class JoanMonitor:
 
         if not self.instances:
             self.console.print("\n[yellow]No running joan-agents instances found[/yellow]")
-            self.console.print("\nStart agents with: [cyan]/agents:dispatch --loop[/cyan]\n")
+            self.console.print("\nStart agents with:")
+            self.console.print("  [cyan]./scripts/webhook-receiver.sh --project-dir .[/cyan]  (webhook mode - recommended)")
+            self.console.print("  [cyan]/agents:dispatch --loop[/cyan]  (polling mode - legacy)\n")
             return
 
         self.console.print()
@@ -543,20 +755,21 @@ class JoanMonitor:
         )
 
         table.add_column("#", style="dim", width=3)
-        table.add_column("Project", style="cyan", width=20)
-        table.add_column("Cycle", justify="right", width=6)
-        table.add_column("Idle", justify="right", width=7)
+        table.add_column("Project", style="cyan", width=18)
+        table.add_column("Mode", justify="center", width=7)
+        table.add_column("Events", justify="right", width=7)  # Events for webhook, Cycle for polling
         table.add_column("Active", justify="center", width=6)
         table.add_column("Done", justify="right", width=5)
         table.add_column("🩺", justify="right", width=4)  # Doctor invocations
         table.add_column("↩️", justify="right", width=4)   # Reworks
         table.add_column("Runtime", justify="right", width=9)
-        table.add_column("Status", width=18)
+        table.add_column("Status", width=20)
 
         now = datetime.now()
         for idx, (proj_name, info) in enumerate(sorted(self.instances.items()), 1):
             stats = info["stats"]
             metrics = info.get("metrics", {})
+            mode = info.get("mode", "polling")
 
             # Format runtime
             if stats.get("started_at"):
@@ -565,27 +778,56 @@ class JoanMonitor:
             else:
                 runtime_str = "N/A"
 
-            # Status
-            active_count = len(stats.get("active_workers", []))
-            if active_count > 0:
-                status = f"🔄 {active_count} worker{'s' if active_count > 1 else ''}"
-                status_style = "green"
-            elif stats.get("coordinator_in_progress"):
-                # Coordinator is running but we don't have specific worker info
-                started_at = stats.get("coordinator_started_at")
-                if started_at:
-                    elapsed = (now - started_at).total_seconds()
-                    elapsed_str = f"{int(elapsed)}s"
-                    status = f"⚙️ Working ({elapsed_str})"
+            # Mode-specific display
+            if mode == "webhook":
+                mode_str = "[green]⚡[/green]"  # Lightning bolt for webhook
+                events_str = str(stats.get("events_received", 0))
+
+                # Status for webhook mode
+                active_count = len(stats.get("active_workers", []))
+                if active_count > 0:
+                    status = f"🔄 {active_count} worker{'s' if active_count > 1 else ''}"
+                    status_style = "green"
                 else:
-                    status = "⚙️ Working"
-                status_style = "green"
-            elif stats.get("idle_count", 0) > 0:
-                status = f"💤 Idle ({stats['idle_count']}/{stats.get('max_idle', 12)})"
-                status_style = "yellow"
+                    last_event = stats.get("last_event")
+                    if last_event:
+                        elapsed = (now - last_event).total_seconds()
+                        if elapsed < 60:
+                            status = f"📡 Active ({int(elapsed)}s ago)"
+                            status_style = "green"
+                        elif elapsed < 300:
+                            status = f"📡 Listening ({int(elapsed/60)}m)"
+                            status_style = "cyan"
+                        else:
+                            status = f"📡 Idle ({int(elapsed/60)}m)"
+                            status_style = "yellow"
+                    else:
+                        status = "📡 Listening"
+                        status_style = "cyan"
             else:
-                status = "✓ Working"
-                status_style = "green"
+                mode_str = "[dim]🔄[/dim]"  # Cycle for polling
+                events_str = str(stats.get("cycle", 0))
+
+                # Status for polling mode (legacy)
+                active_count = len(stats.get("active_workers", []))
+                if active_count > 0:
+                    status = f"🔄 {active_count} worker{'s' if active_count > 1 else ''}"
+                    status_style = "green"
+                elif stats.get("coordinator_in_progress"):
+                    started_at = stats.get("coordinator_started_at")
+                    if started_at:
+                        elapsed = (now - started_at).total_seconds()
+                        elapsed_str = f"{int(elapsed)}s"
+                        status = f"⚙️ Working ({elapsed_str})"
+                    else:
+                        status = "⚙️ Working"
+                    status_style = "green"
+                elif stats.get("idle_count", 0) > 0:
+                    status = f"💤 Idle ({stats['idle_count']}/{stats.get('max_idle', 12)})"
+                    status_style = "yellow"
+                else:
+                    status = "✓ Working"
+                    status_style = "green"
 
             # Doctor/Rework counts with color coding
             doctor_count = metrics.get("doctor_invocations", 0)
@@ -597,9 +839,9 @@ class JoanMonitor:
 
             table.add_row(
                 str(idx),
-                proj_name[:18] + ".." if len(proj_name) > 18 else proj_name,
-                str(stats.get("cycle", 0)),
-                f"{stats.get('idle_count', 0)}/{stats.get('max_idle', 12)}",
+                proj_name[:16] + ".." if len(proj_name) > 16 else proj_name,
+                mode_str,
+                events_str,
                 str(active_count),
                 str(stats.get("tasks_completed", 0)),
                 f"[{doctor_style}]{doctor_count}[/{doctor_style}]",
@@ -614,7 +856,10 @@ class JoanMonitor:
         """Generate Rich layout for live global view."""
         if not self.instances:
             return Panel(
-                "[yellow]No running joan-agents instances found[/yellow]\n\nStart with: [cyan]/agents:dispatch --loop[/cyan]",
+                "[yellow]No running joan-agents instances found[/yellow]\n\n"
+                "Start with:\n"
+                "  [cyan]./scripts/webhook-receiver.sh --project-dir .[/cyan]  (webhook mode)\n"
+                "  [cyan]/agents:dispatch --loop[/cyan]  (polling mode)",
                 title="Joan Agents - Global Status"
             )
 
@@ -739,11 +984,13 @@ class JoanMonitor:
         """Show a static snapshot of project details."""
         stats = info["stats"]
         config = info["config"]
+        mode = info.get("mode", "polling")
         now = datetime.now()
 
         # Header
         self.console.print()
-        self.console.rule(f"[bold cyan]{proj_name}[/bold cyan]", style="cyan")
+        mode_icon = "⚡" if mode == "webhook" else "🔄"
+        self.console.rule(f"[bold cyan]{proj_name}[/bold cyan] {mode_icon}", style="cyan")
         self.console.print()
 
         # Config info
@@ -753,14 +1000,16 @@ class JoanMonitor:
 
         config_table.add_row("Project Directory", str(info["project_dir"]))
         config_table.add_row("PID", info["pid"])
+        config_table.add_row("Dispatch Mode", "[green]Webhook (event-driven)[/green]" if mode == "webhook" else "[dim]Polling (legacy)[/dim]")
         config_table.add_row("Model", config.get("settings", {}).get("model", "N/A"))
-        config_table.add_row("Mode", config.get("settings", {}).get("mode", "standard"))
-        config_table.add_row("Poll Interval", f"{config.get('settings', {}).get('pollingIntervalMinutes', 1)} min")
+        config_table.add_row("Workflow Mode", config.get("settings", {}).get("mode", "standard"))
+        if mode == "polling":
+            config_table.add_row("Poll Interval", f"{config.get('settings', {}).get('pollingIntervalMinutes', 1)} min")
 
         self.console.print(Panel(config_table, title="Configuration", border_style="blue"))
         self.console.print()
 
-        # Runtime stats
+        # Runtime stats - different for webhook vs polling
         stats_table = Table(show_header=False, box=None, padding=(0, 2))
         stats_table.add_column("Metric", style="cyan")
         stats_table.add_column("Value")
@@ -772,14 +1021,36 @@ class JoanMonitor:
         else:
             stats_table.add_row("Runtime", "N/A")
 
-        stats_table.add_row("Current Cycle", str(stats.get("cycle", 0)))
-        stats_table.add_row("Idle Count", f"{stats.get('idle_count', 0)}/{stats.get('max_idle', 12)}")
-        stats_table.add_row("Tasks Completed", str(stats.get("tasks_completed", 0)))
-        stats_table.add_row("Workers Dispatched", str(stats.get("workers_dispatched", 0)))
+        if mode == "webhook":
+            # Webhook-specific stats
+            stats_table.add_row("Events Received", str(stats.get("events_received", 0)))
+            stats_table.add_row("Handlers Dispatched", str(stats.get("handlers_dispatched", 0)))
 
-        if stats.get("last_poll"):
-            elapsed = (now - stats["last_poll"]).total_seconds()
-            stats_table.add_row("Last Poll", f"{int(elapsed)}s ago")
+            # Show handlers by type
+            handlers_by_type = stats.get("handlers_by_type", {})
+            if handlers_by_type:
+                breakdown = ", ".join([f"{k}: {v}" for k, v in handlers_by_type.items()])
+                stats_table.add_row("Handler Breakdown", breakdown)
+
+            # Last event
+            if stats.get("last_event"):
+                elapsed = (now - stats["last_event"]).total_seconds()
+                if elapsed < 60:
+                    last_event_str = f"{int(elapsed)}s ago"
+                else:
+                    last_event_str = f"{int(elapsed/60)}m ago"
+                stats_table.add_row("Last Event", last_event_str)
+        else:
+            # Polling-specific stats
+            stats_table.add_row("Current Cycle", str(stats.get("cycle", 0)))
+            stats_table.add_row("Idle Count", f"{stats.get('idle_count', 0)}/{stats.get('max_idle', 12)}")
+            stats_table.add_row("Workers Dispatched", str(stats.get("workers_dispatched", 0)))
+
+            if stats.get("last_poll"):
+                elapsed = (now - stats["last_poll"]).total_seconds()
+                stats_table.add_row("Last Poll", f"{int(elapsed)}s ago")
+
+        stats_table.add_row("Tasks Completed", str(stats.get("tasks_completed", 0)))
 
         self.console.print(Panel(stats_table, title="Runtime Statistics", border_style="green"))
         self.console.print()
@@ -1085,15 +1356,39 @@ class JoanMonitor:
         else:
             layout["workers"].update(Panel("No active workers", title="Active Workers", border_style="dim"))
 
-        # Recent log lines
-        if info["log_file"].exists():
-            try:
-                with open(info["log_file"], 'r') as f:
-                    lines = f.readlines()
-                recent = "".join(lines[-15:])
-                layout["logs"].update(Panel(Text(recent, style="dim"), title="Recent Logs", border_style="blue"))
-            except:
-                layout["logs"].update(Panel("Error reading logs", border_style="red"))
+        # Bottom panel: Worker Progress (when active) or Recent Logs (when idle)
+        # Determine if a worker is actively running
+        active_worker_type = None
+        if worker_activity.get("current_worker") and worker_activity.get("current_status") == "WORKING":
+            active_worker_type = worker_activity["current_worker"]
+        elif stats.get("active_workers"):
+            # Fallback to scheduler-detected workers
+            for w in stats["active_workers"]:
+                if w.get("type") in ["BA", "Architect", "Dev", "Reviewer", "Ops"]:
+                    active_worker_type = w["type"]
+                    break
+
+        if active_worker_type and info.get("worker_log"):
+            # Show Worker Progress view - focused on the active worker
+            progress_content = self._get_worker_progress_content(
+                info["worker_log"],
+                worker_type=active_worker_type,
+                max_lines=15
+            )
+            title = f"📋 {active_worker_type} Worker Progress"
+            layout["logs"].update(Panel(progress_content, title=title, border_style="green"))
+        else:
+            # No active worker - show Recent Logs from scheduler
+            if info["log_file"].exists():
+                try:
+                    with open(info["log_file"], 'r') as f:
+                        lines = f.readlines()
+                    recent = "".join(lines[-15:])
+                    layout["logs"].update(Panel(Text(recent, style="dim"), title="Recent Logs", border_style="blue"))
+                except:
+                    layout["logs"].update(Panel("Error reading logs", border_style="red"))
+            else:
+                layout["logs"].update(Panel("No logs available", title="Recent Logs", border_style="dim"))
 
         return layout
 

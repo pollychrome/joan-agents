@@ -1,6 +1,6 @@
-# Joan Multi-Agent System (v4.6 - Enhanced Anomaly Detection & Recovery)
+# Joan Multi-Agent System (v5.0 - Webhook-Driven Architecture)
 
-This system uses **tag-based state transitions** (no comment parsing), a **single coordinator** that dispatches workers, and a **strict serial dev pipeline** to prevent merge conflicts.
+This system uses **tag-based state transitions**, **webhook-driven dispatch** for instant response, and a **strict serial dev pipeline** to prevent merge conflicts.
 
 ## Quick Start
 
@@ -13,82 +13,84 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 /agents:project-planner --interactive     # Guided task creation
 # Or add tasks manually in Joan web app
 
-# 3. Run coordinator
-/agents:dispatch                       # Single pass (testing/debugging)
-/agents:dispatch --loop                # Continuous operation (recommended for production)
-/agents:dispatch --mode=yolo           # Fully autonomous (YOLO mode)
-/agents:dispatch --loop --mode=yolo    # Continuous YOLO mode
+# 3. Start the webhook receiver (event-driven, recommended)
+./scripts/webhook-receiver.sh --project-dir .
 
 # 4. Monitor live activity (from terminal, zero token cost)
 joan status                # Global view of all running instances
 joan status myproject -f   # Live dashboard for specific project
 joan logs myproject        # Tail logs in real-time
 
-# 5. Diagnose and recover invalid task states
+# 5. Diagnose and recover invalid task states (run periodically or on-demand)
 /agents:doctor             # Scan all tasks for issues
 /agents:doctor --dry-run   # Preview fixes without applying
 ```
 
-**Important:** For any run longer than 15 minutes, always use `--loop` mode. It uses an external scheduler that prevents context accumulation issues.
+**Why webhooks?** Zero token cost when idle, instant response to events, and cleaner architecture. The webhook receiver listens for Joan events and dispatches the appropriate handler immediately.
 
 ## Architecture
 
 ```
-Staged Pipeline Architecture (Strict Serial Mode)
+Webhook-Driven Event Architecture
 ──────────────────────────────────────────────────────────────────────────
 
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │                      PHASE 1: BA DRAINING                           │
-  │  Process ALL tasks in To Do → Move to Analyse with Ready tag        │
-  │  (Safe to process all - no code dependencies)                       │
-  └─────────────────────────────────────────────────────────────────────┘
-                                  ↓
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │                PHASE 2: STRICT SERIAL DEV PIPELINE                  │
-  │                                                                     │
-  │  ┌──────────┐   ┌─────────┐   ┌────────┐   ┌──────┐   ┌──────────┐ │
-  │  │ Architect│ → │   Dev   │ → │ Review │ → │  Ops │ → │  MERGED  │ │
-  │  │ (1 task) │   │(1 task) │   │(1 task)│   │merge │   │to develop│ │
-  │  └──────────┘   └─────────┘   └────────┘   └──────┘   └──────────┘ │
-  │                                                                     │
-  │  ONLY AFTER MERGE → Pick next Ready task for Architect              │
-  │  This ensures plans always reference current codebase               │
-  └─────────────────────────────────────────────────────────────────────┘
+  ┌─────────────┐      ┌──────────────────┐      ┌─────────────────────┐
+  │ Joan Backend│ ───► │ Webhook Receiver │ ───► │ Focused Handlers    │
+  │  (events)   │      │  (HTTP server)   │      │ (one task each)     │
+  └─────────────┘      └──────────────────┘      └─────────────────────┘
+        │                      │                         │
+        │  task_created        │  Dispatches:            │  Executes:
+        │  tag_added           │  handle-ba              │  BA evaluation
+        │  tag_removed         │  handle-architect       │  Plan creation
+        │  task_updated        │  handle-dev             │  Implementation
+        │  task_moved          │  handle-reviewer        │  Code review
+        │  task_deleted        │  handle-ops             │  Merge to develop
+        │                      │                         │
+        └──────────────────────┴─────────────────────────┘
+
+  Event → Handler Mapping:
+  ─────────────────────────────────────────────────────────────────────
+  task_created              → handle-ba (evaluate new task)
+  tag_added: Ready          → handle-architect --mode=plan
+  tag_added: Plan-Approved  → handle-architect --mode=finalize
+  tag_added: Planned        → handle-dev
+  tag_added: Dev-Complete   → handle-reviewer
+  tag_added: Ops-Ready      → handle-ops
 
   Key Principles:
-  • BA tasks drain in parallel (no code dependencies)
-  • ONE task at a time in the Architect→Dev→Review→Ops pipeline
-  • Pipeline gate blocks new planning until current task merges
-  • No merge conflicts - each PR merges to fresh develop state
-  • Workers do NOT have MCP access - they return action requests
-  • Self-healing: anomaly detection cleans stale tags automatically
+  • Event-driven: Zero tokens when idle, instant response to changes
+  • Focused handlers: Each invocation processes ONE task
+  • Stateless: Handlers check Joan state on each invocation
+  • Strict serial: Pipeline gate enforced by tag presence checks
+  • Self-healing: Run /agents:doctor periodically or on-demand
 ```
 
-## What's New in v4.6
+## What's New in v5.0
 
-**Enhanced Anomaly Detection & Recovery** - The coordinator now handles tasks that were manually moved between columns without proper workflow tags:
+**Webhook-Driven Architecture** - Complete replacement of polling-based coordination with event-driven dispatch:
 
 **Key Improvements:**
-1. **Complete WORKFLOW_TAGS list** - Now includes all workflow tags (`Dev-Complete`, `Design-Complete`, `Test-Complete`, etc.) for proper cleanup
-2. **Diagnostic for untagged tasks** - Detects tasks in Review/Deploy columns missing required workflow tags
-3. **Auto-recovery for manually-moved tasks:**
-   - Tasks in Review with no tags → moved back to Development with `Planned` tag
-   - Tasks in Deploy with completion tags → moved back to Review for proper approval flow
-4. **Better visibility** - Enhanced diagnostics report tasks that don't match any queue
+1. **Zero idle cost** - No tokens consumed when waiting for work
+2. **Instant response** - Events trigger handlers immediately (no polling delay)
+3. **Simpler architecture** - Each handler processes one task, stateless design
+4. **Better scalability** - No coordinator bottleneck, handlers run independently
 
-**Why this matters:** Manual task moves (via Joan UI) bypass the agent workflow and leave tasks in inconsistent states. The enhanced detection now catches and auto-fixes these cases, eliminating stuck tasks from manual operations.
+**Breaking Changes from v4.x:**
+- `joan-scheduler.sh` is deprecated (use `webhook-receiver.sh`)
+- `/agents:dispatch --loop` is deprecated (use webhook receiver)
+- Polling-related settings (`pollingIntervalMinutes`, `maxIdlePolls`) are ignored
+- Self-healing now runs via `/agents:doctor` (schedule with cron if needed)
 
-### Why MCP Proxy Pattern?
+**Migration:** Replace `/agents:dispatch --loop` with `./scripts/webhook-receiver.sh --project-dir .`
 
-Subagents spawned via the Task tool cannot access MCP servers (platform limitation).
-The solution:
+### How Webhook Dispatch Works
 
-1. **Workers are "pure functions"** - receive work package, return structured result
-2. **Coordinator has MCP access** - executes all Joan API operations
-3. **Structured results** - workers return `WorkerResult` JSON with `joan_actions`
-4. **Post-condition verification** - coordinator re-fetches to confirm changes
+1. **Joan backend** sends HTTP POST to configured webhook URL when events occur
+2. **Webhook receiver** parses event type and tag changes
+3. **Handler dispatched** via `claude /agents:dispatch/handle-*` with task ID
+4. **Handler executes** focused work on single task, returns structured result
 
-See `shared/joan-shared-specs/docs/workflow/worker-result-schema.md` for the full schema.
+Each handler is stateless and checks Joan state on invocation, ensuring correct behavior regardless of execution order.
 
 ## Configuration
 
@@ -101,13 +103,10 @@ Agents read from `.joan-agents.json` in project root:
   "settings": {
     "model": "opus",
     "mode": "standard",
-    "pollingIntervalMinutes": 5,
-    "maxIdlePolls": 12,
     "staleClaimMinutes": 120,
-    "stuckStateMinutes": 120,
-    "pipeline": {
-      "baQueueDraining": true,
-      "maxBaTasksPerCycle": 10
+    "webhook": {
+      "port": 9847,
+      "secret": "optional-hmac-secret"
     },
     "workerTimeouts": {
       "ba": 10,
@@ -135,21 +134,9 @@ Run `/agents:init` to generate this file interactively.
 |---------|---------|-------------|
 | `model` | opus | Claude model for all agents: `opus`, `sonnet`, or `haiku` |
 | `mode` | standard | Workflow mode: `standard` (human gates) or `yolo` (autonomous) |
-| `pollingIntervalMinutes` | 1 | Minutes between polls (1 min recommended for best responsiveness) |
-| `maxIdlePolls` | 12 | Consecutive truly idle polls before auto-shutdown |
-| `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released |
-| `stuckStateMinutes` | 120 | Minutes before tasks are flagged as stuck in workflow |
-
-### Context Management
-
-The coordinator relies on Claude's **auto-compact** feature for long-running sessions. Key state (TAG_CACHE, COLUMN_CACHE) is rebuilt every poll cycle from Joan MCP, so context summarization doesn't affect correctness. The loop continues indefinitely until max idle polls is reached.
-
-### Pipeline Settings (Strict Serial Mode)
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `pipeline.baQueueDraining` | true | Process all BA tasks before dev pipeline |
-| `pipeline.maxBaTasksPerCycle` | 10 | Maximum BA tasks to drain per dispatch cycle |
+| `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released (used by doctor) |
+| `webhook.port` | 9847 | Port for webhook receiver to listen on |
+| `webhook.secret` | (none) | HMAC secret for webhook signature verification |
 
 ### Worker Timeouts
 
@@ -170,13 +157,6 @@ This ensures strict serial execution and prevents merge conflicts.
 - `haiku` - Fastest, lowest cost, for very simple operations
 
 Change model anytime with `/agents:model`.
-
-With defaults: agents auto-shutdown after 12 minutes of true inactivity (12 polls × 1 min, only counting polls with no work AND no workers running).
-
-Override per-run with `--max-idle=N`:
-```bash
-/agents:dispatch --loop --max-idle=24  # Shutdown after 2 hours idle
-```
 
 ### Workflow Modes
 
@@ -234,115 +214,90 @@ Fully autonomous operation with auto-approval at both gates:
 
 **Audit trail:** In YOLO mode, all auto-approvals are logged as ALS comments for debugging and compliance tracking.
 
-## Invocation Modes
+## Webhook Receiver
 
-The coordinator supports two modes:
+The webhook receiver is a lightweight HTTP server that listens for Joan events and dispatches handlers.
 
-### Single Pass (default)
+### Starting the Receiver
+
 ```bash
-/agents:dispatch
-```
-- Process all available tasks once
-- Exit when queue is empty
-- Best for: ad-hoc runs, testing, manual intervention
+# Start with defaults
+./scripts/webhook-receiver.sh --project-dir .
 
-### Continuous Operation (--loop)
+# With custom port
+./scripts/webhook-receiver.sh --project-dir . --port 9847
+
+# With HMAC signature verification
+./scripts/webhook-receiver.sh --project-dir . --secret "your-secret"
+
+# Environment variables also work
+JOAN_WEBHOOK_PORT=9847 JOAN_WEBHOOK_SECRET="secret" ./scripts/webhook-receiver.sh --project-dir .
+```
+
+### Configuring Joan to Send Webhooks
+
+In the Joan web app or via MCP:
+1. Go to Project Settings
+2. Set Webhook URL to `http://your-host:9847/webhook`
+3. Optionally set Webhook Secret for HMAC verification
+
+### Event → Handler Mapping
+
+| Event | Tag/Condition | Handler Dispatched |
+|-------|---------------|-------------------|
+| `task_created` | New task in To Do | `handle-ba --task=ID` |
+| `tag_added` | `Ready` | `handle-architect --task=ID --mode=plan` |
+| `tag_added` | `Plan-Approved` | `handle-architect --task=ID --mode=finalize` |
+| `tag_added` | `Plan-Rejected` | `handle-architect --task=ID --mode=revise` |
+| `tag_added` | `Planned` | `handle-dev --task=ID` |
+| `tag_added` | `Rework-Requested` | `handle-dev --task=ID` |
+| `tag_added` | `Merge-Conflict` | `handle-dev --task=ID` |
+| `tag_added` | `Dev-Complete` | `handle-reviewer --task=ID` |
+| `tag_added` | `Rework-Complete` | `handle-reviewer --task=ID` |
+| `tag_added` | `Ops-Ready` | `handle-ops --task=ID` |
+| `tag_added` | `Clarification-Answered` | `handle-ba --task=ID` |
+
+### Graceful Shutdown
+
 ```bash
-/agents:dispatch --loop
-```
-- Uses external scheduler to spawn fresh coordinator processes
-- Each poll cycle starts with clean context (prevents context bloat)
-- Auto-shutdown after N consecutive idle polls
-- Best for: autonomous operation, overnight runs, any session >15 minutes
+# Send SIGINT or SIGTERM
+kill -INT $(pgrep -f webhook-receiver.sh)
 
-**How it works:**
-```
-External Scheduler (bash script)
-├── spawn: claude /agents:dispatch → exits with fresh context
-├── check heartbeat for stuck detection
-├── sleep INTERVAL seconds
-├── spawn: claude /agents:dispatch → exits with fresh context
-└── ... (each invocation starts clean)
+# Or press Ctrl+C in terminal
 ```
 
-**Why external scheduler?**
-- Internal loop mode accumulated context causing failures after 20-30 minutes
-- Context bloat led to partial action execution and verification skips
-- External scheduler ensures consistent behavior indefinitely
+Logs are written to `.claude/logs/webhook-receiver.log`.
 
-**When to use:**
+### Self-Healing
 
-| Scenario | Recommended Command |
-|----------|---------------------|
-| Quick test / debugging | `/agents:dispatch` (single pass) |
-| Any run longer than 15 minutes | `/agents:dispatch --loop` |
-| Overnight autonomous operation | `/agents:dispatch --loop` |
-| Multi-hour background processing | `/agents:dispatch --loop --max-idle=48` |
+Since webhooks are event-driven, anomaly detection doesn't run continuously. Schedule `/agents:doctor` to run periodically:
 
-**Options:**
 ```bash
-/agents:dispatch --loop                      # Default settings
-/agents:dispatch --loop --interval=180       # Custom poll interval (3 min)
-/agents:dispatch --loop --max-idle=24        # Extended operation (2 hours)
+# Add to crontab - run every 30 minutes
+*/30 * * * * cd /path/to/project && claude /agents:doctor --auto-fix >> .claude/logs/doctor-cron.log 2>&1
 ```
 
-**Scheduler settings** (in `.joan-agents.json`):
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `schedulerIntervalSeconds` | 60 | Seconds between coordinator spawns |
-| `schedulerStuckTimeoutSeconds` | 3900 | Seconds before killing stuck coordinator |
-| `schedulerMaxConsecutiveFailures` | 3 | Max failures before scheduler stops |
-
-**IMPORTANT:** `schedulerStuckTimeoutSeconds` must be longer than the longest worker timeout (`workerTimeouts.dev` = 60 min = 3600s). The default of 3900s (65 min) provides a 5-minute buffer.
-
-**Graceful shutdown:**
+Or run manually when you notice stuck tasks:
 ```bash
-touch /tmp/joan-agents-{project-name}.shutdown
+/agents:doctor             # Diagnose and fix
+/agents:doctor --dry-run   # Preview only
 ```
-
-Logs are written to `.claude/logs/scheduler.log`.
-
-## Coordinator Workflow
-
-The coordinator uses a smart polling pattern with MCP Proxy execution:
-
-1. **Poll** - Fetch all tasks from Joan (once per interval)
-2. **Recover** - Release stale claims, clean anomalous tags (self-healing)
-3. **Queue** - Build priority queues based on tags
-4. **Dispatch** - Build work packages, spawn workers with task data via prompt
-5. **Claim** - For dev tasks, atomically claim before dispatch
-6. **Execute** - Process worker JSON results, execute `joan_actions` via MCP
-7. **Verify** - Re-fetch tasks to confirm changes applied (retry if needed)
-8. **Sleep** - Wait for poll interval (in loop mode)
-9. **Repeat** - Continue until idle threshold reached
-
-This reduces Joan API calls to 1 poll per interval and ensures reliable state transitions.
 
 ### Serial Pipeline Gate
 
-The coordinator enforces a **strict serial gate** on the Architect→Dev→Review→Ops pipeline:
+Handlers enforce strict serial execution by checking Joan state before acting:
 
 ```
-Pipeline Gate Check (runs before dispatching Architect)
+Handler Pipeline Gate Check
 ─────────────────────────────────────────────────────────
-  IF any task in Development OR Review that hasn't merged:
-    → BLOCK: Don't plan new tasks
-    → BA continues draining (no code deps)
-  ELSE:
-    → CLEAR: Architect can plan next Ready task
+  handle-architect checks:
+    IF any task in Development OR Review columns:
+      → SKIP: Log "pipeline busy" and exit
+    ELSE:
+      → PROCEED: Plan this task
 ```
 
-**Why strict serial?**
-
-| Aspect | Parallel (Old) | Strict Serial (New) |
-|--------|---------------|---------------------|
-| Merge conflicts | Frequent | None |
-| Plan freshness | Often stale | Always current |
-| Throughput | Higher nominal | Lower but reliable |
-| Rework cycles | Common | Rare |
-| Predictability | Chaotic | Linear, trackable |
-
-The trade-off is worth it: avoiding merge conflicts and stale plans saves more time than parallel execution gains.
+Each handler is stateless - it queries Joan for current state on every invocation. This ensures correct behavior even if events arrive out of order.
 
 ## Agent Communication Protocol
 
@@ -791,6 +746,19 @@ Plans define sub-tasks executed in order:
 Devs check off tasks as completed:
 - [x] DEV-1: Description
 
+### Batched Validation (Performance Optimization)
+
+Dev workers use **batched validation** to save ~2-3 minutes per task:
+
+1. **Implement all DES-* tasks** (no commit yet)
+2. **Implement all DEV-* tasks** (no commit yet)
+3. **Run lint + typecheck ONCE** → commit all implementation
+4. **Write all TEST-* test cases** (no commit yet)
+5. **Run test suite ONCE** → commit all tests
+
+This produces 2 commits (implementation + tests) instead of N commits per sub-task.
+Validation runs once instead of per-task, avoiding redundant lint/typecheck/test runs.
+
 ## Branch Naming
 
 Feature branches: `feature/{task-title-kebab-case}`
@@ -864,17 +832,27 @@ joan status -f    # Live updating view with recent logs
 Output (static):
 ```
                           Joan Agents - Global Status
-╭─┬───────────┬──────┬──────┬────────┬───────────┬──────────┬───────────────╮
-│#│ Project   │ Cycle│ Idle │ Active │ Completed │ Runtime  │ Status        │
-├─┼───────────┼──────┼──────┼────────┼───────────┼──────────┼───────────────┤
-│1│ yolo-test │   42 │ 0/12 │   2    │    18     │ 02:15:30 │ 🔄 2 workers  │
-│2│ prod-app  │  128 │ 2/12 │   0    │    94     │ 08:42:10 │ 💤 Idle (2/12)│
-╰─┴───────────┴──────┴──────┴────────┴───────────┴──────────┴───────────────╯
+╭─┬───────────┬──────┬────────┬────────┬──────┬────┬────┬──────────┬──────────────────╮
+│#│ Project   │ Mode │ Events │ Active │ Done │ 🩺 │ ↩️  │ Runtime  │ Status           │
+├─┼───────────┼──────┼────────┼────────┼──────┼────┼────┼──────────┼──────────────────┤
+│1│ yolo-test │  ⚡  │   42   │   1    │  18  │  0 │  1 │ 02:15:30 │ 📡 Active (5s)   │
+│2│ prod-app  │  ⚡  │  128   │   0    │  94  │  2 │  3 │ 08:42:10 │ 📡 Listening (2m)│
+╰─┴───────────┴──────┴────────┴────────┴──────┴────┴────┴──────────┴──────────────────╯
 ```
+
+Mode icons:
+- ⚡ = Webhook mode (event-driven, recommended)
+- 🔄 = Polling mode (legacy)
+
+Status indicators (webhook mode):
+- 📡 Active (Xs ago) - Recent event processed
+- 📡 Listening (Xm) - Waiting for events
+- 📡 Idle (Xm) - No events for extended period
+- 🔄 N workers - Handler(s) currently running
 
 Live view (`-f`) adds:
 - Auto-refreshing table (2x per second)
-- Recent activity panel showing log events from all projects, interleaved by timestamp
+- Recent activity panel showing log events from all projects
 - Current time in header
 - Press Ctrl+C to exit
 
@@ -885,26 +863,26 @@ joan status yolo-test -f    # Live view with logs
 ```
 
 Shows:
-- Configuration (model, mode, poll interval)
-- Runtime statistics (cycle, idle count, tasks completed)
+- Configuration (model, workflow mode, dispatch mode)
+- Runtime statistics (events received, handlers dispatched, tasks completed)
+- Handler breakdown by type (BA, Architect, Dev, Reviewer, Ops)
 - Active workers with duration
 - Log file location
-- In live mode (`-f`): recent log lines update in real-time
 
 **Tail Logs** - Live log streaming:
 ```bash
 joan logs yolo-test
 ```
 
-Streams the scheduler log in real-time (equivalent to `tail -f`).
+Streams the webhook receiver log in real-time (equivalent to `tail -f`).
 
 ### Features
 
-- **Auto-discovery**: Finds all running instances by scanning `ps` for scheduler processes
+- **Auto-discovery**: Finds running webhook receivers and legacy schedulers
+- **Mode-aware**: Shows appropriate metrics for webhook vs polling mode
 - **Global visibility**: Monitor multiple projects from a single command
 - **Zero tokens**: Pure local operation, no Claude API calls
 - **Project matching**: Partial name matching (e.g., `joan status yolo` matches `yolo-test`)
-- **Rich metrics**: Runtime, cycle count, tasks completed, active workers
 
 ### Tips
 
@@ -915,11 +893,11 @@ joan status -f
 # Live view of specific project
 joan status yolo-test -f
 
-# Quick health check (static)
-joan status | grep "🔄"  # Show only projects with active workers
+# Quick health check - show only webhook receivers
+joan status | grep "⚡"
 
-# Monitor all projects in background
-joan status -f > /dev/null 2>&1 &
+# Show only projects with active workers
+joan status | grep "🔄"
 ```
 
 **Live Mode Features:**
