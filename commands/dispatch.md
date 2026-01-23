@@ -516,21 +516,8 @@ For each task in tasks:
     IF state_age_minutes > max_minutes:
       Report: "STUCK STATE: '{task.title}' in {description} state for {state_age_minutes} min (max: {max_minutes})"
 
-      # Add diagnostic comment
       mcp__joan__create_task_comment(task.id,
-        "ALS/1
-        actor: coordinator
-        intent: diagnostic
-        action: stuck-state-detected
-        tags.add: []
-        tags.remove: []
-        summary: Task stuck in workflow state for {state_age_minutes} minutes.
-        details:
-        - state: {description}
-        - expected_tags: {required_tags}
-        - column: {expected_column}
-        - threshold: {max_minutes} minutes
-        - action: Force re-queuing for next dispatch cycle")
+        "ALS/1\nactor: coordinator\naction: stuck-state-detected\nsummary: Stuck {state_age_minutes}min in {description}")
 
       # Mark for priority re-processing
       FORCE_REQUEUE.push({task: task, state: description, required_tags: required_tags})
@@ -654,18 +641,8 @@ For each task in tasks:
           mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, actual_tag.id)
           Report: "  Remediation: Removed '{actual_tag.name}'"
 
-    # Audit trail
     mcp__joan__create_task_comment(task.id,
-      "ALS/1
-      actor: coordinator
-      intent: recovery
-      action: invalid-state-remediation
-      tags.add: []
-      tags.remove: [{removed tag(s)}]
-      summary: Auto-fixed invalid tag combination.
-      details:
-      - reason: {invalid.reason}
-      - remediation: {invalid.remediation}")
+      "ALS/1\nactor: coordinator\naction: invalid-state-remediation\nsummary: Fixed: {invalid.reason}")
 
     REMEDIATED_COUNT++
 
@@ -694,18 +671,8 @@ IF MODE == "yolo":
       # Move to Done column
       mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Done"])
 
-      # Add audit comment
       mcp__joan__create_task_comment(task.id,
-        "ALS/1
-        actor: coordinator
-        intent: yolo-auto-complete
-        action: advance-to-done
-        column.move: Deploy → Done
-        summary: YOLO mode auto-complete - task merged and workflow finished.
-        details:
-        - mode: yolo
-        - reason: Task in Deploy with no workflow tags = merge complete
-        - trigger: Step 2f YOLO Auto-Complete")
+        "ALS/1\nactor: coordinator\naction: advance-to-done\nsummary: YOLO auto-complete")
 
       YOLO_COMPLETED.push(task)
 
@@ -1054,20 +1021,8 @@ IF MODE == "yolo":
         IF TAG_CACHE["Plan-Approved"]:
           mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Plan-Approved"])
 
-          # Add audit comment
           mcp__joan__create_task_comment(task.id,
-            "ALS/1
-            actor: coordinator
-            intent: decision
-            action: auto-approve-plan
-            tags.add: [Plan-Approved]
-            tags.remove: []
-            summary: Plan auto-approved (YOLO mode active).
-            details:
-            - mode: yolo
-            - reason: Auto-approval bypasses human review gate
-            - next: Architect will finalize on next poll
-            - trigger: pre-dispatch scan detected Plan-Pending-Approval tag")
+            "ALS/1\nactor: coordinator\naction: auto-approve-plan\nsummary: YOLO plan auto-approved")
 
           auto_approved_count++
           Report: "    ✓ Added Plan-Approved tag + audit comment"
@@ -1083,20 +1038,8 @@ IF MODE == "yolo":
         IF TAG_CACHE["Ops-Ready"]:
           mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Ops-Ready"])
 
-          # Add audit comment
           mcp__joan__create_task_comment(task.id,
-            "ALS/1
-            actor: coordinator
-            intent: decision
-            action: auto-approve-merge
-            tags.add: [Ops-Ready]
-            tags.remove: []
-            summary: Merge auto-approved (YOLO mode active).
-            details:
-            - mode: yolo
-            - reason: Auto-approval bypasses human merge gate
-            - next: Ops will merge on next poll
-            - trigger: pre-dispatch scan detected Review-Approved tag")
+            "ALS/1\nactor: coordinator\naction: auto-approve-merge\nsummary: YOLO merge auto-approved")
 
           auto_approved_count++
           Report: "    ✓ Added Ops-Ready tag + audit comment"
@@ -1841,19 +1784,8 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
     raw_preview = first 500 chars of result
     Report: "  Raw result preview: {raw_preview}"
 
-    # Record the failure in task comments for audit trail
     mcp__joan__create_task_comment(task.id,
-      "ALS/1
-      actor: coordinator
-      intent: error
-      action: result-parse-failure
-      tags.add: []
-      tags.remove: []
-      summary: Worker returned unparseable result.
-      details:
-      - worker_type: {worker}
-      - raw_result_preview: {raw_preview}
-      - action: Task will be re-processable on next poll cycle")
+      "ALS/1\nactor: coordinator\naction: result-parse-failure\nsummary: {worker} returned unparseable result")
 
     # For dev workers, release the claim so task can be re-processed
     IF worker == "dev" AND dev_id:
@@ -1876,17 +1808,7 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
     Report: "ERROR: Missing required fields in {worker} result: {missing_fields}"
 
     mcp__joan__create_task_comment(task.id,
-      "ALS/1
-      actor: coordinator
-      intent: error
-      action: result-validation-failure
-      tags.add: []
-      tags.remove: []
-      summary: Worker result missing required fields.
-      details:
-      - worker_type: {worker}
-      - missing_fields: {missing_fields}
-      - action: Task will be re-processable on next poll cycle")
+      "ALS/1\nactor: coordinator\naction: result-validation-failure\nsummary: {worker} missing fields: {missing_fields}")
 
     # Release dev claims
     IF worker == "dev" AND dev_id:
@@ -1982,19 +1904,8 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
       IF TAG_CACHE["Plan-Approved"] AND NOT task_has_tag(updated_task, "Plan-Approved"):
         mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Plan-Approved"])
 
-        # Add audit comment
         mcp__joan__create_task_comment(task.id,
-          "ALS/1
-          actor: coordinator
-          intent: decision
-          action: auto-approve-plan
-          tags.add: [Plan-Approved]
-          tags.remove: []
-          summary: Plan auto-approved (YOLO mode active).
-          details:
-          - mode: yolo
-          - reason: Auto-approval bypasses human review gate
-          - next: Architect will finalize on next poll")
+          "ALS/1\nactor: coordinator\naction: auto-approve-plan\nsummary: YOLO plan auto-approved")
 
         Report: "  ✓ Added Plan-Approved tag"
       ELSE:
@@ -2011,19 +1922,8 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
       IF TAG_CACHE["Ops-Ready"] AND NOT task_has_tag(updated_task, "Ops-Ready"):
         mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Ops-Ready"])
 
-        # Add audit comment
         mcp__joan__create_task_comment(task.id,
-          "ALS/1
-          actor: coordinator
-          intent: decision
-          action: auto-approve-merge
-          tags.add: [Ops-Ready]
-          tags.remove: []
-          summary: Merge auto-approved (YOLO mode active).
-          details:
-          - mode: yolo
-          - reason: Auto-approval bypasses human merge gate
-          - next: Ops will merge on next poll")
+          "ALS/1\nactor: coordinator\naction: auto-approve-merge\nsummary: YOLO merge auto-approved")
 
         Report: "  ✓ Added Ops-Ready tag"
       ELSE:
