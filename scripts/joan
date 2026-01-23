@@ -121,7 +121,8 @@ class JoanMonitor:
             "active_workers": [],
             "tasks_completed": 0,
             "workers_dispatched": 0,
-            "recent_events": []
+            "recent_events": [],
+            "pipeline_state": {}  # Track tasks in each workflow stage
         }
 
         try:
@@ -183,6 +184,33 @@ class JoanMonitor:
                     if match:
                         count = int(match.group(1))
                         stats["workers_dispatched"] += count
+
+                # Pipeline state from coordinator summary
+                # Look for patterns like "X in active development", "X tasks in Review"
+                if "in active development" in line.lower() or "in development" in line.lower():
+                    match = re.search(r'(\d+)\s+(?:tasks?\s+)?in\s+(?:active\s+)?development', line, re.IGNORECASE)
+                    if match and int(match.group(1)) > 0:
+                        stats["pipeline_state"]["Dev"] = int(match.group(1))
+
+                if "in review" in line.lower():
+                    match = re.search(r'(\d+)\s+(?:tasks?\s+)?in\s+review', line, re.IGNORECASE)
+                    if match and int(match.group(1)) > 0:
+                        stats["pipeline_state"]["Reviewer"] = int(match.group(1))
+
+                if "in analyse" in line.lower() or "in analysis" in line.lower():
+                    match = re.search(r'(\d+)\s+(?:tasks?\s+)?in\s+analy[sz]e?', line, re.IGNORECASE)
+                    if match and int(match.group(1)) > 0:
+                        stats["pipeline_state"]["Architect"] = int(match.group(1))
+
+                if "ready for ba" in line.lower() or "in to do" in line.lower():
+                    match = re.search(r'(\d+)\s+(?:tasks?\s+)?(?:ready\s+for\s+ba|in\s+to\s+do)', line, re.IGNORECASE)
+                    if match and int(match.group(1)) > 0:
+                        stats["pipeline_state"]["BA"] = int(match.group(1))
+
+                if "ready to deploy" in line.lower() or "in deploy" in line.lower():
+                    match = re.search(r'(\d+)\s+(?:tasks?\s+)?(?:ready\s+to\s+deploy|in\s+deploy)', line, re.IGNORECASE)
+                    if match and int(match.group(1)) > 0:
+                        stats["pipeline_state"]["Ops"] = int(match.group(1))
 
         except Exception as e:
             pass
@@ -865,6 +893,7 @@ class JoanMonitor:
         active_stage = None
         active_task = None
         doctor_active = False
+        waiting_stages = {}  # Stages with tasks waiting (not actively being worked)
 
         for worker in stats.get("active_workers", []):
             worker_type = worker.get("type", "")
@@ -877,24 +906,43 @@ class JoanMonitor:
                 active_stage = stage_map[worker_type]
                 active_task = worker.get("task", "")
 
+        # If no active workers, check pipeline_state for waiting tasks
+        pipeline_state = stats.get("pipeline_state", {})
+        if not active_stage and pipeline_state:
+            waiting_stages = pipeline_state
+            # Find the furthest stage with waiting tasks (prioritize later stages)
+            for stage in reversed(self.PIPELINE_STAGES):
+                if stage in pipeline_state and pipeline_state[stage] > 0:
+                    active_stage = stage
+                    active_task = f"{pipeline_state[stage]} task(s) waiting"
+                    break
+
         # Build pipeline visualization
         stages_display = []
+        has_active_worker = any(w.get("type") in ["BA", "Architect", "Dev", "Reviewer", "Ops"]
+                                for w in stats.get("active_workers", []))
+
         for stage in self.PIPELINE_STAGES:
             is_active = (stage == active_stage)
+            has_waiting = stage in waiting_stages and waiting_stages[stage] > 0
 
-            if is_active:
-                # Blinking effect - alternate between bright green and dim
+            if is_active and has_active_worker:
+                # Actively working - blinking green
                 if self.blink_state:
                     style = "bold bright_green on green"
                     icon = "●"
                 else:
                     style = "bold green"
                     icon = "○"
+            elif is_active or has_waiting:
+                # Waiting/queued - steady yellow
+                style = "bold yellow"
+                icon = "◐"  # Half-filled to indicate waiting
             else:
                 style = "dim white"
                 icon = "○"
 
-            stages_display.append((stage, style, icon, is_active))
+            stages_display.append((stage, style, icon, is_active or has_waiting))
 
         # Top border
         text.append("  ")
@@ -931,8 +979,12 @@ class JoanMonitor:
         if active_stage and active_task:
             text.append("\n  ")
             task_display = active_task[:50] + "..." if len(active_task) > 50 else active_task
-            text.append(f"  ▶ {active_stage}: ", "bold green")
-            text.append(task_display, "white")
+            if has_active_worker:
+                text.append(f"  ▶ {active_stage}: ", "bold green")
+                text.append(task_display, "white")
+            else:
+                text.append(f"  ◐ {active_stage}: ", "bold yellow")
+                text.append(task_display, "dim white")
 
         # Doctor indicator (separate, blinking red when active)
         if doctor_active:
