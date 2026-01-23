@@ -121,7 +121,61 @@ The wizard will:
 
 ## Step 6: Add Tasks to Joan
 
-In the Joan web app, create tasks in the **"To Do"** column:
+You have three options for adding tasks to your project:
+
+### Option A: Import from a Plan File (Recommended for new projects)
+
+If you have a project plan document, import it directly:
+
+```bash
+# In Claude Code
+/agents:project-planner --file=path/to/plan.md
+```
+
+**Supported plan file formats:**
+
+```markdown
+# Format 1: Milestone-hierarchy (recommended)
+## Milestone: MVP Launch
+Target: 2024-03-15
+
+### Task: User Authentication
+Priority: high
+Description: Implement login flow
+- Acceptance criteria here
+
+# Format 2: Simple task list
+## User Authentication
+Priority: high
+- Requirement bullets
+
+# Format 3: Bullet list (quick import)
+- [ ] User Authentication (high)
+- [ ] Dashboard UI (medium)
+```
+
+Preview before creating:
+```bash
+/agents:project-planner --file=plan.md --preview
+```
+
+### Option B: Interactive Session
+
+Let the wizard guide you through task creation:
+
+```bash
+# In Claude Code
+/agents:project-planner --interactive
+```
+
+This will ask you about:
+1. Project overview
+2. Whether to use milestones
+3. Task details (title, description, priority, milestone)
+
+### Option C: Manual (Joan Web App)
+
+Create tasks directly in the Joan web app's **"To Do"** column:
 
 ```
 Title: Add user authentication
@@ -132,10 +186,11 @@ Description:
 - Store sessions in JWT tokens
 ```
 
-Good tasks have:
-- Clear title describing the feature/fix
+**Good tasks have:**
+- Clear title describing the feature/fix (verb + noun)
 - Bullet points explaining requirements
 - Acceptance criteria (what "done" looks like)
+- Appropriate priority set
 
 ---
 
@@ -225,6 +280,7 @@ Tasks flow: `To Do → Analyse → Development → Review → Deploy → Done`
 | Command | Purpose |
 |---------|---------|
 | `/agents:init` | Initial project setup |
+| `/agents:project-planner` | Create tasks from plan file or interactively |
 | `/agents:dispatch --loop` | Start continuous operation |
 | `/agents:dispatch` | Single pass (testing) |
 | `/agents:doctor` | Diagnose stuck tasks |
@@ -294,7 +350,10 @@ SETUP
   2. npx @pollychrome/joan-mcp init → restart Claude Code
   3. claude plugin add github:pollychrome/joan-agents
   4. cd /your/project && claude → /agents:init
-  5. Add tasks to Joan "To Do" column
+  5. Add tasks:
+     - /agents:project-planner --file=plan.md  (from file)
+     - /agents:project-planner --interactive   (guided)
+     - Or add manually in Joan "To Do" column
   6. /agents:dispatch --loop
 
 MONITOR (zero tokens)

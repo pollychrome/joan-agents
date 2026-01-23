@@ -319,7 +319,50 @@ Create `.joan-agents.json` in project root with the user's selections:
 
 **Note:** `devs.count` is always 1 to enforce strict serial mode.
 
-## Step 7: Confirm Setup & Offer Tutorial
+## Step 7: Initial Task Setup (Optional)
+
+After configuration is saved, offer the user options to add initial tasks:
+
+```
+AskUserQuestion: "Would you like to add tasks to your project now?"
+Options:
+  - "Import from a plan file (I have a plan.md or similar)"
+  - "Create tasks interactively (guided questions)"
+  - "Skip - I'll add tasks later in Joan"
+```
+
+**If "Import from a plan file":**
+
+Ask for the file path:
+```
+AskUserQuestion: "Enter the path to your plan file:"
+Options:
+  - Free text input for file path
+```
+
+Then execute the project-planner command:
+```
+/agents:project-planner --file=<user-provided-path>
+```
+
+After completion, continue to Step 8.
+
+**If "Create tasks interactively":**
+
+Execute the project-planner command in interactive mode:
+```
+/agents:project-planner --interactive
+```
+
+After completion, continue to Step 8.
+
+**If "Skip":**
+
+Continue directly to Step 8.
+
+---
+
+## Step 8: Confirm Setup & Offer Tutorial
 
 Report the configuration summary:
 
@@ -357,9 +400,9 @@ Options:
   - "No, I'm ready to start"
 ```
 
-If user selects tutorial, proceed to Step 8. Otherwise, show quick start commands and finish.
+If user selects tutorial, proceed to Step 9. Otherwise, show quick start commands and finish.
 
-## Step 8: Interactive Workflow Tutorial (Optional)
+## Step 9: Interactive Workflow Tutorial (Optional)
 
 Present the tutorial in interactive sections, pausing between each for questions.
 

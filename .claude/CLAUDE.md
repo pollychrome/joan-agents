@@ -8,18 +8,23 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 # 1. Initialize configuration (interactive)
 /agents:init
 
-# 2. Run coordinator
+# 2. Add tasks to your project (choose one)
+/agents:project-planner --file=plan.md    # Import from plan file
+/agents:project-planner --interactive     # Guided task creation
+# Or add tasks manually in Joan web app
+
+# 3. Run coordinator
 /agents:dispatch                       # Single pass (testing/debugging)
 /agents:dispatch --loop                # Continuous operation (recommended for production)
 /agents:dispatch --mode=yolo           # Fully autonomous (YOLO mode)
 /agents:dispatch --loop --mode=yolo    # Continuous YOLO mode
 
-# 3. Monitor live activity (from terminal, zero token cost)
+# 4. Monitor live activity (from terminal, zero token cost)
 joan status                # Global view of all running instances
 joan status myproject -f   # Live dashboard for specific project
 joan logs myproject        # Tail logs in real-time
 
-# 4. Diagnose and recover invalid task states
+# 5. Diagnose and recover invalid task states
 /agents:doctor             # Scan all tasks for issues
 /agents:doctor --dry-run   # Preview fixes without applying
 ```
@@ -658,6 +663,68 @@ This enables cross-agent consultation without breaking the tag-based state machi
 - Fallback path (graceful degradation if invocation fails)
 
 See `shared/joan-shared-specs/docs/workflow/worker-result-schema.md` for the full `invoke_agent` schema.
+
+## Project Planning
+
+The `/agents:project-planner` command creates tasks and milestones from a plan file or interactively.
+
+### Usage
+
+```bash
+# Import from plan file
+/agents:project-planner --file=plan.md
+
+# Preview before creating
+/agents:project-planner --file=plan.md --preview
+
+# Interactive mode (guided questions)
+/agents:project-planner --interactive
+
+# Default (interactive)
+/agents:project-planner
+```
+
+### Supported Plan File Formats
+
+**Format 1: Milestone-hierarchy**
+```markdown
+## Milestone: MVP Launch
+Target: 2024-03-15
+
+### Task: User Authentication
+Priority: high
+Description: Implement login flow
+- Acceptance criteria here
+```
+
+**Format 2: Simple task list**
+```markdown
+## User Authentication
+Priority: high
+- Requirement bullets
+```
+
+**Format 3: Bullet list (quick)**
+```markdown
+- [ ] User Authentication (high)
+- [ ] Dashboard UI (medium)
+```
+
+### Task Quality for BA Evaluation
+
+Tasks created by project-planner go to the "To Do" column where the BA agent evaluates them. Good tasks have:
+- Clear, specific title (verb + noun)
+- Description explaining the goal
+- Acceptance criteria as bullet points
+- Appropriate priority set
+
+The planner will detect and prompt for clarification on:
+- Missing descriptions
+- Vague titles ("fix stuff", "update things")
+- Missing acceptance criteria
+- Unprioritized large-scope tasks
+
+---
 
 ## Branch Management
 
