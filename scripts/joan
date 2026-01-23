@@ -59,10 +59,41 @@ class JoanMonitor:
 
             for line in result.stdout.splitlines():
                 if "joan-scheduler.sh" in line and "grep" not in line:
-                    # Extract project directory from command line
-                    match = re.search(r'joan-scheduler\.sh\s+([^\s]+)', line)
-                    if match:
-                        project_dir = Path(match.group(1)).resolve()
+                    # Extract PID and project directory from command line
+                    pid_match = re.match(r'\S+\s+(\d+)', line)
+                    path_match = re.search(r'joan-scheduler\.sh\s+([^\s]+)', line)
+                    if path_match and pid_match:
+                        raw_path = path_match.group(1)
+                        pid = pid_match.group(1)
+
+                        # If path is relative (. or ./something or doesn't start with /),
+                        # resolve it from the scheduler's actual working directory
+                        if not raw_path.startswith('/'):
+                            try:
+                                # Get the scheduler's working directory via lsof
+                                lsof_result = subprocess.run(
+                                    ["lsof", "-p", pid],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5
+                                )
+                                for lsof_line in lsof_result.stdout.splitlines():
+                                    if '\tcwd\t' in lsof_line or ' cwd ' in lsof_line:
+                                        # Extract the directory path (last field)
+                                        parts = lsof_line.split()
+                                        if len(parts) >= 9:
+                                            scheduler_cwd = parts[-1]
+                                            project_dir = Path(scheduler_cwd) / raw_path
+                                            project_dir = project_dir.resolve()
+                                            break
+                                else:
+                                    # Fallback if lsof doesn't give cwd
+                                    project_dir = Path(raw_path).resolve()
+                            except (subprocess.TimeoutExpired, Exception):
+                                project_dir = Path(raw_path).resolve()
+                        else:
+                            project_dir = Path(raw_path).resolve()
+
                         if project_dir.exists():
                             self._add_instance(project_dir, line)
 
@@ -128,7 +159,9 @@ class JoanMonitor:
             "tasks_completed": 0,
             "workers_dispatched": 0,
             "recent_events": [],
-            "pipeline_state": {}  # Track tasks in each workflow stage
+            "pipeline_state": {},  # Track tasks in each workflow stage
+            "coordinator_in_progress": False,  # True if coordinator is currently running
+            "coordinator_started_at": None     # When current coordinator started
         }
 
         try:
@@ -144,6 +177,25 @@ class JoanMonitor:
 
             # Track which workers have completed (to avoid showing them as active)
             completed_workers = set()
+
+            # Check if coordinator is currently running (started but not completed)
+            # Parse forward through last 100 lines to find most recent start/complete pair
+            coordinator_last_started = None
+            coordinator_last_completed = None
+            for line in lines[-100:]:
+                ts_match = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', line)
+                if ts_match:
+                    line_ts = datetime.strptime(ts_match.group(1), '%Y-%m-%d %H:%M:%S')
+                    if "Starting coordinator" in line:
+                        coordinator_last_started = line_ts
+                    elif "Coordinator completed" in line:
+                        coordinator_last_completed = line_ts
+
+            # If started more recently than completed, coordinator is in progress
+            if coordinator_last_started:
+                if coordinator_last_completed is None or coordinator_last_started > coordinator_last_completed:
+                    stats["coordinator_in_progress"] = True
+                    stats["coordinator_started_at"] = coordinator_last_started
 
             # Parse from end for most recent info
             for line in reversed(lines[-200:]):  # Last 200 lines
@@ -252,9 +304,15 @@ class JoanMonitor:
                             if w["type"] != worker_type
                         ]
 
-                # Dispatched count
-                if "Dispatched **" in line or "dispatched **" in line:
-                    match = re.search(r'[Dd]ispatched \*\*(\d+)\*\* worker', line)
+                # Dispatched count - handle multiple log formats:
+                # - "Poll complete: dispatched 10 workers (all BA)"
+                # - "Dispatched: 1 worker (Architect for task #1)"
+                # - "Dispatched **N** worker" (legacy markdown format)
+                if "dispatched" in line.lower():
+                    # Try various patterns
+                    match = re.search(r'dispatched[:\s]+(\d+)\s+worker', line, re.IGNORECASE)
+                    if not match:
+                        match = re.search(r'dispatched\s+\*\*(\d+)\*\*\s+worker', line, re.IGNORECASE)
                     if match:
                         count = int(match.group(1))
                         stats["workers_dispatched"] += count
@@ -511,6 +569,16 @@ class JoanMonitor:
             active_count = len(stats.get("active_workers", []))
             if active_count > 0:
                 status = f"🔄 {active_count} worker{'s' if active_count > 1 else ''}"
+                status_style = "green"
+            elif stats.get("coordinator_in_progress"):
+                # Coordinator is running but we don't have specific worker info
+                started_at = stats.get("coordinator_started_at")
+                if started_at:
+                    elapsed = (now - started_at).total_seconds()
+                    elapsed_str = f"{int(elapsed)}s"
+                    status = f"⚙️ Working ({elapsed_str})"
+                else:
+                    status = "⚙️ Working"
                 status_style = "green"
             elif stats.get("idle_count", 0) > 0:
                 status = f"💤 Idle ({stats['idle_count']}/{stats.get('max_idle', 12)})"
