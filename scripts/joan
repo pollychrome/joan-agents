@@ -1356,7 +1356,7 @@ class JoanMonitor:
                     workers_content.append(f"[{event['worker']}] ", "cyan")
                     workers_content.append(f"{event['message'][:35]}\n", "white")
 
-        # Fallback: show from scheduler log if no worker activity
+        # Fallback: show from webhook/dispatcher log if no worker activity
         elif stats.get("active_workers"):
             has_worker_info = True
             for worker in stats["active_workers"]:
@@ -1364,7 +1364,7 @@ class JoanMonitor:
                 workers_content.append(f"🔄 {worker['type']}", "bold yellow")
                 workers_content.append(f"  {worker['task'][:40]}", "white")
                 workers_content.append(f"  ({self._format_duration(duration)})\n", "dim")
-            workers_content.append("\n[dim]Note: No worker-activity.log - showing scheduler log data[/dim]", "dim")
+            workers_content.append("\n[dim]Note: No worker-activity.log - showing webhook log data[/dim]", "dim")
 
         if has_worker_info:
             layout["workers"].update(Panel(workers_content, title="Active Workers", border_style="yellow"))
@@ -1377,7 +1377,7 @@ class JoanMonitor:
         if worker_activity.get("current_worker") and worker_activity.get("current_status") == "WORKING":
             active_worker_type = worker_activity["current_worker"]
         elif stats.get("active_workers"):
-            # Fallback to scheduler-detected workers
+            # Fallback to webhook-log-detected workers
             for w in stats["active_workers"]:
                 if w.get("type") in ["BA", "Architect", "Dev", "Reviewer", "Ops"]:
                     active_worker_type = w["type"]

@@ -218,14 +218,14 @@ All required permissions already present.
 
 ## Step 5b: Create Logs Directory
 
-Create the `.claude/logs` directory for scheduler and worker activity logs:
+Create the `.claude/logs` directory for webhook receiver and worker activity logs:
 
 ```bash
 mkdir -p .claude/logs
 ```
 
 This directory will contain:
-- `scheduler.log` - Coordinator activity and dispatch events
+- `webhook-receiver.log` - Webhook events and handler dispatch logs
 - `worker-activity.log` - Real-time worker progress (for `joan status` monitoring)
 - `agent-metrics.jsonl` - Structured metrics for health tracking
 
@@ -234,7 +234,7 @@ This directory will contain:
 ✓ Logs Directory Created
 
 Path: .claude/logs/
-Ready for scheduler and worker activity logging.
+Ready for webhook receiver and worker activity logging.
 ```
 
 ---
