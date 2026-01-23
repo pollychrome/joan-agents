@@ -52,22 +52,7 @@ Ask the user for their preferences using AskUserQuestion:
      * Best for: Internal tools, prototyping, trusted codebases with strong tests
      * ⚠️ **WARNING**: No human review means bad plans get implemented and bad code gets merged
 
-3. **Polling Interval**: How often should agents poll for new work? **(RECOMMENDED: 1 minute)**
-
-   With strict serial pipeline, faster polling = better responsiveness:
-
-   - `1 minute` - Best responsiveness, minimal token overhead (~500-1000 tokens/poll) **(RECOMMENDED)**
-   - `3 minutes` - Balanced between responsiveness and cost
-   - `5 minutes` - Legacy default, slower but lower token usage
-   - `10 minutes` - Very slow, only for low-priority projects
-
-   **Note:** Polling cost is negligible (~1000 tokens/poll). With dev work taking 10-30 minutes, 1-minute polling provides 80-95% better responsiveness.
-
-4. **Max Idle Polls**: How many empty polls before agent shuts down? (default: 12)
-
-   With 1-minute polling: 12 polls = 12 minutes of idle time before shutdown
-
-5. **Enabled Agents**: Which agents should be enabled?
+3. **Enabled Agents**: Which agents should be enabled?
 
 **Note:** Dev count is always 1 (strict serial mode - prevents merge conflicts and stale plans).
 
@@ -254,23 +239,9 @@ Ready for scheduler and worker activity logging.
 
 ---
 
-## Step 5c: Webhook Configuration (Optional)
+## Step 5c: Webhook Configuration
 
-Webhooks allow Joan to push real-time event notifications to the coordinator instead of relying solely on polling. This enables faster response times and more efficient event handling.
-
-### Ask User About Webhooks
-
-```
-AskUserQuestion: "Would you like to enable webhook notifications for real-time event handling?"
-Options:
-  - "Yes, configure webhooks (Recommended for faster responsiveness)"
-  - "No, use polling only (simpler setup)"
-```
-
-**If "No":**
-Skip to Step 6.
-
-**If "Yes":**
+The Joan agent system uses **event-driven webhooks** for instant response to task changes. This is required for the `--loop` mode.
 
 ### Generate Webhook Secret
 
@@ -280,7 +251,7 @@ Generate a secure random HMAC secret (32 bytes hex):
 WEBHOOK_SECRET=$(openssl rand -hex 32)
 ```
 
-### Configure Webhook Settings
+### Configure Webhook Port
 
 The webhook receiver will listen on a local port. Default: `9847`
 
@@ -293,55 +264,35 @@ Options:
 
 If custom port selected, ask for the port number.
 
-### Display Configuration Instructions
+### Update Joan Project Settings
+
+Use MCP to configure the webhook URL and secret on the Joan project:
+
+```
+mcp__joan__update_project(
+  project_id: {PROJECT_ID},
+  webhook_url: "http://localhost:{PORT}/webhook",
+  webhook_secret: {WEBHOOK_SECRET}
+)
+```
+
+### Display Configuration Summary
 
 ```
 ╔═══════════════════════════════════════════════════════════════╗
 ║  WEBHOOK CONFIGURATION                                        ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-Webhook Secret: {WEBHOOK_SECRET}
-
-To complete setup, configure these settings in Joan:
-
-1. Open your project in Joan (https://joan.app)
-2. Go to Project Settings
-3. Add the webhook configuration:
-   - Webhook URL: http://localhost:{PORT}/webhook
-   - Webhook Secret: {WEBHOOK_SECRET}
-
-The webhook receiver can be started with:
-  ./scripts/webhook-receiver.sh --port {PORT}
-
-Or run automatically when using --loop mode (if receiverMode is "auto").
-```
-
-### Save Webhook Config
-
-Store webhook settings in `.joan-agents.json` under settings.webhooks:
-
-```json
-{
-  "settings": {
-    "webhooks": {
-      "enabled": true,
-      "port": {user-selected-port},
-      "secret": "{WEBHOOK_SECRET}",
-      "receiverMode": "manual"
-    }
-  }
-}
-```
-
-**Report:**
-```
-✓ Webhook Configuration Ready
+✓ Webhook configured in Joan project settings
 
 Port: {PORT}
 Secret: Generated (32 bytes)
-Mode: Manual (start receiver with ./scripts/webhook-receiver.sh)
+URL: http://localhost:{PORT}/webhook
 
-Remember to configure the webhook URL in Joan project settings!
+The webhook receiver starts automatically with:
+  /agents:dispatch --loop
+
+Events will trigger handlers instantly when tasks change.
 ```
 
 ---
@@ -379,17 +330,10 @@ Create `.joan-agents.json` in project root with the user's selections:
   "settings": {
     "model": "{opus|sonnet|haiku}",
     "mode": "{standard|yolo}",
-    "pollingIntervalMinutes": {user-choice, default: 1},
-    "maxIdlePolls": {user-choice, default: 12},
     "staleClaimMinutes": 120,
-    "maxPollCyclesBeforeRestart": 10,
-    "stuckStateMinutes": 120,
-    "schedulerIntervalSeconds": 60,
-    "schedulerStuckTimeoutSeconds": 3900,
-    "schedulerMaxConsecutiveFailures": 3,
-    "pipeline": {
-      "baQueueDraining": true,
-      "maxBaTasksPerCycle": 10
+    "webhook": {
+      "port": {webhook-port, default: 9847},
+      "secret": "{WEBHOOK_SECRET}"
     },
     "workerTimeouts": {
       "ba": 10,
@@ -397,12 +341,6 @@ Create `.joan-agents.json` in project root with the user's selections:
       "dev": 60,
       "reviewer": 20,
       "ops": 15
-    },
-    "webhooks": {
-      "enabled": {true/false, from Step 5c},
-      "port": {webhook-port, default: 9847},
-      "secret": "{webhook-secret or null}",
-      "receiverMode": "manual"
     }
   },
   "agents": {
@@ -471,8 +409,7 @@ Report the configuration summary:
 
 Project: {name}
 Model: {opus|sonnet|haiku}
-Polling: Every {N} minutes
-Auto-shutdown: After {N} idle polls ({calculated time})
+Mode: {standard|yolo}
 
 Enabled Agents:
   • Business Analyst: {enabled/disabled}
@@ -487,11 +424,10 @@ Project Structure:
   • Permissions: {N} bash rules configured for autonomous operation
   • Agent Commands: Available via plugin (or symlinks if legacy install)
 
-Webhooks: {enabled/disabled}
-  {if enabled:}
+Webhook Configuration:
   • Port: {PORT}
-  • Receiver: Manual (./scripts/webhook-receiver.sh)
-  • Remember to configure webhook URL in Joan project settings!
+  • Secret: Configured in Joan project settings
+  • URL: http://localhost:{PORT}/webhook
 ═══════════════════════════════════════════════════════════════
 ```
 
@@ -590,41 +526,32 @@ Ask: "Ready to learn how to run agents? (Continue / Ask a question)"
 
 ```
 ╔═══════════════════════════════════════════════════════════════╗
-║  RUNNING AGENTS (Coordinator Mode)                            ║
+║  RUNNING AGENTS (Webhook-Driven)                              ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-The coordinator polls Joan ONCE per interval and dispatches
-single-pass workers as needed. Much more efficient than
-running agents independently.
+The system uses event-driven webhooks for instant response.
+When task state changes in Joan, handlers execute immediately.
 
 INVOCATION MODES:
 ─────────────────────────────────────
-  /agents:dispatch           Single pass (dispatch once, exit)
-  /agents:dispatch --loop    Continuous operation (uses external scheduler)
+  /agents:dispatch --loop    Webhook receiver (recommended)
+  /agents:dispatch           Single pass (testing/debugging)
 
 WHEN TO USE EACH:
 ─────────────────────────────────────
+  --loop mode:    Production use - listens for webhook events
   Single pass:    Testing, debugging, manual intervention
-  --loop mode:    Any run longer than 15 minutes (recommended for production)
 
-  The --loop flag automatically uses an external scheduler that spawns
-  FRESH Claude processes each cycle. This prevents context accumulation
-  that previously caused failures after 20-30 minutes.
+  The --loop flag starts a webhook receiver that responds to
+  Joan events instantly. Zero token cost when idle!
 
-WHAT HAPPENS (Staged Pipeline):
+HOW IT WORKS (Event-Driven):
 ─────────────────────────────────────
-  PHASE 1: BA DRAINING
-  1. Coordinator polls Joan (one API call)
-  2. Processes ALL BA tasks (no code dependencies)
-
-  PHASE 2: SERIAL DEV PIPELINE
-  3. Checks pipeline gate (is any task in Architect→Dev→Review→Ops?)
-  4. If clear: dispatches ONE task through the pipeline
-  5. Workers complete and exit
-  6. Coordinator sleeps, then repeats
-
-Auto-shutdown after {maxIdlePolls} empty polls
-(configured to {calculated time} with current settings)
+  1. Task changes in Joan (created, tagged, moved)
+  2. Joan sends webhook to your local receiver
+  3. Receiver dispatches the appropriate handler
+  4. Handler processes ONE task and exits
+  5. Back to listening (zero cost when idle)
 
 STRICT SERIAL MODE:
 ─────────────────────────────────────
@@ -697,22 +624,21 @@ Ready to go! Here's your workflow:
 
 1. Create tasks in Joan's "To Do" column
 
-2. Start agents:
-   /agents:dispatch --loop    (recommended for all production runs)
+2. Start webhook receiver:
+   /agents:dispatch --loop              (standard mode)
+   /agents:dispatch --loop --mode=yolo  (autonomous mode)
 
 3. Watch tasks flow:
    To Do → BA adds "Ready" tag
    Analyse → Architect creates plan → YOU add "Plan-Approved" tag
-   Development → Dev implements in worktree → creates PR
+   Development → Dev implements → creates PR
    Review → Reviewer checks code → adds "Review-Approved"
    Review → YOU add "Ops-Ready" tag to approve merge
    Deploy → Ops merges to develop (requires BOTH tags)
    Done!
 
-4. Stop agents:
-   Auto-shutdown after {calculated time} of inactivity
-   Or manually: touch /tmp/joan-agents-{project-name}.shutdown
-   Or: Ctrl+C
+4. Stop webhook receiver:
+   Ctrl+C
 
 Need help later? Run /agents:init again to see this tutorial.
 ```
@@ -725,12 +651,11 @@ After tutorial (or if skipped), show:
 
 ```
 Start agents with:
-  /agents:dispatch --loop   - Continuous operation (recommended, uses external scheduler)
-  /agents:dispatch          - Single pass (testing/debugging only)
+  /agents:dispatch --loop              - Webhook receiver (recommended)
+  /agents:dispatch --loop --mode=yolo  - Fully autonomous
+  /agents:dispatch                     - Single pass (testing only)
 
-Stop gracefully:
-  touch /tmp/joan-agents-{project-name}.shutdown
-  Or: Ctrl+C
+Stop: Ctrl+C
 
 Change model anytime with: /agents:model
 
