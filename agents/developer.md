@@ -169,11 +169,11 @@ For each DES task:
    ```bash
    git add -A
    git commit -m "design({scope}): {description}
-   
+
    Implements DES-{N} for {task-title}"
    ```
-5. Check off in task description
-6. Comment progress
+5. **Track as complete** (for updating description at end)
+6. Log progress: `log_activity "PROGRESS" "Completed DES-{N}: {description}"`
 
 ### 3b. Development Tasks (DEV-*)
 
@@ -185,11 +185,11 @@ For each DEV task (respecting dependencies):
    ```bash
    git add -A
    git commit -m "feat({scope}): {description}
-   
+
    Implements DEV-{N} for {task-title}"
    ```
-5. Check off in task description
-6. Comment progress
+5. **Track as complete** (for updating description at end)
+6. Log progress: `log_activity "PROGRESS" "Completed DEV-{N}: {description}"`
 
 ### 3c. Testing Tasks (TEST-*)
 
@@ -209,11 +209,11 @@ For each TEST task:
    ```bash
    git add -A
    git commit -m "test({scope}): {description}
-   
+
    Implements TEST-{N} for {task-title}"
    ```
-6. Check off in task description
-7. Comment results
+6. **Track as complete** (for updating description at end)
+7. Log progress: `log_activity "PROGRESS" "Completed TEST-{N}: {description}"`
 
 ### Quality Gates
 
@@ -259,6 +259,42 @@ Attach PR link as a task resource. Include an ALS breadcrumb comment.
 ## Phase 5: Complete & Transition
 
 Feature branch stays checked out (Ops will merge it to develop later).
+
+### 5a. Update Task Description with Completed Subtasks
+
+**CRITICAL**: You must update the task description to mark all completed subtasks as checked.
+
+Take the original task description and convert all completed subtask checkboxes from:
+```markdown
+- [ ] DEV-1: Implement game mode logic
+- [ ] DES-1: Create GameModeSelector component
+- [ ] TEST-1: Add unit tests for game modes
+```
+
+To:
+```markdown
+- [x] DEV-1: Implement game mode logic
+- [x] DES-1: Create GameModeSelector component
+- [x] TEST-1: Add unit tests for game modes
+```
+
+This updated description will be included in your WorkerResult via the `update_description` field:
+
+```json
+{
+  "joan_actions": {
+    "update_description": "{full task description with [x] for completed subtasks}",
+    ...
+  }
+}
+```
+
+**Why this matters:**
+- Reviewer and Ops agents validate completion by checking these boxes
+- Without marked subtasks, tasks will be sent back for rework
+- This is the primary indicator of work completion
+
+### 5b. Update Joan Tags and Move Task
 
 Update Joan:
 1. Remove tag: `Claimed-Dev-$DEV_ID`
