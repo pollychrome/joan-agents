@@ -20,7 +20,7 @@ A multi-agent system that automates software development workflows using Claude 
 
 ```bash
 # Add joan-agents as a marketplace
-claude plugin marketplace add github:alexbenson/joan-agents
+claude plugin marketplace add github:pollychrome/joan-agents
 
 # Install the agents plugin (available to all your projects)
 claude plugin install agents@alexbenson-joan-agents
@@ -95,7 +95,7 @@ If the plugin approach doesn't work, you can install manually:
 
 ```bash
 # Clone the repository
-git clone https://github.com/alexbenson/joan-agents.git ~/joan-agents
+git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
 
 # Create symlinks to your user's Claude config
 mkdir -p ~/.claude/commands

@@ -238,7 +238,7 @@ Agent commands are automatically available through the plugin. No additional set
 
 ```bash
 # Plugin installation (one time, globally)
-claude plugin marketplace add github:alexbenson/joan-agents
+claude plugin marketplace add github:pollychrome/joan-agents
 claude plugin install agents@alexbenson-joan-agents
 ```
 
