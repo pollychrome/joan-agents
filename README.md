@@ -1,4 +1,4 @@
-# Joan Multi-Agent Orchestration System (v4.5)
+# Joan Multi-Agent Orchestration System (v4.7)
 
 A multi-agent system that automates software development workflows using Claude Code. Agents handle requirements analysis, architecture planning, implementation, code review, and deployment—all orchestrated through your Joan project board.
 
@@ -16,32 +16,19 @@ A multi-agent system that automates software development workflows using Claude 
 
 > **Joan MCP**: The agents communicate with Joan via MCP. Ensure your Joan MCP server is configured in `~/.claude/mcp.json` before proceeding.
 
-### Step 1: Clone the Repository
+### Step 1: Install the Plugin
 
 ```bash
-git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
+# Add joan-agents as a marketplace
+claude plugin marketplace add github:alexbenson/joan-agents
+
+# Install the agents plugin (available to all your projects)
+claude plugin install agents@alexbenson-joan-agents
 ```
 
-### Step 2: Create Symlinks (Global Installation)
+This installs all agent commands (`/agents:dispatch`, `/agents:init`, etc.) globally.
 
-```bash
-# Create Claude Code directories
-mkdir -p ~/.claude/commands
-
-# Link agent definitions and commands
-ln -s ~/joan-agents/.claude/commands/agents ~/.claude/commands/agents
-ln -s ~/joan-agents/.claude/agents ~/.claude/agents
-
-# Link system instructions (choose one):
-
-# Option A: Symlink if you don't have an existing CLAUDE.md
-ln -sf ~/joan-agents/.claude/CLAUDE.md ~/.claude/CLAUDE.md
-
-# Option B: Include in existing CLAUDE.md (add this line to your file)
-# {{~/joan-agents/.claude/CLAUDE.md}}
-```
-
-### Step 3: Initialize Your Project
+### Step 2: Initialize Your Project
 
 ```bash
 cd ~/your-project
@@ -59,14 +46,14 @@ The initialization wizard will:
 - ✅ **Configure bash permissions** for autonomous operation
 - ✅ Generate `.joan-agents.json` in your project
 
-### Step 4: Ensure `develop` Branch Exists
+### Step 3: Ensure `develop` Branch Exists
 
 ```bash
 git checkout -b develop main
 git push -u origin develop
 ```
 
-### Step 5: Launch Agents
+### Step 4: Launch Agents
 
 ```bash
 # In Claude Code:
@@ -88,8 +75,7 @@ git push -u origin develop
 ☐ Joan account with project created
 ☐ Joan MCP server configured in ~/.claude/mcp.json
 
-☐ Repository cloned to ~/joan-agents
-☐ Symlinks created in ~/.claude/
+☐ Plugin installed (claude plugin install agents@alexbenson-joan-agents)
 ☐ /agents:init completed for your project
 ☐ develop branch exists and pushed
 ☐ /agents:dispatch --loop running
@@ -100,23 +86,24 @@ git push -u origin develop
 ## 📖 Detailed Setup Guide
 
 For comprehensive setup instructions, see:
-- **[Global Installation Guide](shared/joan-shared-specs/docs/joan-agents/global-installation.md)** - Recommended approach
 - **[Full Setup Guide](shared/joan-shared-specs/docs/joan-agents/setup.md)** - All configuration options
 - **[Troubleshooting](shared/joan-shared-specs/docs/joan-agents/troubleshooting.md)** - Common issues
 
-### Alternative: Per-Project Installation
+### Alternative: Manual Installation (Legacy)
 
-If you prefer to copy files instead of symlinking:
+If the plugin approach doesn't work, you can install manually:
 
 ```bash
-cd /path/to/your/project
+# Clone the repository
+git clone https://github.com/alexbenson/joan-agents.git ~/joan-agents
 
-# Copy agent definitions
-cp -r ~/joan-agents/.claude/agents .claude/agents
-cp -r ~/joan-agents/.claude/commands .claude/commands
-cp ~/joan-agents/.claude/CLAUDE.md .claude/CLAUDE.md
+# Create symlinks to your user's Claude config
+mkdir -p ~/.claude/commands
+ln -sf ~/joan-agents/commands ~/.claude/commands/agents
+ln -sf ~/joan-agents/agents ~/.claude/agents
 
 # Initialize and run
+cd /path/to/your/project
 claude
 > /agents:init
 > /agents:dispatch --loop

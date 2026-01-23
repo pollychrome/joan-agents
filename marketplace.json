@@ -1,0 +1,12 @@
+{
+  "name": "joan-agents",
+  "description": "Joan multi-agent orchestration system for automated software development workflows",
+  "version": "1.0.0",
+  "plugins": [
+    {
+      "name": "agents",
+      "path": ".",
+      "description": "Tag-driven multi-agent orchestration for Joan projects with coordinator pattern, single-pass workers, and deterministic state transitions"
+    }
+  ]
+}

@@ -1,6 +1,21 @@
 {
-  "name": "joan-agents",
-  "version": "3.0.0",
-  "description": "Multi-agent orchestration system for Joan projects with task queuing, parallel workers, and auto-shutdown",
-  "author": "Alex Benson"
+  "name": "agents",
+  "version": "4.7.0",
+  "description": "Tag-driven multi-agent orchestration for Joan projects with coordinator pattern, single-pass workers, and deterministic state transitions",
+  "author": {
+    "name": "Alex Benson"
+  },
+  "repository": "https://github.com/alexbenson/joan-agents",
+  "license": "MIT",
+  "keywords": ["joan", "agents", "orchestration", "kanban", "workflow", "automation"],
+  "commands": "./commands/",
+  "agents": "./agents/",
+  "schemas": "./schemas/",
+  "configFiles": [
+    {
+      "name": ".joan-agents.json",
+      "description": "Project-specific agent configuration",
+      "schema": "./schemas/joan-agents.schema.json"
+    }
+  ]
 }
