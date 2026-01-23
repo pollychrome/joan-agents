@@ -329,17 +329,29 @@ STALE_THRESHOLD_MINUTES = STALE_CLAIM_MINUTES  # From config, default 60
 For each task in tasks:
   IF isClaimedByAnyDev(task):
 
-    # Check task's updated_at timestamp
-    claim_age_minutes = (NOW - task.updated_at) in minutes
+    # Find the claim tag and check when it was CREATED (not task.updated_at)
+    # task.updated_at changes on any field update - we need claim creation time
+    FOR N in 1..DEV_COUNT:
+      claim_tag_name = "Claimed-Dev-{N}"
+      IF hasTag(task, claim_tag_name):
 
-    # A task claimed but not updated for STALE_THRESHOLD is likely orphaned
-    IF claim_age_minutes > STALE_THRESHOLD_MINUTES:
+        # Find the actual tag object to get its created_at timestamp
+        claim_tag = null
+        FOR tag IN task.tags:
+          IF tag.name == claim_tag_name:
+            claim_tag = tag
+            BREAK
 
-      # Find which dev has the claim
-      FOR N in 1..DEV_COUNT:
-        IF hasTag(task, "Claimed-Dev-{N}"):
+        IF claim_tag AND claim_tag.created_at:
+          claim_age_minutes = (NOW - claim_tag.created_at) in minutes
+        ELSE:
+          # Fallback to task.updated_at if tag timestamp unavailable
+          claim_age_minutes = (NOW - task.updated_at) in minutes
 
-          Report: "Releasing stale claim on '{task.title}' (Claimed-Dev-{N}, idle {claim_age_minutes} min)"
+        # A task claimed for longer than STALE_THRESHOLD is likely orphaned
+        IF claim_age_minutes > STALE_THRESHOLD_MINUTES:
+
+          Report: "Releasing stale claim on '{task.title}' (Claimed-Dev-{N}, claimed {claim_age_minutes} min ago)"
 
           # Remove the stale claim tag
           mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Claimed-Dev-{N}"])
@@ -352,12 +364,13 @@ For each task in tasks:
             action: release-stale-claim
             tags.add: []
             tags.remove: [Claimed-Dev-{N}]
-            summary: Released stale claim after {claim_age_minutes} min idle.
+            summary: Released stale claim after {claim_age_minutes} min.
             details:
             - threshold: {STALE_THRESHOLD_MINUTES} min
+            - claim_created_at: {claim_tag.created_at}
             - reason: Worker likely crashed or was terminated")
 
-          BREAK  # Only one claim per task
+        BREAK  # Only one claim per task
 
 Report: "Stale claim recovery complete"
 ```

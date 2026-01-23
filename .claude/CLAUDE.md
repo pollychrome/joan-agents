@@ -449,9 +449,12 @@ The coordinator automatically recovers from certain failure modes:
 **Stale Claim Recovery:**
 When the coordinator or workers are killed/crash, `Claimed-Dev-1` tags may remain orphaned on tasks. Each poll cycle, the coordinator:
 1. Finds tasks with `Claimed-Dev-1` tag (or `Claimed-Dev-N` if legacy config)
-2. Checks if the task's `updated_at` timestamp is older than `staleClaimMinutes` (default: 60)
-3. If stale, removes the orphaned claim tag and adds an ALS comment for audit
-4. Task becomes available for other dev workers to claim
+2. Checks when the **claim tag was created** (using `tag.created_at`, not `task.updated_at`)
+3. If the claim is older than `staleClaimMinutes` (default: 120), removes the orphaned claim tag
+4. Adds an ALS comment for audit trail
+5. Task becomes available for other dev workers to claim
+
+**Note:** The claim age is calculated from when the tag was added, not when the task was last modified. This ensures claims are properly detected as stale even if the task description or other fields were edited.
 
 **Anomaly Detection (Stale Workflow Tags):**
 Tasks can end up with stale workflow tags due to partial failures, manual moves, or worker crashes. Each poll cycle, the coordinator:
