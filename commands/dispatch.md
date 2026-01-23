@@ -6,26 +6,6 @@ allowed-tools: Bash, Read
 
 # Coordinator (Dispatcher)
 
-The coordinator is the **recommended way** to run the Joan agent system. It:
-- Polls Joan once per interval (not N times for N agents)
-- Dispatches single-pass workers for available tasks
-- Claims dev tasks atomically before dispatching
-- Uses tags for all state transitions (no comment parsing)
-
-## Execution Modes
-
-1. **Single Pass** (no `--loop` flag)
-   - Runs coordinator once, then exits
-   - Best for testing, debugging, manual intervention
-
-2. **Continuous Operation** (`--loop` flag)
-   - Uses external scheduler to spawn fresh coordinator processes
-   - Prevents context accumulation and degradation
-   - Each poll cycle starts with clean context
-   - Best for autonomous operation (overnight runs, multi-hour sessions)
-
-**IMPORTANT**: The `--loop` mode uses an external bash scheduler that spawns fresh Claude processes. This eliminates context bloat that causes reliability issues after 20-30 minutes.
-
 ## Arguments
 
 - `--loop` → Run continuously using external scheduler (recommended for >15 min runs)
@@ -69,11 +49,6 @@ DEVS_ENABLED = config.agents.devs.enabled
 ```
 
 If config missing, report error and exit.
-
-**IMPORTANT (Strict Serial Mode):**
-- `DEV_COUNT` MUST be 1 - the schema enforces this
-- This prevents parallel dev work which causes merge conflicts
-- Plans always reference the current codebase state
 
 ## Execution Branch
 
@@ -143,24 +118,21 @@ IF scheduler script does not exist at $SCHEDULER_SCRIPT:
 Bash:
   command: "$HOME/joan-agents/scripts/joan-scheduler.sh" . --interval={INTERVAL} --stuck-timeout={STUCK_TIMEOUT} --max-idle={MAX_IDLE_ARG} --max-failures={MAX_FAILURES} --mode={MODE}
   description: Run external scheduler for continuous coordinator execution
+  run_in_background: true
 
-# The script runs until shutdown signal or max idle reached
+# Scheduler is now running in background - exit immediately to stop token consumption
+Report: ""
+Report: "Scheduler started in background. This Claude instance will now exit."
+Report: "The scheduler will continue running independently."
+Report: ""
 EXIT
 ```
-
-**Why external scheduler?**
-- Internal loop mode accumulates context over 20-30 minutes
-- Context bloat causes partial action execution and verification skips
-- External scheduler spawns fresh Claude processes with clean context
-- Each poll cycle maintains consistent behavior indefinitely
 
 ### If LOOP_MODE is FALSE (Single Pass)
 
 Continue with single-pass coordinator logic below...
 
 ## Configuration Validation
-
-**CRITICAL: Validate config before starting coordinator**
 
 ```
 ERRORS = []
@@ -218,14 +190,8 @@ Report: "✓ Configuration validated"
 
 ## Step 0: Immediate Heartbeat & Startup Diagnostics
 
-**CRITICAL**: Write heartbeat IMMEDIATELY at startup before any MCP calls.
-This allows the external scheduler to detect hangs during Step 1 (tag/column caching).
-
 ```
-Report: "╔══════════════════════════════════════════════════════════════════╗"
-Report: "║  COORDINATOR STARTUP - {PROJECT_NAME}                           ║"
-Report: "╚══════════════════════════════════════════════════════════════════╝"
-Report: ""
+Report: "=== COORDINATOR STARTUP - {PROJECT_NAME} ==="
 Report: "Step 0: Writing immediate heartbeat..."
 
 # Get project name for heartbeat file naming (sanitize for filesystem)
@@ -237,12 +203,6 @@ Run bash command:
 Report: "  ✓ Heartbeat written to /tmp/joan-agents-{PROJECT_SLUG}.heartbeat"
 Report: ""
 ```
-
-**Why immediate heartbeat?**
-- Previous heartbeat was in Step 2a (after tag caching and task fetch)
-- If coordinator hangs during MCP calls in Step 1, scheduler had no way to detect it
-- Now scheduler can detect hangs at ANY step, not just post-fetch
-- Heartbeat file freshness = coordinator is alive and progressing
 
 ---
 
@@ -336,10 +296,7 @@ Always use task.column_id with the inColumn() helper.
 
 ---
 
-## Step 2a: Update Heartbeat (External Scheduler Support)
-
-Update heartbeat timestamp after successful task fetch (Step 0 wrote the initial heartbeat).
-This allows `/agents:dispatch --loop` to track progress through the coordinator cycle.
+## Step 2a: Update Heartbeat
 
 ```
 # Get project name for heartbeat file naming (sanitize for filesystem)
@@ -351,19 +308,9 @@ Run bash command:
 # Silent operation - only report if debugging
 ```
 
-**Why heartbeat?**
-- External scheduler (used by `/agents:dispatch --loop`) spawns fresh Claude processes to avoid context overflow
-- Scheduler monitors heartbeat file to detect stuck coordinators
-- If heartbeat becomes stale (older than stuck_timeout), scheduler kills and restarts
-- Even single-pass coordinators write heartbeat - the freshness indicates activity
-- This enables self-healing when coordinators freeze due to context bloat
-
 ---
 
-## Step 2b: Recover Stale Claims (Self-Healing)
-
-When the coordinator is killed or workers crash, `Claimed-Dev-N` tags may remain orphaned.
-This step detects and releases stale claims so tasks can be picked up again.
+## Step 2b: Recover Stale Claims
 
 ```
 STALE_THRESHOLD_MINUTES = STALE_CLAIM_MINUTES  # From config, default 60
@@ -398,36 +345,16 @@ For each task in tasks:
           # Remove the stale claim tag
           mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Claimed-Dev-{N}"])
 
-          # Add comment for audit trail
           mcp__joan__create_task_comment(task.id,
-            "ALS/1
-            actor: coordinator
-            intent: recovery
-            action: release-stale-claim
-            tags.add: []
-            tags.remove: [Claimed-Dev-{N}]
-            summary: Released stale claim after {claim_age_minutes} min.
-            details:
-            - threshold: {STALE_THRESHOLD_MINUTES} min
-            - claim_created_at: {claim_tag.created_at}
-            - reason: Worker likely crashed or was terminated")
-
-        BREAK  # Only one claim per task
+            "ALS/1\nactor: coordinator\naction: release-stale-claim\ntags.remove: [Claimed-Dev-{N}]\nsummary: Released stale claim ({claim_age_minutes} min)")
+        BREAK
 
 Report: "Stale claim recovery complete"
 ```
 
-**Why this matters:**
-- Without recovery, orphaned claims block tasks indefinitely
-- Workers may crash, be killed, or hit timeouts
-- This makes the system self-healing without manual intervention
-
 ---
 
-## Step 2c: Detect and Clean Anomalies (Self-Healing)
-
-Tasks can end up in inconsistent states due to partial failures, manual moves, or worker crashes.
-This step detects and auto-cleans anomalies to prevent stuck states.
+## Step 2c: Detect and Clean Anomalies
 
 ```
 WORKFLOW_TAGS = ["Review-Approved", "Ops-Ready", "Plan-Approved", "Planned",
@@ -455,18 +382,8 @@ For each task in tasks:
       FOR tagName IN stale_tags:
         mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE[tagName])
 
-      # Audit trail
       mcp__joan__create_task_comment(task.id,
-        "ALS/1
-        actor: coordinator
-        intent: recovery
-        action: anomaly-cleanup
-        tags.add: []
-        tags.remove: {stale_tags}
-        summary: Cleaned stale workflow tags from completed task.
-        details:
-        - column: {task column name}
-        - reason: Tasks in terminal columns should not have active workflow tags")
+        "ALS/1\nactor: coordinator\naction: anomaly-cleanup\ntags.remove: {stale_tags}\nsummary: Cleaned stale tags")
 
   # Anomaly 2: Conflicting approval/rejection tags
   IF hasTag(task, "Review-Approved") AND hasTag(task, "Rework-Requested"):
@@ -476,15 +393,7 @@ For each task in tasks:
     mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE["Review-Approved"])
 
     mcp__joan__create_task_comment(task.id,
-      "ALS/1
-      actor: coordinator
-      intent: recovery
-      action: anomaly-cleanup
-      tags.add: []
-      tags.remove: [Review-Approved]
-      summary: Removed conflicting Review-Approved tag (Rework-Requested takes precedence).
-      details:
-      - reason: Cannot be both approved and requesting rework simultaneously")
+      "ALS/1\nactor: coordinator\naction: anomaly-cleanup\ntags.remove: [Review-Approved]\nsummary: Removed conflicting approval")
 
   # Anomaly 3: Plan-Approved without Plan-Pending-Approval
   IF hasTag(task, "Plan-Approved") AND NOT hasTag(task, "Plan-Pending-Approval"):
@@ -495,19 +404,9 @@ For each task in tasks:
       mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Plan-Pending-Approval"])
 
       mcp__joan__create_task_comment(task.id,
-        "ALS/1
-        actor: coordinator
-        intent: recovery
-        action: anomaly-cleanup
-        tags.add: [Plan-Pending-Approval]
-        tags.remove: []
-        summary: Added missing Plan-Pending-Approval tag to enable plan finalization.
-        details:
-        - reason: Plan-Approved was present but Plan-Pending-Approval was missing (likely worker crash)
-        - effect: Task will now be queued for architect finalization")
+        "ALS/1\nactor: coordinator\naction: anomaly-cleanup\ntags.add: [Plan-Pending-Approval]\nsummary: Restored missing tag")
 
-  # Anomaly 4: Tasks in Review column with no workflow tags
-  # These were likely manually moved without proper dev worker completion
+  # Anomaly 4: Tasks in Review with no workflow tags
   IF inColumn(task, "Review"):
     has_any_workflow_tag = false
     FOR tagName IN WORKFLOW_TAGS:
@@ -516,68 +415,27 @@ For each task in tasks:
         BREAK
 
     IF NOT has_any_workflow_tag:
-      Report: "ANOMALY: '{task.title}' in Review column has NO workflow tags (likely manually moved)"
-      Report: "  This task cannot be processed - moving back to Development with Planned tag"
-
-      # Move back to Development with Planned tag for dev worker to handle
+      Report: "ANOMALY: '{task.title}' in Review with no tags - moving to Development"
       mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Development"])
       mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Planned"])
-
       mcp__joan__create_task_comment(task.id,
-        "ALS/1
-        actor: coordinator
-        intent: recovery
-        action: anomaly-recovery
-        tags.add: [Planned]
-        tags.remove: []
-        summary: Moved task back to Development (was in Review with no workflow tags).
-        details:
-        - reason: Task in Review column must have completion tags or rework state
-        - likely_cause: Manually moved without dev worker completion
-        - action: Dev worker will pick up and properly complete this task
-        - next_steps: Task will be implemented, checked off, and moved to Review with proper tags")
+        "ALS/1\nactor: coordinator\naction: anomaly-recovery\ntags.add: [Planned]\ncolumn.move: Development\nsummary: Moved from Review (no tags)")
 
-  # Anomaly 5: Tasks in Deploy with completion tags (should be in Review awaiting Ops-Ready)
-  # These were likely manually moved before review/merge completed
+  # Anomaly 5: Tasks in Deploy with completion tags
   IF inColumn(task, "Deploy"):
     has_completion_tags = hasTag(task, "Dev-Complete") OR hasTag(task, "Design-Complete") OR hasTag(task, "Test-Complete")
-
     IF has_completion_tags:
-      Report: "ANOMALY: '{task.title}' in Deploy has completion tags (should be in Review)"
-      Report: "  Moving back to Review for proper review/approval flow"
-
-      # Move back to Review - let review/ops flow handle properly
+      Report: "ANOMALY: '{task.title}' in Deploy with completion tags - moving to Review"
       mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Review"])
-
       mcp__joan__create_task_comment(task.id,
-        "ALS/1
-        actor: coordinator
-        intent: recovery
-        action: anomaly-recovery
-        tags.add: []
-        tags.remove: []
-        summary: Moved task from Deploy back to Review (had completion tags indicating incomplete workflow).
-        details:
-        - reason: Deploy column is for tasks awaiting production deployment only
-        - issue: Task still had Dev-Complete/Design-Complete/Test-Complete tags
-        - likely_cause: Manually moved before review/merge completed
-        - action: Task will now go through proper review → approval → Ops-Ready → merge flow")
+        "ALS/1\nactor: coordinator\naction: anomaly-recovery\ncolumn.move: Review\nsummary: Moved from Deploy (had completion tags)")
 
 Report: "Anomaly detection complete"
 ```
 
-**Why this matters:**
-- Partial worker failures leave inconsistent tag states
-- Manual task moves in Joan UI bypass tag cleanup
-- Without detection, tasks get stuck in limbo forever
-- Auto-cleanup makes the system self-healing
-
 ---
 
-## Step 2d: Detect Stuck Workflow States (Self-Healing)
-
-Tasks can get stuck in mid-workflow states due to context bloat, lost worker results, or coordinator crashes.
-This step detects tasks that have been in the same workflow state for too long and flags them for re-processing.
+## Step 2d: Detect Stuck Workflow States
 
 ```
 STUCK_THRESHOLD_MINUTES = STUCK_STATE_MINUTES  # From config, default 120
@@ -685,18 +543,9 @@ ELSE:
   Report: "No stuck states detected"
 ```
 
-**Why this matters:**
-- Context bloat can cause coordinators to skip queue-building logic
-- Lost worker results leave tasks in mid-transition states
-- Without detection, tasks can remain stuck for hours/days
-- Force re-queuing gives stuck tasks priority processing
-
 ---
 
-## Step 2e: State Machine Validation (Self-Healing)
-
-Validates that task tag combinations match valid workflow states.
-Invalid combinations are auto-remediated to restore consistent state.
+## Step 2e: State Machine Validation
 
 ```
 # Define invalid tag combinations that should never coexist
@@ -826,18 +675,9 @@ ELSE:
   Report: "State machine validation: all tasks in valid states"
 ```
 
-**Why this matters:**
-- Invalid tag combinations can cause tasks to match multiple queues or none
-- Partial worker failures leave inconsistent states
-- Auto-remediation restores tasks to processable states
-- This catches the exact issue that caused tasks #81/#82 to be stuck
-
 ---
 
 ## Step 2f: YOLO Auto-Complete (Deploy → Done)
-
-In YOLO mode, automatically advance merged tasks from Deploy to Done.
-This completes the fully-autonomous workflow (no human needed for deployment confirmation).
 
 ```
 IF MODE == "yolo":
@@ -875,13 +715,6 @@ IF MODE == "yolo":
     Report: "  No tasks ready for auto-complete"
 ```
 
-**Why this matters:**
-- YOLO mode has auto-approval for plans (Plan-Approved) and merges (Ops-Ready)
-- Without this step, tasks would pile up in Deploy indefinitely
-- Deploy → Done is the final gate - confirming "deployed to production"
-- In YOLO mode, we trust that merged = deployed (CI/CD handles actual deployment)
-- Standard mode still requires human to move to Done (manual deployment confirmation)
-
 ---
 
 ## Step 3: Build Priority Queues
@@ -897,150 +730,67 @@ OPS_QUEUE = []
 
 For each task in tasks:
 
-  # Priority 0: Invocation responses (HIGHEST PRIORITY - fast resolution)
-  # These are handled first to minimize latency in cross-agent consultation
-
-  # 0a: Architect invoked for conflict advisory (needs to provide guidance)
-  IF inColumn(task, "Review")
-     AND hasTag(task, "Invoke-Architect")
-     AND NOT hasTag(task, "Architect-Assist-Complete"):
-    ARCHITECT_QUEUE.unshift({task, mode: "advisory-conflict"})  # Insert at front
+  # P0: Invocations (highest priority)
+  IF inColumn(task, "Review") AND hasTag(task, "Invoke-Architect") AND NOT hasTag(task, "Architect-Assist-Complete"):
+    ARCHITECT_QUEUE.unshift({task, mode: "advisory-conflict"})
+    CONTINUE
+  IF inColumn(task, "Review") AND hasTag(task, "Architect-Assist-Complete"):
+    OPS_QUEUE.unshift({task, mode: "merge-with-guidance"})
     CONTINUE
 
-  # 0b: Architect advisory complete, Ops can resume with guidance
-  IF inColumn(task, "Review")
-     AND hasTag(task, "Architect-Assist-Complete"):
-    OPS_QUEUE.unshift({task, mode: "merge-with-guidance"})  # Insert at front
-    CONTINUE
-
-  # Priority 1: Dev tasks needing conflict resolution
-  IF inColumn(task, "Development")
-     AND hasTag(task, "Merge-Conflict")
-     AND NOT isClaimedByAnyDev(task):
+  # P1-3: Dev tasks
+  IF inColumn(task, "Development") AND hasTag(task, "Merge-Conflict") AND NOT isClaimedByAnyDev(task):
     DEV_QUEUE.push({task, mode: "conflict"})
     CONTINUE
-
-  # Priority 2: Dev tasks needing rework
-  IF inColumn(task, "Development")
-     AND hasTag(task, "Rework-Requested")
-     AND NOT isClaimedByAnyDev(task)
-     AND NOT hasTag(task, "Merge-Conflict"):
+  IF inColumn(task, "Development") AND hasTag(task, "Rework-Requested") AND NOT isClaimedByAnyDev(task) AND NOT hasTag(task, "Merge-Conflict"):
     DEV_QUEUE.push({task, mode: "rework"})
     CONTINUE
-
-  # Priority 3: Dev tasks ready for implementation
-  IF inColumn(task, "Development")
-     AND hasTag(task, "Planned")
-     AND NOT isClaimedByAnyDev(task)
-     AND NOT hasTag(task, "Rework-Requested")
-     AND NOT hasTag(task, "Implementation-Failed")
-     AND NOT hasTag(task, "Branch-Setup-Failed"):
+  IF inColumn(task, "Development") AND hasTag(task, "Planned") AND NOT isClaimedByAnyDev(task) AND NOT hasTag(task, "Rework-Requested") AND NOT hasTag(task, "Implementation-Failed") AND NOT hasTag(task, "Branch-Setup-Failed"):
     DEV_QUEUE.push({task, mode: "implement"})
     CONTINUE
 
-  # Priority 4: Architect tasks with Plan-Approved (finalize)
-  IF inColumn(task, "Analyse")
-     AND hasTag(task, "Plan-Pending-Approval")
-     AND hasTag(task, "Plan-Approved")
-     AND NOT hasTag(task, "Plan-Rejected"):
+  # P4-5: Architect tasks
+  IF inColumn(task, "Analyse") AND hasTag(task, "Plan-Pending-Approval") AND hasTag(task, "Plan-Approved") AND NOT hasTag(task, "Plan-Rejected"):
     ARCHITECT_QUEUE.push({task, mode: "finalize"})
     CONTINUE
-
-  # Priority 4.5: Architect tasks with Plan-Rejected (revise)
-  IF inColumn(task, "Analyse")
-     AND hasTag(task, "Plan-Pending-Approval")
-     AND hasTag(task, "Plan-Rejected"):
+  IF inColumn(task, "Analyse") AND hasTag(task, "Plan-Pending-Approval") AND hasTag(task, "Plan-Rejected"):
     ARCHITECT_QUEUE.push({task, mode: "revise"})
     CONTINUE
-
-  # Priority 5: Architect tasks with Ready (create plan)
-  IF inColumn(task, "Analyse")
-     AND hasTag(task, "Ready")
-     AND NOT hasTag(task, "Plan-Pending-Approval"):
+  IF inColumn(task, "Analyse") AND hasTag(task, "Ready") AND NOT hasTag(task, "Plan-Pending-Approval"):
     ARCHITECT_QUEUE.push({task, mode: "plan"})
     CONTINUE
 
-  # Priority 6: BA tasks with Clarification-Answered (reevaluate)
-  IF inColumn(task, "Analyse")
-     AND hasTag(task, "Needs-Clarification")
-     AND hasTag(task, "Clarification-Answered"):
+  # P6-7: BA tasks
+  IF inColumn(task, "Analyse") AND hasTag(task, "Needs-Clarification") AND hasTag(task, "Clarification-Answered"):
     BA_QUEUE.push({task, mode: "reevaluate"})
     CONTINUE
-
-  # Priority 7: BA tasks in To Do (evaluate)
-  IF inColumn(task, "To Do")
-     AND NOT hasTag(task, "Ready"):
+  IF inColumn(task, "To Do") AND NOT hasTag(task, "Ready"):
     BA_QUEUE.push({task, mode: "evaluate"})
     CONTINUE
 
-  # Priority 8: Reviewer tasks ready for review
-  IF inColumn(task, "Review")
-     AND hasTag(task, "Dev-Complete")
-     AND hasTag(task, "Design-Complete")
-     AND hasTag(task, "Test-Complete")
-     AND NOT hasTag(task, "Review-In-Progress")
-     AND NOT hasTag(task, "Review-Approved")
-     AND NOT hasTag(task, "Rework-Requested"):
+  # P8: Reviewer tasks
+  IF inColumn(task, "Review") AND hasTag(task, "Dev-Complete") AND hasTag(task, "Design-Complete") AND hasTag(task, "Test-Complete") AND NOT hasTag(task, "Review-In-Progress") AND NOT hasTag(task, "Review-Approved") AND NOT hasTag(task, "Rework-Requested"):
+    REVIEWER_QUEUE.push({task})
+    CONTINUE
+  IF inColumn(task, "Review") AND hasTag(task, "Rework-Complete") AND NOT hasTag(task, "Review-In-Progress") AND NOT hasTag(task, "Review-Approved") AND NOT hasTag(task, "Rework-Requested"):
     REVIEWER_QUEUE.push({task})
     CONTINUE
 
-  # Priority 8b: Rework-Complete triggers re-review
-  IF inColumn(task, "Review")
-     AND hasTag(task, "Rework-Complete")
-     AND NOT hasTag(task, "Review-In-Progress")
-     AND NOT hasTag(task, "Review-Approved")
-     AND NOT hasTag(task, "Rework-Requested"):
-    REVIEWER_QUEUE.push({task})
-    CONTINUE
-
-  # Priority 9: Ops tasks with Review-Approved AND Ops-Ready
-  # NOTE: Check both Review AND Deploy to handle column drift (task moved before Ops processed)
-  IF (inColumn(task, "Review") OR inColumn(task, "Deploy"))
-     AND hasTag(task, "Review-Approved")
-     AND hasTag(task, "Ops-Ready"):
+  # P9-10: Ops tasks
+  IF (inColumn(task, "Review") OR inColumn(task, "Deploy")) AND hasTag(task, "Review-Approved") AND hasTag(task, "Ops-Ready"):
     OPS_QUEUE.push({task, mode: "merge"})
     CONTINUE
-
-  # Priority 10: Ops tasks with Rework-Requested in Review
-  IF inColumn(task, "Review")
-     AND hasTag(task, "Rework-Requested")
-     AND NOT hasTag(task, "Review-Approved"):
+  IF inColumn(task, "Review") AND hasTag(task, "Rework-Requested") AND NOT hasTag(task, "Review-Approved"):
     OPS_QUEUE.push({task, mode: "rework"})
     CONTINUE
 
-  # DIAGNOSTIC: Identify tasks with workflow tags that didn't match any queue
-  # This catches edge cases and helps diagnose stuck tasks
+  # DIAGNOSTIC: Check for unqueued tasks with workflow tags
   workflow_tags_present = []
   FOR tagName IN WORKFLOW_TAGS:
     IF hasTag(task, tagName):
       workflow_tags_present.push(tagName)
-
   IF workflow_tags_present.length > 0:
-    Report: "UNQUEUED: '{task.title}' has tags {workflow_tags_present} in column '{task.column}' but didn't match any queue condition"
-
-  # DIAGNOSTIC: Tasks in workflow columns with no tags or incomplete tags
-  # This catches tasks that were manually moved without proper state transitions
-  IF inColumn(task, "Review"):
-    # Review column tasks should have completion tags OR rework tags
-    has_completion_tags = hasTag(task, "Dev-Complete") AND hasTag(task, "Design-Complete") AND hasTag(task, "Test-Complete")
-    has_rework_tags = hasTag(task, "Rework-Requested") OR hasTag(task, "Rework-Complete")
-    has_approval_tags = hasTag(task, "Review-Approved") OR hasTag(task, "Review-In-Progress")
-
-    IF NOT (has_completion_tags OR has_rework_tags OR has_approval_tags):
-      Report: "ANOMALY: '{task.title}' in Review column is missing expected tags (completion, rework, or review state)"
-      Report: "  Current tags: {workflow_tags_present or 'NONE'}"
-      Report: "  Expected: Dev-Complete+Design-Complete+Test-Complete OR Rework-Requested/Rework-Complete OR Review-Approved"
-      Report: "  Action: Task needs manual intervention - add appropriate tags or move to correct column"
-
-  IF inColumn(task, "Deploy"):
-    # Deploy column tasks should have NO workflow tags (they're awaiting production deployment)
-    IF workflow_tags_present.length > 0:
-      Report: "ANOMALY: '{task.title}' in Deploy has stale workflow tags: {workflow_tags_present}"
-      Report: "  Action: These will be auto-cleaned by anomaly detection"
-    ELSE:
-      # Deploy tasks with no tags is normal (awaiting production deployment)
-      # But if they have completion tags, they shouldn't be here yet
-      pass
+    Report: "UNQUEUED: '{task.title}' tags={workflow_tags_present}"
 
 Report queue sizes:
 "Queues: BA={BA_QUEUE.length}, Architect={ARCHITECT_QUEUE.length}, Dev={DEV_QUEUE.length}, Reviewer={REVIEWER_QUEUE.length}, Ops={OPS_QUEUE.length}"
@@ -1048,21 +798,11 @@ Report queue sizes:
 
 ---
 
-## Step 3-Doctor: Doctor Diagnostic Pass (Self-Healing)
-
-When any of the following conditions are true, run Doctor diagnostics to detect
-and fix stuck tasks:
-1. All queues are empty but tasks exist in pipeline columns
-2. Any task has a stale claim (even if it appears in DEV_QUEUE as "claimed")
-3. Any task is stuck in the same state for too long
-
-This catches scenarios where tasks have invalid tag combinations, stale claims that
-weren't released, or got stuck due to worker failures.
+## Step 3-Doctor: Doctor Diagnostic Pass
 
 ```
-# Check if Doctor pass is needed - EXPANDED CONDITIONS
+# Trigger conditions: empty queues with work, stale claims, or stuck tasks
 
-# Condition 1: All queues empty but pipeline has work
 ALL_QUEUES_EMPTY = (BA_QUEUE.length == 0 AND ARCHITECT_QUEUE.length == 0 AND
                    DEV_QUEUE.length == 0 AND REVIEWER_QUEUE.length == 0 AND
                    OPS_QUEUE.length == 0)
@@ -1076,8 +816,6 @@ For each task in tasks:
 
 EMPTY_QUEUES_WITH_WORK = ALL_QUEUES_EMPTY AND PIPELINE_TASKS.length > 0
 
-# Condition 2: Any stale claims exist (even if they're in dev queue)
-# This catches claims that should have been released in Step 2b but weren't
 STALE_CLAIMS_EXIST = false
 STALE_CLAIM_TASKS = []
 
@@ -1098,19 +836,12 @@ For each task in tasks:
           STALE_CLAIM_TASKS.push({task: task, claim_age: claim_age_minutes})
         BREAK
 
-# Condition 3: Any task stuck in same workflow state too long
-# (This is tracked during Step 2d - Stuck State Detection)
-# STUCK_TASKS is populated during Step 2d if any tasks exceeded state timeouts
-
-# Doctor triggers on ANY of these conditions
+# Doctor triggers if any condition met
 DOCTOR_TRIGGERED = EMPTY_QUEUES_WITH_WORK OR STALE_CLAIMS_EXIST OR (STUCK_TASKS AND STUCK_TASKS.length > 0)
 
 IF DOCTOR_TRIGGERED:
   Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  DOCTOR DIAGNOSTIC PASS                                          ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
+  Report: "=== DOCTOR DIAGNOSTIC PASS ==="
   Report: "Trigger conditions:"
   IF EMPTY_QUEUES_WITH_WORK:
     Report: "  • All queues empty but {PIPELINE_TASKS.length} tasks in pipeline"
@@ -1125,9 +856,7 @@ IF DOCTOR_TRIGGERED:
   DOCTOR_ISSUES = []
   DOCTOR_FIXES = []
 
-  # === Diagnosis 0: Stale Claims (release orphaned dev claims) ===
-  # This is a safety net - Step 2b should have caught these, but coordinator
-  # hangs or failures may have prevented Step 2b from completing
+  # Diagnosis 0: Stale Claims
   FOR item IN STALE_CLAIM_TASKS:
     task = item.task
     claim_age = item.claim_age
@@ -1146,17 +875,7 @@ IF DOCTOR_TRIGGERED:
         mcp__joan__remove_tag_from_task(PROJECT_ID, task.id, TAG_CACHE[claim_tag_name])
 
         mcp__joan__create_task_comment(task.id,
-          "ALS/1
-          actor: doctor
-          intent: recovery
-          action: release-stale-claim
-          tags.add: []
-          tags.remove: [{claim_tag_name}]
-          summary: Doctor released stale claim after {claim_age} min (threshold: {STALE_CLAIM_MINUTES}).
-          details:
-          - issue_type: STALE_DEV_CLAIM
-          - trigger: Doctor diagnostic pass (Step 2b didn't catch this)
-          - root_cause: Coordinator likely hung or failed during stale claim check")
+          "ALS/1\nactor: doctor\nintent: recovery\naction: release-stale-claim\ntags.remove: [{claim_tag_name}]\nsummary: Released stale claim ({claim_age} min)")
 
         DOCTOR_FIXES.push({task: task, fix: "release-stale-claim", claim_age: claim_age})
         Report: "  [HIGH] STALE_DEV_CLAIM: '{task.title}'"
@@ -1165,7 +884,7 @@ IF DOCTOR_TRIGGERED:
 
   For each task in PIPELINE_TASKS:
 
-    # === Diagnosis 1: Stuck Plan Finalization ===
+    # Diagnosis 1: Stuck Plan Finalization
     IF inColumn(task, "Analyse") AND hasTag(task, "Plan-Pending-Approval") AND hasTag(task, "Plan-Approved"):
       state_age_hours = (NOW - task.updated_at) in hours
       IF state_age_hours > 0.5:  # 30 minutes
@@ -1183,24 +902,13 @@ IF DOCTOR_TRIGGERED:
         mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Development"])
 
         mcp__joan__create_task_comment(task.id,
-          "ALS/1
-          actor: doctor
-          intent: recovery
-          action: finalize-stuck-plan
-          tags.add: [Planned]
-          tags.remove: [Plan-Pending-Approval, Plan-Approved]
-          column.move: Analyse → Development
-          summary: Doctor auto-finalized stuck plan after {state_age_hours} hours.
-          details:
-          - issue_type: STUCK_PLAN_FINALIZATION
-          - trigger: Queue empty but pipeline has tasks
-          - root_cause: Worker/coordinator likely failed during finalization")
+          "ALS/1\nactor: doctor\nintent: recovery\naction: finalize-stuck-plan\ntags.add: [Planned]\ntags.remove: [Plan-Pending-Approval, Plan-Approved]\ncolumn.move: Development\nsummary: Auto-finalized stuck plan")
 
         DOCTOR_FIXES.push({task: task, fix: "finalize-stuck-plan", workflow_step: "Analyse→Development"})
         Report: "  [HIGH] STUCK_PLAN_FINALIZATION: '{task.title}'"
         Report: "    Fixed: Finalized plan and moved to Development"
 
-    # === Diagnosis 2: Orphaned in Analyse with Ready ===
+    # Diagnosis 2: Orphaned in Analyse
     IF inColumn(task, "Analyse") AND hasTag(task, "Ready") AND NOT hasTag(task, "Plan-Pending-Approval"):
       state_age_hours = (NOW - task.updated_at) in hours
       IF state_age_hours > 1:  # 1 hour without being planned
@@ -1210,12 +918,9 @@ IF DOCTOR_TRIGGERED:
           severity: "MEDIUM",
           description: "Task Ready for {state_age_hours} hours but not queued for Architect"
         })
-        # This indicates the pipeline gate is blocking or Architect is disabled
-        # Don't auto-fix - just report (pipeline gate may be intentional)
-        Report: "  [MEDIUM] READY_NOT_PLANNED: '{task.title}'"
-        Report: "    Note: Pipeline gate may be blocking. Check for tasks in Development/Review."
+        Report: "  [MEDIUM] READY_NOT_PLANNED: '{task.title}' (pipeline gate may be blocking)"
 
-    # === Diagnosis 3: Orphaned in Development ===
+    # Diagnosis 3: Orphaned in Development
     IF inColumn(task, "Development"):
       has_workflow_tag = hasTag(task, "Planned") OR hasTag(task, "Rework-Requested") OR
                          hasTag(task, "Merge-Conflict") OR isClaimedByAnyDev(task) OR
@@ -1232,15 +937,7 @@ IF DOCTOR_TRIGGERED:
         IF task.description contains "## Implementation Plan" OR task.description contains "### Sub-Tasks":
           mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Planned"])
           mcp__joan__create_task_comment(task.id,
-            "ALS/1
-            actor: doctor
-            intent: recovery
-            action: restore-planned-tag
-            tags.add: [Planned]
-            summary: Doctor restored Planned tag (plan found in description).
-            details:
-            - issue_type: ORPHANED_IN_DEVELOPMENT
-            - trigger: Task had no workflow tags")
+            "ALS/1\nactor: doctor\naction: restore-planned-tag\ntags.add: [Planned]\nsummary: Restored Planned (plan in description)")
           DOCTOR_FIXES.push({task: task, fix: "restore-planned-tag", workflow_step: "Development"})
           Report: "  [HIGH] ORPHANED_IN_DEVELOPMENT: '{task.title}'"
           Report: "    Fixed: Added Planned tag (plan exists in description)"
@@ -1249,21 +946,12 @@ IF DOCTOR_TRIGGERED:
           mcp__joan__add_tag_to_task(PROJECT_ID, task.id, TAG_CACHE["Ready"])
           mcp__joan__update_task(task.id, column_id=COLUMN_CACHE["Analyse"])
           mcp__joan__create_task_comment(task.id,
-            "ALS/1
-            actor: doctor
-            intent: recovery
-            action: move-to-analyse
-            tags.add: [Ready]
-            column.move: Development → Analyse
-            summary: Doctor moved task to Analyse (no plan found).
-            details:
-            - issue_type: ORPHANED_IN_DEVELOPMENT
-            - trigger: Task had no workflow tags and no plan in description")
+            "ALS/1\nactor: doctor\naction: move-to-analyse\ntags.add: [Ready]\ncolumn.move: Analyse\nsummary: Moved to Analyse (no plan)")
           DOCTOR_FIXES.push({task: task, fix: "move-to-analyse", workflow_step: "Development→Analyse"})
           Report: "  [HIGH] ORPHANED_IN_DEVELOPMENT: '{task.title}'"
           Report: "    Fixed: Moved to Analyse with Ready tag (no plan found)"
 
-    # === Diagnosis 4: Orphaned in Review ===
+    # Diagnosis 4: Orphaned in Review
     IF inColumn(task, "Review"):
       has_review_state = hasTag(task, "Dev-Complete") OR hasTag(task, "Review-Approved") OR
                          hasTag(task, "Rework-Requested") OR hasTag(task, "Review-In-Progress") OR
@@ -1279,7 +967,7 @@ IF DOCTOR_TRIGGERED:
         Report: "  [HIGH] ORPHANED_IN_REVIEW: '{task.title}'"
         Report: "    Note: Should have been fixed by anomaly detection"
 
-    # === Diagnosis 5: Stuck Ops Merge ===
+    # Diagnosis 5: Stuck Ops Merge
     IF inColumn(task, "Review") AND hasTag(task, "Review-Approved") AND hasTag(task, "Ops-Ready"):
       state_age_hours = (NOW - task.updated_at) in hours
       IF state_age_hours > 0.5:  # 30 minutes
@@ -1293,7 +981,7 @@ IF DOCTOR_TRIGGERED:
         Report: "  [HIGH] STUCK_OPS_MERGE: '{task.title}'"
         Report: "    Note: Task is ready for Ops, should be processed next cycle"
 
-  # === Write Doctor Metrics ===
+  # Write Doctor Metrics
   IF DOCTOR_ISSUES.length > 0 OR DOCTOR_FIXES.length > 0:
     METRICS_FILE = "{PROJECT_DIR}/.claude/logs/agent-metrics.jsonl"
 
@@ -1317,7 +1005,7 @@ IF DOCTOR_TRIGGERED:
     Report: "Doctor summary: {DOCTOR_ISSUES.length} issues found, {DOCTOR_FIXES.length} fixes applied"
     Report: "Metrics logged to: {METRICS_FILE}"
 
-    # === Re-build queues after fixes ===
+    # Re-build queues after fixes
     IF DOCTOR_FIXES.length > 0:
       Report: ""
       Report: "Re-fetching tasks and rebuilding queues after Doctor fixes..."
@@ -1419,23 +1107,9 @@ IF MODE == "yolo":
     Report: "YOLO mode: no pending approvals found"
 ```
 
-**Why this location?**
-- Runs after queue building (we know which tasks need attention)
-- Runs before pipeline gate (updated tags affect gate logic)
-- Runs before dispatch (workers see updated state)
-- Handles both fresh AND stale approvals from previous cycles
-
 ---
 
 ## Step 3b: Serial Pipeline Gate Check
-
-Before dispatching Architect workers, check if the dev pipeline is clear.
-**Strict serial mode ensures only ONE task flows through Architect→Dev→Review→Ops at a time.**
-
-This prevents:
-- Stale plans (Architect plans reference code that gets modified by other tasks)
-- Merge conflicts (multiple PRs trying to merge to develop)
-- Rework cycles (plans become invalid before dev even starts)
 
 ```
 PIPELINE_BLOCKED = false
@@ -1445,7 +1119,7 @@ BLOCKING_REASON = ""
 # Check if any task is currently in the dev pipeline
 For each task in tasks:
 
-  # === Check Development column ===
+  # Check Development column
   IF inColumn(task, "Development"):
 
     # Task is planned and waiting for dev pickup
@@ -1480,7 +1154,7 @@ For each task in tasks:
       Report: "Pipeline BLOCKED: '{task.title}' has Merge-Conflict"
       BREAK
 
-  # === Check Review column ===
+  # Check Review column
   IF inColumn(task, "Review"):
 
     # Task awaiting reviewer (has completion tags, not yet reviewed)
@@ -1507,44 +1181,18 @@ For each task in tasks:
       Report: "Pipeline BLOCKED: '{task.title}' is ready for Ops merge"
       BREAK
 
-# === Apply gate decision ===
+# Apply gate decision
 IF PIPELINE_BLOCKED:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  SERIAL PIPELINE GATE: BLOCKED                                   ║"
-  Report: "╠══════════════════════════════════════════════════════════════════╣"
-  Report: "║  Blocking task: '{BLOCKING_TASK.title}'                          ║"
-  Report: "║  Reason: {BLOCKING_REASON}                                       ║"
-  Report: "╠══════════════════════════════════════════════════════════════════╣"
-  Report: "║  Architect will NOT plan new tasks until current task merges.    ║"
-  Report: "║  BA evaluation continues (no code dependencies).                 ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
-
-  # Clear architect queue - do NOT plan anything new
+  Report: "PIPELINE BLOCKED: '{BLOCKING_TASK.title}' - {BLOCKING_REASON}"
+  Report: "Architect skipped, BA continues."
   ARCHITECT_QUEUE = []
-
 ELSE:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  SERIAL PIPELINE GATE: CLEAR                                     ║"
-  Report: "║  No tasks in dev pipeline. Architect can plan next Ready task.   ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
+  Report: "PIPELINE CLEAR - Architect can plan"
 ```
 
 ---
 
-## Step 4: Dispatch Workers (MCP Proxy Pattern - Staged Pipeline)
-
-**ARCHITECTURE:** Workers do NOT have MCP access. The coordinator:
-1. Builds a complete "work package" with all task data
-2. Dispatches worker with work package via prompt
-3. Receives structured JSON result from worker
-4. Executes MCP actions on behalf of worker
-5. Verifies post-conditions
-
-This pattern ensures workers are isolated, parallelizable, and fault-tolerant.
+## Step 4: Dispatch Workers
 
 ```
 DISPATCHED = 0
@@ -1566,11 +1214,6 @@ def extract_tag_names(tags):
 
 # Helper: Extract stage context from comments
 def extract_stage_context_from_comments(comments, expected_from, expected_to):
-  """
-  Scan comments in reverse chronological order to find the most recent
-  context handoff from expected_from stage to expected_to stage.
-  Returns the parsed context object or null if not found.
-  """
   FOR comment IN reversed(comments):
     content = comment.content
 
@@ -1596,10 +1239,6 @@ def extract_stage_context_from_comments(comments, expected_from, expected_to):
 
 # Helper: Parse handoff content
 def parse_handoff_from_comment(content):
-  """
-  Parse an ALS handoff comment into a structured context object.
-  Extracts key_decisions, files_of_interest, warnings, dependencies, metadata.
-  """
   context = {
     "from_stage": null,
     "to_stage": null,
@@ -1652,10 +1291,6 @@ def parse_handoff_from_comment(content):
 
 # Helper: Format Handoff Comment
 def format_handoff_comment(context):
-  """
-  Format a StageContext object as an ALS handoff comment.
-  See als-spec.md for the full format.
-  """
   lines = [
     "ALS/1",
     f"actor: {context.from_stage}",
@@ -1700,10 +1335,6 @@ def format_handoff_comment(context):
 
 # Helper: Format Invocation Comment
 def format_invoke_comment(invocation):
-  """
-  Format an AgentInvocation as an ALS invoke-request comment.
-  This stores the invocation context for the invoked agent to read.
-  """
   lines = [
     "ALS/1",
     f"actor: {invocation.resume_as.agent_type}",  # Original requester
@@ -1740,14 +1371,7 @@ def format_invoke_comment(invocation):
 
   RETURN "\n".join(lines)
 
-# 4a: Dispatch BA workers - DRAIN QUEUE (no code dependencies, safe to process all)
-#
-# BA evaluation is safe to run for ALL pending tasks because:
-# - No code modifications (just requirement analysis)
-# - No git operations
-# - Each task evaluation is independent
-#
-# Load config for max tasks per cycle
+# 4a: Dispatch BA workers (drain queue)
 MAX_BA_TASKS_PER_CYCLE = config.settings.pipeline.maxBaTasksPerCycle OR 10
 BA_DRAINING_ENABLED = config.settings.pipeline.baQueueDraining OR true
 
@@ -1756,12 +1380,7 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
   ba_failures = 0
 
   IF BA_DRAINING_ENABLED:
-    Report: ""
-    Report: "╔══════════════════════════════════════════════════════════════════╗"
-    Report: "║  PHASE 1: BA QUEUE DRAINING                                      ║"
-    Report: "║  Processing up to {MAX_BA_TASKS_PER_CYCLE} of {BA_QUEUE.length} BA tasks  ║"
-    Report: "╚══════════════════════════════════════════════════════════════════╝"
-    Report: ""
+    Report: "=== PHASE 1: BA QUEUE ({BA_QUEUE.length} tasks, max {MAX_BA_TASKS_PER_CYCLE}) ==="
 
     # Process ALL BA tasks (up to max per cycle)
     WHILE BA_QUEUE.length > 0 AND ba_count < MAX_BA_TASKS_PER_CYCLE:
@@ -1904,20 +1523,9 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
     RESULTS.push({worker: "ba", task: item.task, result: result})
     DISPATCHED++
 
-# 4b: Dispatch Architect worker (ONE TASK ONLY - respects pipeline gate)
-#
-# NOTE: The pipeline gate in Step 3b clears ARCHITECT_QUEUE if pipeline is blocked.
-# If we reach here with tasks in the queue, the pipeline is clear and we can plan.
-# Only plan ONE task to maintain strict serialization.
-#
+# 4b: Dispatch Architect worker (1 task, pipeline gate applies)
 IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  PHASE 2: SERIAL DEV PIPELINE - ARCHITECT                        ║"
-  Report: "║  Planning ONE task (pipeline is clear)                           ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
-
+  Report: "=== PHASE 2: ARCHITECT (1 task) ==="
   item = ARCHITECT_QUEUE.shift()  # Take first (oldest) Ready task
 
   # EXPLICIT WORK PACKAGE BUILDING
@@ -1981,22 +1589,9 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
   RESULTS.push({worker: "architect", task: item.task, result: result})
   DISPATCHED++
 
-# 4c: Dispatch Dev worker (ONE TASK - strict serial mode enforces single dev)
-#
-# STRICT SERIAL MODE: Only one dev worker exists (DEV_COUNT=1).
-# This ensures:
-# - No parallel development that could cause merge conflicts
-# - Plans always reference current codebase state
-# - No race conditions for task claiming
-#
+# 4c: Dispatch Dev worker (1 task, strict serial)
 IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  PHASE 2: SERIAL DEV PIPELINE - DEVELOPMENT                      ║"
-  Report: "║  Implementing ONE task (strict serial mode)                      ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
-
+  Report: "=== PHASE 2: DEVELOPMENT (1 task) ==="
   # In strict serial mode, we only have dev_id = 1
   dev_id = 1
   available_devs = find_available_devs()
@@ -2087,15 +1682,9 @@ IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
   ELSE IF dev_id NOT IN available_devs:
     Report: "Dev worker busy (task already claimed) - skipping dispatch"
 
-# 4d: Dispatch Reviewer worker (ONE TASK - part of serial pipeline)
+# 4d: Dispatch Reviewer worker (1 task)
 IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  PHASE 2: SERIAL DEV PIPELINE - REVIEW                           ║"
-  Report: "║  Reviewing ONE task                                              ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
-
+  Report: "=== PHASE 2: REVIEW (1 task) ==="
   item = REVIEWER_QUEUE.shift()
 
   # EXPLICIT WORK PACKAGE BUILDING
@@ -2158,19 +1747,9 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
   RESULTS.push({worker: "reviewer", task: item.task, result: result})
   DISPATCHED++
 
-# 4e: Dispatch Ops worker (ONE TASK - final step in serial pipeline)
-#
-# Ops merges the task to develop, which UNLOCKS the pipeline for the next task.
-# After Ops completes successfully, the pipeline gate will be CLEAR on next poll.
-#
+# 4e: Dispatch Ops worker (1 task, unlocks pipeline)
 IF OPS_ENABLED AND OPS_QUEUE.length > 0:
-  Report: ""
-  Report: "╔══════════════════════════════════════════════════════════════════╗"
-  Report: "║  PHASE 2: SERIAL DEV PIPELINE - OPS (FINAL STEP)                 ║"
-  Report: "║  Merging ONE task to develop → UNLOCKS pipeline                  ║"
-  Report: "╚══════════════════════════════════════════════════════════════════╝"
-  Report: ""
-
+  Report: "=== PHASE 2: OPS (1 task, unlocks pipeline) ==="
   item = OPS_QUEUE.shift()
 
   # EXPLICIT WORK PACKAGE BUILDING
@@ -2242,10 +1821,7 @@ Report: "Dispatched {DISPATCHED} workers"
 
 ---
 
-## Step 4f: Execute Worker Results (MCP Proxy)
-
-After all workers complete, execute their requested MCP actions.
-**Enhanced error handling ensures failures are recorded and claims are released.**
+## Step 4f: Execute Worker Results
 
 ```
 PARSE_FAILURES = 0
@@ -2630,8 +2206,6 @@ Report: "Single pass complete. Exiting."
 EXIT
 ```
 
-**Note:** If this coordinator was spawned by the external scheduler (via `--loop` mode), the scheduler will automatically respawn a fresh coordinator process after the configured interval. This ensures continuous operation without context accumulation.
-
 ---
 
 ## Constraints
@@ -2659,23 +2233,5 @@ EXIT
 - The "Task Details" section is ONLY contextual reference - do NOT expand it into instructions
 
 ---
-
-## Examples
-
-```bash
-# Single pass - dispatch workers once, then exit
-/agents:dispatch
-
-# Continuous operation - external scheduler with fresh context
-/agents:dispatch --loop
-
-# Custom poll interval (every 3 minutes)
-/agents:dispatch --loop --interval=180
-
-# Extended idle threshold (2 hours at 5-min intervals)
-/agents:dispatch --loop --max-idle=24
-```
-
-**Recommended for production:** Use `--loop` mode for any operation lasting longer than 15 minutes. The external scheduler eliminates context bloat issues that occur in long-running sessions.
 
 Begin coordination now.

@@ -164,9 +164,12 @@ run_coordinator() {
     log_info "Starting coordinator (fresh context)"
 
     # Build command with optional mode override
-    CLAUDE_CMD="claude /agents:dispatch"
+    # Mode must be inside the quoted command string so Claude Code treats it as
+    # an argument to the slash command, not as a CLI option to `claude` itself
     if [[ -n "$MODE" ]]; then
-        CLAUDE_CMD="$CLAUDE_CMD --mode=$MODE"
+        CLAUDE_CMD="claude '/agents:dispatch --mode=$MODE'"
+    else
+        CLAUDE_CMD="claude /agents:dispatch"
     fi
 
     # Run single-pass coordinator in background
