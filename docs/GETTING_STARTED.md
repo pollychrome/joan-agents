@@ -68,7 +68,7 @@ You should see `joan` in the list of configured servers.
 
 ```bash
 # Step 1: Add the GitHub repo as a marketplace
-claude plugin marketplace add github:pollychrome/joan-agents
+claude plugin marketplace add pollychrome/joan-agents
 
 # Step 2: Install the agents plugin from that marketplace
 claude plugin install agents@joan-agents
@@ -327,7 +327,7 @@ npx @pollychrome/joan-mcp init
 claude plugin list  # Verify agents is listed
 
 # If missing, add marketplace and install:
-claude plugin marketplace add github:pollychrome/joan-agents
+claude plugin marketplace add pollychrome/joan-agents
 claude plugin install agents@joan-agents
 ```
 
@@ -356,7 +356,7 @@ Check that `schedulerStuckTimeoutSeconds` (default: 3900) is longer than `worker
 SETUP
   1. joan.ai signup → create project
   2. npx @pollychrome/joan-mcp init → restart Claude Code
-  3. claude plugin marketplace add github:pollychrome/joan-agents
+  3. claude plugin marketplace add pollychrome/joan-agents
      claude plugin install agents@joan-agents
   4. cd /your/project && claude → /agents:init
   5. Add tasks:
