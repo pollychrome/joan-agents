@@ -25,11 +25,17 @@
           "default": "opus",
           "description": "Claude model to use for all agents"
         },
+        "mode": {
+          "type": "string",
+          "enum": ["standard", "yolo"],
+          "default": "standard",
+          "description": "Workflow mode: standard (human approval gates) or yolo (fully autonomous)"
+        },
         "pollingIntervalMinutes": {
           "type": "integer",
           "minimum": 1,
           "maximum": 60,
-          "default": 10,
+          "default": 1,
           "description": "Minutes between polls when task queue is empty"
         },
         "maxIdlePolls": {
@@ -57,7 +63,7 @@
           "type": "integer",
           "minimum": 60,
           "maximum": 3600,
-          "default": 300,
+          "default": 60,
           "description": "Seconds between coordinator spawns when using /agents:dispatch --loop"
         },
         "schedulerStuckTimeoutSeconds": {

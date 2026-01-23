@@ -2130,13 +2130,18 @@ PENDING_HUMAN = count tasks with:
   - Review-Approved (no Ops-Ready) → waiting for human merge approval
   - Implementation-Failed or Branch-Setup-Failed → waiting for human fix
 
+CLAIMED_TASKS = count tasks with Claimed-Dev-* tags (workers currently running)
+
 Report: ""
 Report: "Poll complete: dispatched {DISPATCHED} workers"
 IF PENDING_HUMAN > 0:
   Report: "  {PENDING_HUMAN} tasks awaiting human action in Joan UI"
 
 IF DISPATCHED == 0:
-  Report: "No work dispatched (all queues empty or pipeline blocked)"
+  IF CLAIMED_TASKS > 0:
+    Report: "No new work dispatched, but {CLAIMED_TASKS} workers still running (not idle)"
+  ELSE:
+    Report: "No work dispatched (all queues empty or pipeline blocked)"
 
 Report: "Single pass complete. Exiting."
 EXIT

@@ -35,9 +35,39 @@ Ask the user for their preferences using AskUserQuestion:
    - `opus` - Best instruction-following, most thorough (recommended for complex workflows)
    - `sonnet` - Faster, lower cost, good for simpler tasks
    - `haiku` - Fastest, lowest cost, best for very simple operations
-2. **Polling Interval**: How often should agents poll when idle? (default: 5 minutes)
-3. **Max Idle Polls**: How many empty polls before agent shuts down? (default: 12, meaning 1 hour at 5-min intervals)
-4. **Enabled Agents**: Which agents should be enabled?
+
+2. **Workflow Mode**: Which mode should agents operate in? (default: standard)
+
+   Use AskUserQuestion with options:
+
+   - `standard` - Human approval required at critical gates **(RECOMMENDED)**
+     * Architect creates plan → Human adds Plan-Approved tag → Architect finalizes
+     * Reviewer approves → Human adds Ops-Ready tag → Ops merges
+     * Best for: Production systems, high-risk changes, learning environments
+     * Ensures human oversight at critical decision points
+
+   - `yolo` - Fully autonomous, auto-approve all gates **(EXPERIMENTAL)**
+     * Architect creates plan → Auto-approved immediately
+     * Reviewer approves → Auto-merge immediately
+     * Best for: Internal tools, prototyping, trusted codebases with strong tests
+     * ⚠️ **WARNING**: No human review means bad plans get implemented and bad code gets merged
+
+3. **Polling Interval**: How often should agents poll for new work? **(RECOMMENDED: 1 minute)**
+
+   With strict serial pipeline, faster polling = better responsiveness:
+
+   - `1 minute` - Best responsiveness, minimal token overhead (~500-1000 tokens/poll) **(RECOMMENDED)**
+   - `3 minutes` - Balanced between responsiveness and cost
+   - `5 minutes` - Legacy default, slower but lower token usage
+   - `10 minutes` - Very slow, only for low-priority projects
+
+   **Note:** Polling cost is negligible (~1000 tokens/poll). With dev work taking 10-30 minutes, 1-minute polling provides 80-95% better responsiveness.
+
+4. **Max Idle Polls**: How many empty polls before agent shuts down? (default: 12)
+
+   With 1-minute polling: 12 polls = 12 minutes of idle time before shutdown
+
+5. **Enabled Agents**: Which agents should be enabled?
 
 **Note:** Dev count is always 1 (strict serial mode - prevents merge conflicts and stale plans).
 
@@ -212,12 +242,13 @@ Create `.joan-agents.json` in project root with the user's selections:
   "projectName": "{selected-project-name}",
   "settings": {
     "model": "{opus|sonnet|haiku}",
-    "pollingIntervalMinutes": {user-choice, default: 5},
+    "mode": "{standard|yolo}",
+    "pollingIntervalMinutes": {user-choice, default: 1},
     "maxIdlePolls": {user-choice, default: 12},
     "staleClaimMinutes": 120,
     "maxPollCyclesBeforeRestart": 10,
     "stuckStateMinutes": 120,
-    "schedulerIntervalSeconds": 300,
+    "schedulerIntervalSeconds": 60,
     "schedulerStuckTimeoutSeconds": 600,
     "schedulerMaxConsecutiveFailures": 3,
     "pipeline": {

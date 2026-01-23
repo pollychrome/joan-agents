@@ -29,6 +29,7 @@ POLL_INTERVAL=300       # 5 minutes
 STUCK_TIMEOUT=600       # 10 minutes
 MAX_IDLE=12             # 12 idle polls = 1 hour at 5-min intervals
 MAX_FAILURES=3          # Stop after 3 consecutive failures
+MODE=""                 # Empty = read from config
 
 # Parse named arguments
 shift || true
@@ -48,6 +49,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --max-failures=*)
             MAX_FAILURES="${1#*=}"
+            shift
+            ;;
+        --mode=*)
+            MODE="${1#*=}"
             shift
             ;;
         *)
@@ -158,9 +163,15 @@ run_coordinator() {
 
     log_info "Starting coordinator (fresh context)"
 
+    # Build command with optional mode override
+    CLAUDE_CMD="claude /agents:dispatch"
+    if [[ -n "$MODE" ]]; then
+        CLAUDE_CMD="$CLAUDE_CMD --mode=$MODE"
+    fi
+
     # Run single-pass coordinator in background
     cd "$PROJECT_DIR"
-    claude /agents:dispatch 2>&1 | while IFS= read -r line; do
+    eval "$CLAUDE_CMD" 2>&1 | while IFS= read -r line; do
         echo "$line" | tee -a "$LOG_FILE"
     done &
     local coordinator_pid=$!
@@ -210,6 +221,7 @@ main() {
     log_info "Stuck timeout: ${STUCK_TIMEOUT}s"
     log_info "Max idle polls: $MAX_IDLE"
     log_info "Max consecutive failures: $MAX_FAILURES"
+    log_info "Mode: ${MODE:-from config}"
     log_info "=============================================="
 
     local idle_count=0
@@ -236,26 +248,19 @@ main() {
             consecutive_failures=0
             log_info "Coordinator completed successfully"
 
-            # Check heartbeat file for activity indicator
-            # If heartbeat exists and is recent, work was done
-            if [[ -f "$HEARTBEAT_FILE" ]]; then
-                local last_heartbeat now age
-                last_heartbeat="$(cat "$HEARTBEAT_FILE" 2>/dev/null || echo 0)"
-                now="$(date +%s)"
-                age=$((now - last_heartbeat))
-
-                # If heartbeat was within last 60 seconds, assume work was done
-                if [[ $age -lt 60 ]]; then
-                    idle_count=0
-                    log_info "Work detected (recent heartbeat), idle count reset"
-                else
-                    idle_count=$((idle_count + 1))
-                    log_info "No work detected, idle count: $idle_count/$MAX_IDLE"
-                fi
+            # Check coordinator output for work status
+            # Look for "workers still running" message in recent log output
+            if tail -50 "$LOG_FILE" | grep -q "workers still running (not idle)"; then
+                idle_count=0
+                log_info "Workers still running, idle count reset"
+            elif tail -50 "$LOG_FILE" | grep -q "dispatched [1-9]"; then
+                # Dispatched 1 or more workers
+                idle_count=0
+                log_info "Work dispatched, idle count reset"
             else
-                # No heartbeat file = very quick exit = likely no work
+                # No work dispatched and no workers running = truly idle
                 idle_count=$((idle_count + 1))
-                log_info "No heartbeat file, idle count: $idle_count/$MAX_IDLE"
+                log_info "No work detected, idle count: $idle_count/$MAX_IDLE"
             fi
         else
             consecutive_failures=$((consecutive_failures + 1))

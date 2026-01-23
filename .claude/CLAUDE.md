@@ -12,8 +12,10 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 /agents:status             # Dashboard view of queues and workers
 
 # 3. Run coordinator
-/agents:dispatch           # Single pass (testing/debugging)
-/agents:dispatch --loop    # Continuous operation (recommended for production)
+/agents:dispatch                       # Single pass (testing/debugging)
+/agents:dispatch --loop                # Continuous operation (recommended for production)
+/agents:dispatch --mode=yolo           # Fully autonomous (YOLO mode)
+/agents:dispatch --loop --mode=yolo    # Continuous YOLO mode
 ```
 
 **Important:** For any run longer than 15 minutes, always use `--loop` mode. It uses an external scheduler that prevents context accumulation issues.
@@ -87,6 +89,7 @@ Agents read from `.joan-agents.json` in project root:
   "projectName": "My Project",
   "settings": {
     "model": "opus",
+    "mode": "standard",
     "pollingIntervalMinutes": 5,
     "maxIdlePolls": 12,
     "staleClaimMinutes": 120,
@@ -120,8 +123,9 @@ Run `/agents:init` to generate this file interactively.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `model` | opus | Claude model for all agents: `opus`, `sonnet`, or `haiku` |
-| `pollingIntervalMinutes` | 5 | Minutes between polls when queue is empty |
-| `maxIdlePolls` | 12 | Consecutive empty polls before auto-shutdown |
+| `mode` | standard | Workflow mode: `standard` (human gates) or `yolo` (autonomous) |
+| `pollingIntervalMinutes` | 1 | Minutes between polls (1 min recommended for best responsiveness) |
+| `maxIdlePolls` | 12 | Consecutive truly idle polls before auto-shutdown |
 | `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released |
 | `stuckStateMinutes` | 120 | Minutes before tasks are flagged as stuck in workflow |
 
@@ -156,12 +160,68 @@ This ensures strict serial execution and prevents merge conflicts.
 
 Change model anytime with `/agents:model`.
 
-With defaults: agents auto-shutdown after 1 hour of inactivity (12 polls × 5 min).
+With defaults: agents auto-shutdown after 12 minutes of true inactivity (12 polls × 1 min, only counting polls with no work AND no workers running).
 
 Override per-run with `--max-idle=N`:
 ```bash
 /agents:dispatch --loop --max-idle=24  # Shutdown after 2 hours idle
 ```
+
+### Workflow Modes
+
+The system supports two operational modes:
+
+#### Standard Mode (default, recommended)
+
+Human approval required at two critical gates:
+
+1. **Plan Approval**: Architect creates plan → Human adds `Plan-Approved` tag → Architect finalizes
+2. **Merge Approval**: Reviewer approves → Human adds `Ops-Ready` tag → Ops merges
+
+**Best for:**
+- Production systems
+- High-risk changes
+- Learning environments
+- Projects with multiple stakeholders
+
+**Guarantees:** Human oversight at critical decision points
+
+#### YOLO Mode (experimental)
+
+Fully autonomous operation with auto-approval at both gates:
+
+1. **Plan Auto-Approval**: Architect creates plan → Auto-approved immediately → Moves to Development
+2. **Merge Auto-Approval**: Reviewer approves → Auto-add Ops-Ready → Ops merges immediately
+
+⚠️ **WARNING**: No human review means bad architectural decisions get implemented and poorly reviewed code gets merged.
+
+**Best for:**
+- Internal tools and scripts
+- Prototyping in sandboxed environments
+- Greenfield projects with comprehensive test coverage
+- Trusted codebases with strong CI/CD
+
+**Not recommended for:**
+- Production systems
+- Critical infrastructure
+- Systems with compliance requirements
+
+#### Switching Modes
+
+```bash
+# Override mode for a single run
+/agents:dispatch --mode=yolo
+/agents:dispatch --loop --mode=yolo
+
+# Change default mode (edit .joan-agents.json)
+{
+  "settings": {
+    "mode": "yolo"  # or "standard"
+  }
+}
+```
+
+**Audit trail:** In YOLO mode, all auto-approvals are logged as ALS comments for debugging and compliance tracking.
 
 ## Invocation Modes
 
@@ -430,6 +490,8 @@ All comments use ALS (Agentic Language Syntax) blocks for auditability.
 See `shared/joan-shared-specs/docs/workflow/als-spec.md` for the full format and examples.
 
 ### Human Actions (Tag-Based)
+
+**NOTE:** In YOLO mode, `Plan-Approved` and `Ops-Ready` tags are added automatically by the coordinator. Manual addition is not required.
 
 Instead of comment mentions, humans add tags in Joan UI:
 
