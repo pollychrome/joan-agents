@@ -93,6 +93,10 @@ class JoanMonitor:
         metrics_file = project_dir / ".claude/logs/agent-metrics.jsonl"
         metrics = self._parse_metrics(metrics_file) if metrics_file.exists() else {}
 
+        # Parse worker activity log
+        worker_log = project_dir / ".claude/logs/worker-activity.log"
+        worker_activity = self._parse_worker_activity(worker_log) if worker_log.exists() else {}
+
         # Extract PID from ps line
         pid_match = re.match(r'\S+\s+(\d+)', ps_line)
         pid = pid_match.group(1) if pid_match else "unknown"
@@ -102,9 +106,11 @@ class JoanMonitor:
             "config": config,
             "log_file": log_file,
             "metrics_file": metrics_file,
+            "worker_log": worker_log,
             "pid": pid,
             "stats": stats,
-            "metrics": metrics
+            "metrics": metrics,
+            "worker_activity": worker_activity
         }
 
     def _parse_log_stats(self, log_file: Path):
@@ -365,6 +371,81 @@ class JoanMonitor:
             pass
 
         return metrics
+
+    def _parse_worker_activity(self, worker_log: Path):
+        """Parse worker-activity.log for real-time worker status."""
+        if not worker_log.exists():
+            return {}
+
+        activity = {
+            "current_worker": None,      # Currently active worker info
+            "current_task": None,        # Task being worked on
+            "current_status": None,      # START, PROGRESS, COMPLETE, FAIL
+            "last_message": None,        # Last activity message
+            "last_update": None,         # Timestamp of last update
+            "recent_events": [],         # Last 10 events
+        }
+
+        try:
+            with open(worker_log, 'r') as f:
+                lines = f.readlines()
+
+            # Parse last 50 lines for recent activity
+            for line in lines[-50:]:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Pattern: [2026-01-23 11:07:15] [Dev] [START] task=#7 'Multiple Game Modes'
+                match = re.match(
+                    r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[(\w+)\] \[(\w+)\] (.+)',
+                    line
+                )
+                if match:
+                    timestamp_str = match.group(1)
+                    worker_type = match.group(2)
+                    status = match.group(3)
+                    message = match.group(4)
+
+                    try:
+                        timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                    except:
+                        timestamp = datetime.now()
+
+                    event = {
+                        "timestamp": timestamp,
+                        "worker": worker_type,
+                        "status": status,
+                        "message": message
+                    }
+
+                    activity["recent_events"].append(event)
+
+                    # Track current state
+                    if status == "START":
+                        activity["current_worker"] = worker_type
+                        activity["current_status"] = "WORKING"
+                        activity["current_task"] = message
+                        activity["last_update"] = timestamp
+                        activity["last_message"] = message
+                    elif status == "PROGRESS":
+                        activity["current_status"] = "WORKING"
+                        activity["last_update"] = timestamp
+                        activity["last_message"] = message
+                    elif status in ("COMPLETE", "FAIL"):
+                        activity["current_worker"] = None
+                        activity["current_status"] = status
+                        activity["current_task"] = None
+                        activity["last_update"] = timestamp
+                        activity["last_message"] = f"{worker_type}: {message}"
+
+            # Keep only last 10 events
+            activity["recent_events"] = activity["recent_events"][-10:]
+
+        except Exception as e:
+            pass
+
+        return activity
 
     def show_global_view(self, live_mode: bool = False):
         """Display global view of all running instances."""
@@ -807,7 +888,7 @@ class JoanMonitor:
             Layout(name="header", size=3),
             Layout(name="pipeline", size=9),
             Layout(name="middle", size=10),
-            Layout(name="workers", size=6),
+            Layout(name="workers", size=12),
             Layout(name="logs")
         )
 
@@ -828,9 +909,10 @@ class JoanMonitor:
 
         stats = info["stats"]
         metrics = info.get("metrics", {})
+        worker_activity = info.get("worker_activity", {})
 
         # Pipeline visualization
-        pipeline_visual = self.generate_pipeline_visual(stats)
+        pipeline_visual = self.generate_pipeline_visual(stats, worker_activity)
         layout["pipeline"].update(
             Panel(pipeline_visual, title="🔄 Pipeline Status", border_style="magenta")
         )
@@ -883,22 +965,55 @@ class JoanMonitor:
 
         layout["metrics"].update(Panel(metrics_table, title="Agent Health", border_style="magenta"))
 
-        # Workers
-        if stats.get("active_workers"):
-            workers_table = Table(show_header=True, box=None)
-            workers_table.add_column("Worker", style="cyan")
-            workers_table.add_column("Task")
-            workers_table.add_column("Duration", style="yellow")
+        # Workers - combine scheduler log detection + worker activity log
+        workers_content = Text()
+        has_worker_info = False
 
+        # Show current worker from worker-activity.log (most reliable)
+        if worker_activity.get("current_worker") and worker_activity.get("current_status") == "WORKING":
+            has_worker_info = True
+            worker_type = worker_activity["current_worker"]
+            task = worker_activity.get("current_task", "Unknown task")[:40]
+            last_msg = worker_activity.get("last_message", "")[:50]
+
+            if worker_activity.get("last_update"):
+                elapsed = now - worker_activity["last_update"]
+                elapsed_str = self._format_duration(elapsed)
+            else:
+                elapsed_str = "--:--"
+
+            workers_content.append(f"🔄 {worker_type}", "bold green")
+            workers_content.append(f"  {task}\n", "white")
+            if last_msg and last_msg != task:
+                workers_content.append(f"   └─ {last_msg}", "dim cyan")
+                workers_content.append(f" ({elapsed_str} ago)\n", "dim")
+
+            # Recent worker events
+            recent_events = worker_activity.get("recent_events", [])[-5:]
+            if recent_events:
+                workers_content.append("\nRecent Activity:\n", "dim")
+                for event in reversed(recent_events):
+                    evt_elapsed = now - event["timestamp"]
+                    evt_time = self._format_duration(evt_elapsed)
+                    status_icon = {"START": "▶", "PROGRESS": "◆", "COMPLETE": "✓", "FAIL": "✗"}.get(event["status"], "•")
+                    status_style = {"START": "green", "PROGRESS": "cyan", "COMPLETE": "green", "FAIL": "red"}.get(event["status"], "white")
+                    workers_content.append(f"  {evt_time:>8} ", "dim")
+                    workers_content.append(f"{status_icon} ", status_style)
+                    workers_content.append(f"[{event['worker']}] ", "cyan")
+                    workers_content.append(f"{event['message'][:35]}\n", "white")
+
+        # Fallback: show from scheduler log if no worker activity
+        elif stats.get("active_workers"):
+            has_worker_info = True
             for worker in stats["active_workers"]:
                 duration = now - worker["started_at"]
-                workers_table.add_row(
-                    worker["type"],
-                    worker["task"][:40],
-                    self._format_duration(duration)
-                )
+                workers_content.append(f"🔄 {worker['type']}", "bold yellow")
+                workers_content.append(f"  {worker['task'][:40]}", "white")
+                workers_content.append(f"  ({self._format_duration(duration)})\n", "dim")
+            workers_content.append("\n[dim]Note: No worker-activity.log - showing scheduler log data[/dim]", "dim")
 
-            layout["workers"].update(Panel(workers_table, title="Active Workers", border_style="yellow"))
+        if has_worker_info:
+            layout["workers"].update(Panel(workers_content, title="Active Workers", border_style="yellow"))
         else:
             layout["workers"].update(Panel("No active workers", title="Active Workers", border_style="dim"))
 
@@ -950,29 +1065,43 @@ class JoanMonitor:
         except KeyboardInterrupt:
             self.console.print("\n[yellow]Stopped tailing logs[/yellow]\n")
 
-    def generate_pipeline_visual(self, stats: dict) -> Text:
+    def generate_pipeline_visual(self, stats: dict, worker_activity: dict = None) -> Text:
         """Generate the pipeline visualization with blinking active stage."""
         text = Text()
+        worker_activity = worker_activity or {}
 
         # Toggle blink state for animation
         self.blink_state = not self.blink_state
 
-        # Find active stage from active workers
+        # Find active stage - prefer worker_activity.log (more reliable)
         active_stage = None
         active_task = None
+        last_progress = None
         doctor_active = False
         waiting_stages = {}  # Stages with tasks waiting (not actively being worked)
 
-        for worker in stats.get("active_workers", []):
-            worker_type = worker.get("type", "")
-            # Map worker types to pipeline stages
+        # Primary source: worker-activity.log
+        if worker_activity.get("current_worker") and worker_activity.get("current_status") == "WORKING":
+            worker_type = worker_activity["current_worker"]
             stage_map = {"BA": "BA", "Architect": "Architect", "Dev": "Dev",
-                        "Reviewer": "Reviewer", "Ops": "Ops", "Doctor": None}
-            if worker_type == "Doctor":
-                doctor_active = True
-            elif worker_type in stage_map and stage_map[worker_type]:
+                        "Reviewer": "Reviewer", "Ops": "Ops"}
+            if worker_type in stage_map:
                 active_stage = stage_map[worker_type]
-                active_task = worker.get("task", "")
+                active_task = worker_activity.get("current_task", "")
+                last_progress = worker_activity.get("last_message", "")
+
+        # Fallback: scheduler log parsing
+        if not active_stage:
+            for worker in stats.get("active_workers", []):
+                worker_type = worker.get("type", "")
+                # Map worker types to pipeline stages
+                stage_map = {"BA": "BA", "Architect": "Architect", "Dev": "Dev",
+                            "Reviewer": "Reviewer", "Ops": "Ops", "Doctor": None}
+                if worker_type == "Doctor":
+                    doctor_active = True
+                elif worker_type in stage_map and stage_map[worker_type]:
+                    active_stage = stage_map[worker_type]
+                    active_task = worker.get("task", "")
 
         # If no active workers, check pipeline_state for waiting tasks
         pipeline_state = stats.get("pipeline_state", {})
@@ -1044,12 +1173,28 @@ class JoanMonitor:
         text.append("\n")
 
         # Current task indicator
+        # Check if there's an active worker from either source
+        is_actively_working = has_active_worker or (
+            worker_activity.get("current_worker") and
+            worker_activity.get("current_status") == "WORKING"
+        )
+
         if active_stage and active_task:
             text.append("\n  ")
             task_display = active_task[:50] + "..." if len(active_task) > 50 else active_task
-            if has_active_worker:
+            if is_actively_working:
                 text.append(f"  ▶ {active_stage}: ", "bold green")
                 text.append(task_display, "white")
+                # Show last progress message if available
+                if last_progress and last_progress != active_task:
+                    progress_display = last_progress[:60] + "..." if len(last_progress) > 60 else last_progress
+                    text.append("\n     ")
+                    text.append(f"└─ {progress_display}", "dim cyan")
+                # Show elapsed time if available
+                if worker_activity.get("last_update"):
+                    elapsed = datetime.now() - worker_activity["last_update"]
+                    elapsed_str = self._format_duration(elapsed)
+                    text.append(f" ({elapsed_str})", "dim")
             else:
                 text.append(f"  ◐ {active_stage}: ", "bold yellow")
                 text.append(task_display, "dim white")

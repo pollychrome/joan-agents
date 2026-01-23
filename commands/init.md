@@ -231,6 +231,29 @@ All required permissions already present.
 
 ---
 
+## Step 5b: Create Logs Directory
+
+Create the `.claude/logs` directory for scheduler and worker activity logs:
+
+```bash
+mkdir -p .claude/logs
+```
+
+This directory will contain:
+- `scheduler.log` - Coordinator activity and dispatch events
+- `worker-activity.log` - Real-time worker progress (for `joan status` monitoring)
+- `agent-metrics.jsonl` - Structured metrics for health tracking
+
+**Report:**
+```
+✓ Logs Directory Created
+
+Path: .claude/logs/
+Ready for scheduler and worker activity logging.
+```
+
+---
+
 ## Note: Agent Commands
 
 **If you installed via the Claude Code plugin system** (recommended):
@@ -239,7 +262,7 @@ Agent commands are automatically available through the plugin. No additional set
 ```bash
 # Plugin installation (one time, globally)
 claude plugin marketplace add github:pollychrome/joan-agents
-claude plugin install agents@alexbenson-joan-agents
+claude plugin install agents@joan-agents
 ```
 
 **If you installed manually via symlinks** (legacy):
