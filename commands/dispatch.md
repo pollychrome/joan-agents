@@ -111,6 +111,7 @@ MAX_IDLE_ARG = MAX_IDLE_OVERRIDE or MAX_IDLE or 12
 MAX_FAILURES = config.settings.schedulerMaxConsecutiveFailures or 3
 
 Report: "Starting external scheduler for continuous operation"
+Report: "  Mode: {MODE}"
 Report: "  Poll interval: {INTERVAL}s"
 Report: "  Max idle polls: {MAX_IDLE_ARG}"
 Report: "  Stuck timeout: {STUCK_TIMEOUT}s"
@@ -140,7 +141,7 @@ IF scheduler script does not exist at $SCHEDULER_SCRIPT:
   EXIT with error
 
 Bash:
-  command: "$HOME/joan-agents/scripts/joan-scheduler.sh" . --interval={INTERVAL} --stuck-timeout={STUCK_TIMEOUT} --max-idle={MAX_IDLE_ARG} --max-failures={MAX_FAILURES}
+  command: "$HOME/joan-agents/scripts/joan-scheduler.sh" . --interval={INTERVAL} --stuck-timeout={STUCK_TIMEOUT} --max-idle={MAX_IDLE_ARG} --max-failures={MAX_FAILURES} --mode={MODE}
   description: Run external scheduler for continuous coordinator execution
 
 # The script runs until shutdown signal or max idle reached
