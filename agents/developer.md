@@ -155,75 +155,108 @@ git pull origin "$BRANCH" --rebase || git pull origin "$BRANCH"
 npm install 2>/dev/null || true
 ```
 
-## Phase 3: Implement All Sub-Tasks
+## Phase 3: Implement All Sub-Tasks (BATCHED VALIDATION)
 
-Work through sub-tasks IN ORDER from the plan:
+Work through sub-tasks IN ORDER from the plan. **Key optimization**: validation (lint, typecheck, tests) runs ONCE after all code is written, not per sub-task.
 
-### 3a. Design Tasks (DES-*)
+### 3a. Design Tasks (DES-*) - Implement All First
 
 For each DES task:
 1. Read CLAUDE.md for design system
 2. Implement component/UI following frontend-design skill
 3. Update design system if adding new patterns
-4. Commit:
-   ```bash
-   git add -A
-   git commit -m "design({scope}): {description}
+4. **Track as complete** (for updating description at end)
+5. Log progress: `log_activity "PROGRESS" "Implemented DES-{N}: {description}"`
 
-   Implements DES-{N} for {task-title}"
-   ```
-5. **Track as complete** (for updating description at end)
-6. Log progress: `log_activity "PROGRESS" "Completed DES-{N}: {description}"`
+**DO NOT commit yet** - wait for quality gate.
 
-### 3b. Development Tasks (DEV-*)
+### 3b. Development Tasks (DEV-*) - Implement All First
 
 For each DEV task (respecting dependencies):
 1. Implement the code
-2. Run linter, fix issues
-3. Run type checker, fix issues
-4. Commit:
-   ```bash
-   git add -A
-   git commit -m "feat({scope}): {description}
+2. **Track as complete** (for updating description at end)
+3. Log progress: `log_activity "PROGRESS" "Implemented DEV-{N}: {description}"`
 
-   Implements DEV-{N} for {task-title}"
-   ```
-5. **Track as complete** (for updating description at end)
-6. Log progress: `log_activity "PROGRESS" "Completed DEV-{N}: {description}"`
+**DO NOT run linter/typecheck per task** - wait for quality gate.
+**DO NOT commit yet** - wait for quality gate.
 
-### 3c. Testing Tasks (TEST-*)
+### 3c. Quality Gate - Validate Once After All DES/DEV Complete
+
+After ALL design and development tasks are implemented:
+
+```bash
+log_activity "PROGRESS" "Running quality gate: lint + typecheck"
+
+# 1. Run linter ONCE, fix any issues
+npm run lint --fix  # or equivalent
+
+# 2. Run type checker ONCE, fix any issues
+npm run typecheck  # or tsc --noEmit, etc.
+
+# 3. Commit all DES/DEV work together
+git add -A
+git commit -m "feat({scope}): {task-title}
+
+Implements: DES-1, DES-2, DEV-1, DEV-2, DEV-3 (list all completed)"
+```
+
+Log: `log_activity "PROGRESS" "Quality gate passed, implementation committed"`
+
+### 3d. Testing Tasks (TEST-*) - Write All, Run Once
 
 For each TEST task:
 1. Write test cases
-2. Run test suite:
-   ```bash
-   npm test  # or pytest, etc.
-   ```
-3. If tests fail:
-   - Analyze failure
-   - If bug in implementation: fix it, re-run
-   - If bug in test: fix test
-   - Retry up to 3 times
-4. For E2E tests: use Chrome directly via computer tool
-5. Commit:
-   ```bash
-   git add -A
-   git commit -m "test({scope}): {description}
+2. **Track as complete** (for updating description at end)
+3. Log progress: `log_activity "PROGRESS" "Wrote TEST-{N}: {description}"`
 
-   Implements TEST-{N} for {task-title}"
-   ```
-6. **Track as complete** (for updating description at end)
-7. Log progress: `log_activity "PROGRESS" "Completed TEST-{N}: {description}"`
+**DO NOT run test suite per task** - wait until all tests are written.
 
-### Quality Gates
+After ALL test cases are written:
+
+```bash
+log_activity "PROGRESS" "Running test suite"
+
+# Run full test suite ONCE
+npm test  # or pytest, etc.
+
+# If tests fail:
+#   - Analyze failure
+#   - Fix implementation or test
+#   - Re-run suite (up to 3 total attempts)
+
+# For E2E tests: use Chrome directly via computer tool
+
+# Commit all test work
+git add -A
+git commit -m "test({scope}): add tests for {task-title}
+
+Implements: TEST-1, TEST-2, TEST-3 (list all completed)"
+```
+
+Log: `log_activity "PROGRESS" "All tests passing, tests committed"`
+
+### Why Batched Validation?
+
+Running lint/typecheck/tests per sub-task is wasteful:
+- 5 DEV tasks = 5 lint runs + 5 typecheck runs (instead of 1 each)
+- 3 TEST tasks = 3 full test suite runs (instead of 1)
+- Saves ~2-3 minutes per task
+
+The tradeoff (later error detection) is minor because:
+- Lint/type errors are quick to fix
+- You'd implement all sub-tasks anyway
+- Modern editors catch most issues in real-time
+
+### Quality Gates (Final Check)
 
 Before moving to PR:
-- [ ] All DES-* tasks checked off
-- [ ] All DEV-* tasks checked off
-- [ ] All TEST-* tasks checked off
-- [ ] All tests passing
-- [ ] Linting clean
-- [ ] No type errors
+- [ ] All DES-* tasks implemented and tracked
+- [ ] All DEV-* tasks implemented and tracked
+- [ ] Linting clean (ran once after all code)
+- [ ] No type errors (ran once after all code)
+- [ ] All TEST-* tasks written
+- [ ] All tests passing (ran once after all tests written)
+- [ ] Two commits: implementation + tests
 
 ## Phase 4: Create Pull Request
 

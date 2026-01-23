@@ -156,30 +156,43 @@ The coordinator provides a work package with:
 2. Parse sub-tasks from task description:
    - Extract DES-*, DEV-*, TEST-* items
 
-3. Execute in order:
+3. Execute with BATCHED VALIDATION (lint/typecheck/tests run ONCE, not per task):
 
-   a. Design tasks (DES-*) first:
+   a. Design tasks (DES-*) - implement ALL first:
       - Reference frontend-design skill for UI work
       - Read CLAUDE.md for design system
       - Implement component/design
-      - Commit: "design({scope}): DES-{N} - {description}"
       - Track as completed: DES-{N}
+      - DO NOT commit yet
 
-   b. Development tasks (DEV-*) second:
+   b. Development tasks (DEV-*) - implement ALL second:
       - Implement code changes
-      - Run linter, fix issues
-      - Run type checker, fix issues
-      - Commit: "feat({scope}): DEV-{N} - {description}"
       - Track as completed: DEV-{N}
+      - DO NOT run linter/typecheck per task
+      - DO NOT commit yet
 
-   c. Testing tasks (TEST-*) last:
-      - Write test cases
-      - Run test suite
-      - Fix any failures (up to 3 retries)
-      - Commit: "test({scope}): TEST-{N} - {description}"
+   c. Quality gate - run ONCE after all DES/DEV complete:
+      - Run linter ONCE, fix issues
+      - Run type checker ONCE, fix issues
+      - Commit all DES/DEV work:
+        "feat({scope}): {task-title}
+
+         Implements: DES-1, DEV-1, DEV-2, ..."
+
+   d. Testing tasks (TEST-*) - write ALL, run suite ONCE:
+      - Write all test cases first
       - Track as completed: TEST-{N}
+      - Run full test suite ONCE after all tests written
+      - Fix failures, retry up to 3 times (full suite)
+      - Commit all tests:
+        "test({scope}): add tests for {task-title}
 
-4. IF any sub-task fails after 3 retries:
+         Implements: TEST-1, TEST-2, ..."
+
+   WHY BATCHED: Saves ~2-3 min per task by avoiding redundant
+   lint/typecheck/test runs. 5 DEV tasks = 1 lint instead of 5.
+
+4. IF quality gate or tests fail after 3 retries:
    Return IMPLEMENTATION_FAILURE result
 ```
 
