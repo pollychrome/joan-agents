@@ -287,9 +287,11 @@ External Scheduler (bash script)
 **Scheduler settings** (in `.joan-agents.json`):
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `schedulerIntervalSeconds` | 300 | Seconds between coordinator spawns |
-| `schedulerStuckTimeoutSeconds` | 600 | Seconds before killing stuck coordinator |
+| `schedulerIntervalSeconds` | 60 | Seconds between coordinator spawns |
+| `schedulerStuckTimeoutSeconds` | 3900 | Seconds before killing stuck coordinator |
 | `schedulerMaxConsecutiveFailures` | 3 | Max failures before scheduler stops |
+
+**IMPORTANT:** `schedulerStuckTimeoutSeconds` must be longer than the longest worker timeout (`workerTimeouts.dev` = 60 min = 3600s). The default of 3900s (65 min) provides a 5-minute buffer.
 
 **Graceful shutdown:**
 ```bash

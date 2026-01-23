@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@pollychrome/joan-mcp": "^2.1.0"
+  }
+}

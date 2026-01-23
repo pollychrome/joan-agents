@@ -270,7 +270,7 @@ Create `.joan-agents.json` in project root with the user's selections:
     "maxPollCyclesBeforeRestart": 10,
     "stuckStateMinutes": 120,
     "schedulerIntervalSeconds": 60,
-    "schedulerStuckTimeoutSeconds": 600,
+    "schedulerStuckTimeoutSeconds": 3900,
     "schedulerMaxConsecutiveFailures": 3,
     "pipeline": {
       "baQueueDraining": true,
