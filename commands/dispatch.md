@@ -8,10 +8,16 @@ allowed-tools: Bash, Read
 
 ## Arguments
 
-- `--loop` → Start webhook receiver for event-driven dispatch (recommended)
-- No flag → Single pass (process all queues once, then exit)
+**CRITICAL: If no `--loop` flag is passed, you MUST run in single-pass mode. Do NOT start the webhook receiver.**
+
+- `--loop` → Start webhook receiver for event-driven dispatch
+- No flag → **DEFAULT: Single pass** (process all queues once, then exit)
 - `--port=N` → Webhook receiver port (default: 9847)
 - `--mode=standard|yolo` → Override workflow mode (default: read from config)
+
+**Argument Detection Rule:**
+Look for the LITERAL string `--loop` in the command arguments. If it is NOT present, you are in single-pass mode.
+This is especially important during bootstrap scans where the webhook receiver invokes dispatch WITHOUT `--loop`.
 
 ## Configuration
 
@@ -47,19 +53,28 @@ If config missing, report error and exit.
 
 ## Execution Branch
 
+**IMPORTANT: Parse arguments STRICTLY. Do not assume or infer mode - check for literal `--loop`.**
+
 Parse arguments:
 ```
-LOOP_MODE = true if --loop flag present, else false
+# Check if the LITERAL string "--loop" appears in the command arguments
+# If you cannot see "--loop" in the arguments, LOOP_MODE is false
+LOOP_MODE = true ONLY if "--loop" is EXPLICITLY present in arguments
+            false in all other cases (this is the default!)
+
 PORT_OVERRIDE = --port value if present, else null
 MODE_OVERRIDE = --mode value if present, else null
 ```
 
+**If LOOP_MODE is false (no --loop argument), skip directly to "Configuration Validation" section.**
+
 ## Parse CLI Parameters
 
-Extract mode override if provided:
-- Look for `--mode=standard` or `--mode=yolo` in command arguments
-- If found: MODE = cli_value
-- Else: MODE = CONFIG.settings.mode || "standard"
+Extract mode (priority order):
+1. Look for `--mode=standard` or `--mode=yolo` in command arguments → MODE = cli_value
+2. Check environment variable `JOAN_WORKFLOW_MODE` → MODE = env_value
+   (This is how bootstrap scan passes mode to nested dispatch calls)
+3. Read from config: MODE = CONFIG.settings.mode || "standard"
 
 Report: "Running in {MODE} mode"
 
@@ -67,7 +82,13 @@ Report: "Running in {MODE} mode"
 
 ### If LOOP_MODE is TRUE (Webhook Receiver Mode)
 
-Start the webhook receiver for event-driven dispatch:
+**ONLY execute this section if you found the literal string `--loop` in the command arguments.**
+**If `--loop` was NOT present, SKIP THIS ENTIRE SECTION and go to "Configuration Validation".**
+
+Start the webhook receiver for event-driven dispatch.
+
+**No Bootstrap**: The webhook receiver goes directly into listening mode. If you have existing
+tasks that need to be integrated into the workflow, run `/agents:clean-project --apply` first.
 
 ```
 # Get project name for file naming
@@ -80,6 +101,9 @@ Report: "Starting webhook receiver for event-driven dispatch"
 Report: "  Mode: {MODE}"
 Report: "  Port: {PORT}"
 Report: "  Secret: {WEBHOOK_SECRET ? 'configured' : 'none'}"
+Report: ""
+Report: "NOTE: If you have existing tasks, run '/agents:clean-project --apply' first"
+Report: "      to integrate them into the workflow."
 Report: ""
 Report: "═══════════════════════════════════════════════════════════════"
 Report: "  MONITORING"
@@ -103,15 +127,20 @@ IF receiver script does not exist at $RECEIVER_SCRIPT:
   Report: "  git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents"
   EXIT with error
 
-# Build receiver arguments
-RECEIVER_ARGS = "--port={PORT} --project-dir=. --mode={MODE}"
+# Build receiver arguments (space-separated, NOT --key=value format)
+RECEIVER_ARGS = "--port {PORT} --project-dir . --mode {MODE}"
 IF WEBHOOK_SECRET:
-  RECEIVER_ARGS += " --secret={WEBHOOK_SECRET}"
+  RECEIVER_ARGS += " --secret {WEBHOOK_SECRET}"
 
 Bash:
   command: "$HOME/joan-agents/scripts/webhook-receiver.sh" {RECEIVER_ARGS}
   description: Start webhook receiver for event-driven dispatch
   # NOT run_in_background - we want to keep this session alive for monitoring
+
+# The receiver will:
+# 1. Verify project config exists
+# 2. Enter event-driven mode (listen for webhooks)
+# 3. Dispatch handlers as events arrive
 
 # Receiver exited (user stopped it)
 Report: ""

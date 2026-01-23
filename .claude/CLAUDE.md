@@ -28,7 +28,12 @@ joan logs myproject        # Tail logs in real-time
 /agents:doctor --dry-run   # Preview fixes without applying
 ```
 
-**Why webhooks?** Zero token cost when idle, instant response to events, and cleaner architecture. The `--loop` mode starts a webhook receiver that listens for Joan events and dispatches handlers immediately.
+**Why webhooks?** Instant response to events with state-aware resilience. The `--loop` mode starts a webhook receiver that:
+- Responds immediately to Joan events (webhooks)
+- Scans Joan state periodically to catch any missed events
+- Processes existing backlog on startup
+
+This means you can **safely restart the receiver at any time** without losing work.
 
 ## Architecture
 
@@ -60,7 +65,8 @@ Webhook-Driven Event Architecture
   tag_added: Ops-Ready      → handle-ops
 
   Key Principles:
-  • Event-driven: Zero tokens when idle, instant response to changes
+  • State-aware: Resilient to missed events via periodic state scans
+  • Event-driven: Instant response to webhook events
   • Focused handlers: Each invocation processes ONE task
   • Stateless: Handlers check Joan state on each invocation
   • Strict serial: Pipeline gate enforced by tag presence checks
@@ -87,12 +93,21 @@ Webhook-Driven Event Architecture
 
 ### How Webhook Dispatch Works
 
-1. **Joan backend** sends HTTP POST to configured webhook URL when events occur
-2. **Webhook receiver** parses event type and tag changes
-3. **Handler dispatched** via `claude /agents:dispatch/handle-*` with task ID
-4. **Handler executes** focused work on single task, returns structured result
+The receiver is **state-aware**, not just event-reactive:
+
+1. **On startup**: Scans Joan state for any actionable work (catches missed events while down)
+2. **On webhook**: Dispatches handler for the specific event immediately
+3. **Periodically**: Scans Joan state every 60 seconds (catches anything that slipped through)
+
+**Handler dispatch flow:**
+1. Joan backend sends HTTP POST to webhook URL when events occur
+2. Webhook receiver parses event type and tag changes
+3. Handler dispatched via `claude /agents:dispatch/handle-*` with task ID
+4. Handler executes focused work on single task
 
 Each handler is stateless and checks Joan state on invocation, ensuring correct behavior regardless of execution order.
+
+**Why state-aware?** Webhooks are fire-and-forget - if the receiver misses an event (crash, restart, network issue), that work would be lost. The periodic state scan ensures **nothing gets stuck** just because a webhook was missed. The state (tags + columns) is always the source of truth.
 
 ## Configuration
 
@@ -139,6 +154,12 @@ Run `/agents:init` to generate this file interactively.
 | `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released (used by doctor) |
 | `webhook.port` | 9847 | Port for webhook receiver to listen on |
 | `webhook.secret` | (none) | HMAC secret for webhook signature verification |
+
+**Environment variable overrides:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JOAN_CATCHUP_INTERVAL` | 60 | Seconds between state scans (set to 0 to disable periodic scans) |
+| `JOAN_WEBHOOK_DEBUG` | (none) | Set to "1" to enable debug logging |
 
 ### Worker Timeouts
 
@@ -218,7 +239,14 @@ Fully autonomous operation with auto-approval at both gates:
 
 ## Webhook Receiver
 
-The webhook receiver is a lightweight HTTP server that listens for Joan events and dispatches handlers.
+The webhook receiver is a **state-aware** HTTP server that responds to Joan events AND periodically checks for missed work.
+
+### Key Features
+
+- **Startup scan**: Catches any work missed while receiver was down
+- **Periodic scan**: Every 60 seconds (configurable via `JOAN_CATCHUP_INTERVAL`)
+- **Immediate response**: Webhooks trigger instant handler dispatch
+- **Graceful restart**: Safe to restart at any time without losing work
 
 ### Starting the Receiver
 
@@ -234,6 +262,9 @@ The webhook receiver is a lightweight HTTP server that listens for Joan events a
 
 # Environment variables also work
 JOAN_WEBHOOK_PORT=9847 JOAN_WEBHOOK_SECRET="secret" ./scripts/webhook-receiver.sh --project-dir .
+
+# Adjust catchup interval (default 60 seconds)
+JOAN_CATCHUP_INTERVAL=30 ./scripts/webhook-receiver.sh --project-dir .
 ```
 
 ### Configuring Joan to Send Webhooks
@@ -270,16 +301,16 @@ kill -INT $(pgrep -f webhook-receiver.sh)
 
 Logs are written to `.claude/logs/webhook-receiver.log`.
 
-### Self-Healing
+### State-Aware Resilience
 
-Since webhooks are event-driven, anomaly detection doesn't run continuously. Schedule `/agents:doctor` to run periodically:
+The receiver automatically catches missed webhooks via periodic state scans. This means:
 
-```bash
-# Add to crontab - run every 30 minutes
-*/30 * * * * cd /path/to/project && claude /agents:doctor --auto-fix >> .claude/logs/doctor-cron.log 2>&1
-```
+- **Missed webhook?** Caught within 60 seconds by periodic scan
+- **Receiver crashed?** On restart, startup scan catches pending work immediately
+- **Network blip?** Periodic scan ensures nothing stays stuck
 
-Or run manually when you notice stuck tasks:
+For deeper anomaly detection (stale claims, invalid tag combinations), use the doctor:
+
 ```bash
 /agents:doctor             # Diagnose and fix
 /agents:doctor --dry-run   # Preview only

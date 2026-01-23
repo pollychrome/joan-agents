@@ -355,6 +355,49 @@ Create `.joan-agents.json` in project root with the user's selections:
 
 **Note:** `devs.count` is always 1 to enforce strict serial mode.
 
+## Step 6b: Check for Existing Tasks
+
+After saving the configuration, check if the project already has tasks that need workflow integration:
+
+```
+# Fetch tasks for the project
+tasks = mcp__joan__list_tasks(project_id=PROJECT_ID)
+
+IF tasks.length > 0:
+  # Count tasks by column/status
+  done_count = tasks.filter(t => t.status == "done").length
+  active_count = tasks.length - done_count
+
+  IF active_count > 0:
+    Report: ""
+    Report: "═══════════════════════════════════════════════════════════════"
+    Report: "  EXISTING TASKS DETECTED"
+    Report: "═══════════════════════════════════════════════════════════════"
+    Report: ""
+    Report: "Found {tasks.length} tasks in this project:"
+    Report: "  • {active_count} active tasks (need workflow integration)"
+    Report: "  • {done_count} completed tasks"
+    Report: ""
+    Report: "To integrate existing tasks into the workflow, run:"
+    Report: "  /agents:clean-project --apply"
+    Report: ""
+    Report: "This will add appropriate workflow tags based on each task's"
+    Report: "current state (column, description content, etc.)"
+    Report: ""
+
+    AskUserQuestion: "Would you like to run clean-project now to integrate existing tasks?"
+    Options:
+      - "Yes, run /agents:clean-project --apply now (recommended)"
+      - "No, I'll run it later before starting the workflow"
+
+    IF user selected "Yes":
+      Report: "Running clean-project to integrate existing tasks..."
+      # This will invoke the clean-project command
+      /agents:clean-project --apply
+      Report: ""
+      Report: "Existing tasks integrated. Continuing with setup..."
+```
+
 ## Step 7: Initial Task Setup (Optional)
 
 After configuration is saved, offer the user options to add initial tasks:

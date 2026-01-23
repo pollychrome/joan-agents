@@ -191,12 +191,57 @@ FOR task IN tasks:
     TO_SKIP.push({task, reason: "In Done column"})
     CONTINUE
 
-  # Skip 2: Tasks already in workflow (have workflow tags)
-  IF hasWorkflowTags(task):
-    TO_SKIP.push({task, reason: "Already has workflow tags"})
+  # === COLUMN/TAG MISMATCH DETECTION (before skip rules) ===
+  # These catch tasks that have workflow tags but are in the WRONG column
+
+  # Mismatch 1: To Do + Ready tag → should be in Analyse
+  IF inColumn(task, "To Do") AND hasTag(task, "Ready"):
+    MISPLACED.push({
+      task,
+      current_column: "To Do",
+      should_be: "Analyse",
+      reason: "Has Ready tag but in To Do - should be in Analyse for Architect"
+    })
     CONTINUE
 
-  # Skip 3: Tasks in To Do (waiting for BA)
+  # Mismatch 2: To Do + Planned tag → should be in Development
+  IF inColumn(task, "To Do") AND hasTag(task, "Planned"):
+    MISPLACED.push({
+      task,
+      current_column: "To Do",
+      should_be: "Development",
+      reason: "Has Planned tag but in To Do - should be in Development for Dev"
+    })
+    CONTINUE
+
+  # Mismatch 3: Review + Review-Approved + Ops-Ready → should be in Deploy
+  IF inColumn(task, "Review") AND hasTag(task, "Review-Approved") AND hasTag(task, "Ops-Ready"):
+    MISPLACED.push({
+      task,
+      current_column: "Review",
+      should_be: "Deploy",
+      reason: "Has Review-Approved + Ops-Ready tags - should be in Deploy for Ops"
+    })
+    CONTINUE
+
+  # Mismatch 4: Analyse + Planned tag → should be in Development
+  IF inColumn(task, "Analyse") AND hasTag(task, "Planned"):
+    MISPLACED.push({
+      task,
+      current_column: "Analyse",
+      should_be: "Development",
+      reason: "Has Planned tag but in Analyse - should be in Development for Dev"
+    })
+    CONTINUE
+
+  # === SKIP RULES (for correctly placed tasks) ===
+
+  # Skip 2: Tasks already in workflow (have workflow tags) and correctly placed
+  IF hasWorkflowTags(task):
+    TO_SKIP.push({task, reason: "Already has workflow tags (correctly placed)"})
+    CONTINUE
+
+  # Skip 3: Tasks in To Do without workflow tags (waiting for BA)
   IF inColumn(task, "To Do"):
     TO_SKIP.push({task, reason: "In To Do, waiting for BA evaluation"})
     CONTINUE
