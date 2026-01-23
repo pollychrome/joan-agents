@@ -8,21 +8,18 @@ This system uses **tag-based state transitions** (no comment parsing), a **singl
 # 1. Initialize configuration (interactive)
 /agents:init
 
-# 2. Check current status
-/agents:status             # Dashboard view of queues and workers
-
-# 3. Run coordinator
+# 2. Run coordinator
 /agents:dispatch                       # Single pass (testing/debugging)
 /agents:dispatch --loop                # Continuous operation (recommended for production)
 /agents:dispatch --mode=yolo           # Fully autonomous (YOLO mode)
 /agents:dispatch --loop --mode=yolo    # Continuous YOLO mode
 
-# 4. Monitor live activity (from terminal, not Claude)
+# 3. Monitor live activity (from terminal, zero token cost)
 joan status                # Global view of all running instances
-joan status yolo-test      # Detailed view of specific project
-joan logs yolo-test        # Tail logs in real-time
+joan status myproject -f   # Live dashboard for specific project
+joan logs myproject        # Tail logs in real-time
 
-# 5. Diagnose and recover invalid task states
+# 4. Diagnose and recover invalid task states
 /agents:doctor             # Scan all tasks for issues
 /agents:doctor --dry-run   # Preview fixes without applying
 ```

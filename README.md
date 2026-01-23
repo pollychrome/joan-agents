@@ -58,7 +58,9 @@ git push -u origin develop
 ```bash
 # In Claude Code:
 > /agents:dispatch --loop    # Continuous operation (recommended)
-> /agents:status             # Check status anytime
+
+# In a separate terminal (zero token cost):
+$ joan status myproject -f   # Live monitoring dashboard
 ```
 
 **That's it!** Your agents are now monitoring your Joan board.
@@ -204,11 +206,10 @@ This prevents permission prompts from interrupting the agent loop. The file is g
 
 # Note: /agents:start is deprecated (use /agents:dispatch instead, kept for backward compatibility)
 
-# Check agent status
-/agents:status
-
-# Check if coordinator is running
-/agents:running
+# Monitor agents (in separate terminal, zero token cost)
+joan status              # Global view of all projects
+joan status myproject -f # Live dashboard for specific project
+joan logs myproject      # Tail logs in real-time
 
 # Change model for all agents
 /agents:model
