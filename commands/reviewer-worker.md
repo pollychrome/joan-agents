@@ -20,6 +20,7 @@ The coordinator provides a work package with:
   "task_tags": ["tag1", "tag2"],
   "task_column": "Review",
   "task_comments": [...],
+  "workflow_mode": "standard" | "yolo",
   "project_id": "uuid",
   "project_name": "string",
   "previous_stage_context": {
@@ -152,7 +153,8 @@ Perform comprehensive review:
 ```
 
 Build a list of issues found, categorized by severity:
-- BLOCKER: Must fix before merge
+- CRITICAL: Security vulnerabilities, crashes, data loss (blocks even in YOLO mode)
+- BLOCKER: Must fix before merge (standard mode), becomes WARNING in YOLO mode
 - WARNING: Should fix, but not blocking
 - SUGGESTION: Nice to have
 
@@ -160,8 +162,42 @@ Build a list of issues found, categorized by severity:
 
 ## Step 4: Make Decision and Return Result
 
-### IF BLOCKERS exist → Return REJECT result
-### IF no BLOCKERS → Return APPROVE result
+### YOLO Mode Behavior
+
+**If `workflow_mode == "yolo"`**: Be lenient and prioritize forward progress:
+1. **ONLY CRITICAL issues block**: Security vulnerabilities, crash-causing bugs, data loss potential
+2. **Demote BLOCKERs to WARNINGs**: Code quality, missing tests, convention violations → approve with warnings
+3. **Document all issues**: Include everything in warnings/suggestions for future cleanup
+4. **Always note YOLO approval**: Include "YOLO: Approved with X issues documented" in summary
+
+This enables fully autonomous operation where code ships quickly. Issues are documented but don't block.
+
+### Standard Mode Behavior (default)
+
+### IF CRITICAL or BLOCKERS exist → Return REJECT result
+### IF no CRITICAL and no BLOCKERS → Return APPROVE result
+
+### Decision Logic
+
+```
+CRITICAL_ISSUES = issues WHERE severity == "CRITICAL"
+BLOCKER_ISSUES = issues WHERE severity == "BLOCKER"
+
+IF workflow_mode == "yolo":
+  # YOLO: Only critical issues block
+  IF CRITICAL_ISSUES.length > 0:
+    Return REJECT result (critical issues only)
+  ELSE:
+    # Approve with all blockers demoted to warnings
+    Return APPROVE result with blockers listed as warnings
+    Include "YOLO: Approved with {N} issues documented" in summary
+ELSE:
+  # Standard: Critical and blockers both reject
+  IF CRITICAL_ISSUES.length > 0 OR BLOCKER_ISSUES.length > 0:
+    Return REJECT result
+  ELSE:
+    Return APPROVE result
+```
 
 ---
 
@@ -169,7 +205,7 @@ Build a list of issues found, categorized by severity:
 
 Return ONLY a JSON object (no markdown, no explanation before/after):
 
-### Review APPROVED
+### Review APPROVED (Standard Mode)
 
 ```json
 {
@@ -218,6 +254,56 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
 - `files_of_interest`: Critical files that were reviewed
 - `warnings`: Non-blocking observations for future reference
 - `metadata`: Review metrics
+
+### Review APPROVED (YOLO Mode - With Issues Documented)
+
+In YOLO mode, approve even with non-critical blockers, but document them:
+
+```json
+{
+  "success": true,
+  "summary": "YOLO: Approved with 2 issues documented; proceeding to merge",
+  "joan_actions": {
+    "add_tags": ["Review-Approved"],
+    "remove_tags": ["Review-In-Progress", "Rework-Complete"],
+    "add_comment": "ALS/1\nactor: reviewer\nintent: decision\naction: yolo-review-approve\ntags.add: [Review-Approved]\ntags.remove: [Review-In-Progress, Rework-Complete]\nsummary: YOLO mode - approved with issues documented.\ndetails:\n- demoted_blockers (should fix later):\n  - Missing null check in auth.ts line 42\n  - Test coverage below 80%\n- warnings:\n  - Consider refactoring duplicate code\n- mode: yolo - prioritizing forward progress",
+    "move_to_column": null,
+    "update_description": null
+  },
+  "stage_context": {
+    "from_stage": "reviewer",
+    "to_stage": "ops",
+    "key_decisions": [
+      "YOLO: Approved despite 2 non-critical blockers",
+      "Security review passed - no critical vulnerabilities"
+    ],
+    "files_of_interest": [
+      "src/api/auth.ts:42 (needs null check)"
+    ],
+    "warnings": [
+      "DEMOTED BLOCKER: Missing null check in auth.ts line 42",
+      "DEMOTED BLOCKER: Test coverage below 80%",
+      "Consider refactoring duplicate code"
+    ],
+    "metadata": {
+      "review_mode": "yolo",
+      "critical_issues": 0,
+      "demoted_blockers": 2,
+      "warnings_noted": 1
+    }
+  },
+  "review_result": {
+    "decision": "APPROVED",
+    "mode": "yolo",
+    "critical_issues": [],
+    "demoted_blockers": ["Missing null check in auth.ts line 42", "Test coverage below 80%"],
+    "warnings": ["Consider refactoring duplicate code"],
+    "suggestions": ["Add JSDoc comments"]
+  },
+  "worker_type": "reviewer",
+  "task_id": "{task_id from work package}"
+}
+```
 
 ### Review REJECTED (Blockers Found)
 
@@ -315,19 +401,24 @@ Return ONLY a JSON object (no markdown, no explanation before/after):
 
 ## Review Checklist Reference
 
-| Category | Check | Severity |
-|----------|-------|----------|
-| **Functional** | All sub-tasks complete | BLOCKER |
-| **Functional** | PR matches requirements | BLOCKER |
-| **Code** | Follows conventions | WARNING |
-| **Code** | No logic errors | BLOCKER |
-| **Code** | Proper error handling | WARNING |
-| **Security** | No hardcoded secrets | BLOCKER |
-| **Security** | Input validation | BLOCKER |
-| **Security** | No injection vulnerabilities | BLOCKER |
-| **Testing** | Tests exist | WARNING |
-| **Testing** | Tests passing | BLOCKER |
-| **Design** | Matches design system | WARNING |
+| Category | Check | Severity | YOLO Behavior |
+|----------|-------|----------|---------------|
+| **Security** | No hardcoded secrets | CRITICAL | Always blocks |
+| **Security** | No injection vulnerabilities | CRITICAL | Always blocks |
+| **Security** | Secure auth (if applicable) | CRITICAL | Always blocks |
+| **Functional** | No crash-causing bugs | CRITICAL | Always blocks |
+| **Functional** | No data loss potential | CRITICAL | Always blocks |
+| **Functional** | All sub-tasks complete | BLOCKER | → WARNING |
+| **Functional** | PR matches requirements | BLOCKER | → WARNING |
+| **Code** | No logic errors | BLOCKER | → WARNING |
+| **Testing** | Tests passing | BLOCKER | → WARNING |
+| **Code** | Follows conventions | WARNING | Pass |
+| **Code** | Proper error handling | WARNING | Pass |
+| **Testing** | Tests exist | WARNING | Pass |
+| **Design** | Matches design system | WARNING | Pass |
+
+**CRITICAL** = Blocks in ALL modes (security, crashes, data loss)
+**BLOCKER** = Blocks in standard mode, demoted to WARNING in YOLO mode
 
 ---
 

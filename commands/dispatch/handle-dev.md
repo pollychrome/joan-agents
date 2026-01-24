@@ -24,6 +24,9 @@ MODEL = config.settings.model OR "opus"
 MODE = config.settings.mode OR "standard"
 TIMEOUT_DEV = config.settings.workerTimeouts.dev OR 60
 
+# YOLO recovery tracking (prevents infinite loops)
+RECOVERY_ATTEMPTED = false
+
 IF NOT config.agents.devs.enabled:
   Report: "Dev agent disabled in config"
   EXIT
@@ -259,7 +262,12 @@ ensureClaimReleased(PROJECT_ID, WORK_PACKAGE.task_id)
 IF NOT WORKER_RESULT.success:
   Report: "Dev worker failed: {WORKER_RESULT.error}"
 
-  # Add Implementation-Failed tag
+  # YOLO mode: Attempt intelligent recovery instead of failing immediately
+  IF MODE == "yolo" AND NOT RECOVERY_ATTEMPTED:
+    Report: "  [YOLO] Attempting intelligent recovery..."
+    GOTO YOLO_RECOVERY
+
+  # Standard mode or recovery already attempted: Add Implementation-Failed tag
   project_tags = mcp__joan__list_project_tags(PROJECT_ID)
   fail_tag = find tag IN project_tags WHERE tag.name == "Implementation-Failed"
   IF NOT fail_tag:
@@ -291,6 +299,103 @@ IF WORKER_RESULT.handoff_context:
   Report: "  Wrote Dev→Reviewer handoff"
 
 Report: "**Dev worker completed for '{WORK_PACKAGE.task_title}'**"
+```
+
+## YOLO_RECOVERY
+
+YOLO mode intelligent failure recovery. Instead of giving up, attempt to:
+1. Fix the specific error
+2. If that fails, reduce scope and implement core functionality only
+
+```
+RECOVERY_ATTEMPTED = true
+
+# Re-claim the task for recovery
+mcp__joan__add_tag_to_task(PROJECT_ID, WORK_PACKAGE.task_id, claim_tag.id)
+
+# Build recovery work package with error context
+RECOVERY_PACKAGE = {
+  ...WORK_PACKAGE,
+  mode: "yolo-recovery",
+  previous_error: WORKER_RESULT.error,
+  failed_subtask: WORKER_RESULT.errors[0] OR "unknown",
+  recovery_instructions: [
+    "Previous attempt failed with: {WORKER_RESULT.error}",
+    "STRATEGY 1: Analyze the error and fix the specific issue",
+    "STRATEGY 2: If unfixable, reduce scope - implement ONLY the core functionality",
+    "STRATEGY 3: Skip problematic sub-tasks, document what was skipped",
+    "GOAL: Get something working that compiles and passes basic tests"
+  ]
+}
+
+Report: "  [YOLO] Re-dispatching with recovery instructions"
+logWorkerActivity(".", "Dev", "YOLO-RECOVERY", "task=#{WORK_PACKAGE.task_id} attempting recovery")
+
+max_turns = TIMEOUT_DEV * 2
+
+Task agent:
+  subagent_type: dev-worker
+  model: MODEL
+  max_turns: max_turns
+  prompt: |
+    ## YOLO RECOVERY MODE ##
+
+    Previous implementation attempt FAILED. Your job is to recover intelligently.
+
+    ## Original Work Package
+    ```json
+    {JSON.stringify(WORK_PACKAGE, null, 2)}
+    ```
+
+    ## Error From Previous Attempt
+    {RECOVERY_PACKAGE.previous_error}
+
+    ## Recovery Strategy (in order of preference)
+
+    1. **FIX THE ERROR**: Analyze what went wrong and fix it directly
+       - Read the error message carefully
+       - Check the failing test/code
+       - Make targeted fixes
+
+    2. **REDUCE SCOPE**: If the error is in a specific sub-task, skip it
+       - Comment out or stub the problematic functionality
+       - Implement the rest of the feature
+       - Document what was skipped in the PR
+
+    3. **MINIMAL IMPLEMENTATION**: If multiple things are broken
+       - Implement just enough to compile and pass basic tests
+       - Create placeholder/stub implementations for complex parts
+       - Add TODO comments for incomplete work
+
+    ## Success Criteria
+    - Code compiles without errors
+    - At least one test passes (can be a simple smoke test)
+    - PR can be created with description of what was implemented vs. skipped
+
+    ## Output
+    Return a WorkerResult JSON. On success, include in handoff_context.warnings:
+    - What was skipped or stubbed
+    - What manual work remains
+    - Any known limitations
+
+WORKER_RESULT = Task.result
+
+IF WORKER_RESULT.success:
+  logWorkerActivity(".", "Dev", "YOLO-RECOVERED", "task=#{WORK_PACKAGE.task_id} recovery succeeded")
+  Report: "  [YOLO] Recovery successful!"
+
+  # Add recovery note to handoff context
+  IF NOT WORKER_RESULT.handoff_context:
+    WORKER_RESULT.handoff_context = {}
+  IF NOT WORKER_RESULT.handoff_context.warnings:
+    WORKER_RESULT.handoff_context.warnings = []
+  WORKER_RESULT.handoff_context.warnings.push("YOLO recovery: Some functionality may be incomplete - review carefully")
+
+ELSE:
+  logWorkerActivity(".", "Dev", "YOLO-RECOVERY-FAILED", "task=#{WORK_PACKAGE.task_id} recovery also failed")
+  Report: "  [YOLO] Recovery also failed"
+
+GOTO PROCESS_RESULT
 ```
 
 ## Helper Functions

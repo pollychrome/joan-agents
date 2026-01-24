@@ -273,6 +273,15 @@ IF WORKER_RESULT.handoff_context AND WORK_PACKAGE.mode IN ["plan", "finalize"]:
   mcp__joan__create_task_comment(WORK_PACKAGE.task_id, handoff_comment)
   Report: "  Wrote Architect→Dev handoff"
 
+# YOLO mode: Auto-approve plan immediately after creation
+IF MODE == "yolo" AND WORK_PACKAGE.mode == "plan":
+  Report: "  [YOLO] Auto-approving plan"
+  addTag(PROJECT_ID, WORK_PACKAGE.task_id, "Plan-Approved")
+  mcp__joan__create_task_comment(
+    task_id: WORK_PACKAGE.task_id,
+    content: "ALS/1\nactor: coordinator\nintent: auto-approve\naction: yolo-plan-approved\nsummary: YOLO mode auto-approved plan for implementation"
+  )
+
 Report: "**Architect worker completed for '{WORK_PACKAGE.task_title}'**"
 ```
 
@@ -300,6 +309,13 @@ def hasTasksInDevPipeline(tasks, TAG_INDEX, COLUMN_CACHE):
 ## Helper Functions
 
 ```
+def addTag(projectId, taskId, tagName):
+  project_tags = mcp__joan__list_project_tags(projectId)
+  tag = find tag IN project_tags WHERE tag.name == tagName
+  IF NOT tag:
+    tag = mcp__joan__create_project_tag(projectId, tagName)
+  mcp__joan__add_tag_to_task(projectId, taskId, tag.id)
+
 def executeJoanAction(action, projectId, taskId):
   type = action.type
 

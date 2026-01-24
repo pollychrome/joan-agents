@@ -217,25 +217,71 @@ Human approval required at two critical gates:
 
 **Guarantees:** Human oversight at critical decision points
 
-#### YOLO Mode (experimental)
+#### YOLO Mode (fully autonomous)
 
-Fully autonomous operation with auto-approval at both gates:
+Fully autonomous operation with NO human gates:
 
-1. **Plan Auto-Approval**: Architect creates plan → Auto-approved immediately → Moves to Development
-2. **Merge Auto-Approval**: Reviewer approves → Auto-add Ops-Ready → Ops merges immediately
+| Stage | Standard Mode | YOLO Mode |
+|-------|--------------|-----------|
+| **BA** | Asks clarifying questions | Makes autonomous decisions, documents assumptions |
+| **Architect** | Waits for `Plan-Approved` tag | Auto-approves plan immediately |
+| **Dev** | Fails on errors | Intelligent recovery: retry, reduce scope, proceed |
+| **Reviewer** | Rejects on blockers | Only rejects CRITICAL issues (security, crashes) |
+| **Ops** | Waits for `Ops-Ready` tag | Auto-merges after approval |
 
-⚠️ **WARNING**: No human review means bad architectural decisions get implemented and poorly reviewed code gets merged.
+**YOLO Mode Behaviors:**
+
+1. **BA - Autonomous Requirements**
+   - Instead of adding `Needs-Clarification`, makes creative decisions
+   - Documents assumptions in stage context
+   - Always marks task Ready
+
+2. **Architect - Auto-Approve Plans**
+   - Creates plan and immediately adds `Plan-Approved` tag
+   - No human review of architectural decisions
+   - Proceeds directly to Development
+
+3. **Dev - Intelligent Failure Recovery**
+   - On failure, attempts auto-debug and fix
+   - If fix fails, reduces scope (implement core only)
+   - Documents what was implemented vs. skipped
+   - Only truly unrecoverable errors block
+
+4. **Reviewer - Lenient Review**
+   - **CRITICAL** issues block (security vulnerabilities, crashes, data loss)
+   - **BLOCKER** issues → demoted to warnings, documented but approved
+   - Approves with detailed warnings for future cleanup
+
+5. **Ops - Auto-Merge**
+   - After Reviewer approval, auto-adds `Ops-Ready` tag
+   - Merges to develop automatically
+
+⚠️ **WARNING**: YOLO mode prioritizes forward progress over quality gates.
+
+**Risks:**
+- Bad architectural decisions get implemented
+- Non-critical bugs ship to develop
+- Incomplete features may be merged
+- Technical debt accumulates faster
+
+**Mitigations (automatic):**
+- All decisions logged as ALS comments for audit trail
+- Warnings and skipped items documented in handoffs
+- CRITICAL issues (security, crashes) still block
+- Recovery attempts documented
 
 **Best for:**
 - Internal tools and scripts
 - Prototyping in sandboxed environments
 - Greenfield projects with comprehensive test coverage
 - Trusted codebases with strong CI/CD
+- Time-sensitive experiments
 
 **Not recommended for:**
 - Production systems
 - Critical infrastructure
 - Systems with compliance requirements
+- Multi-stakeholder projects
 
 #### Switching Modes
 
