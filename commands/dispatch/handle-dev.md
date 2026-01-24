@@ -32,26 +32,60 @@ IF NOT config.agents.devs.enabled:
   EXIT
 ```
 
+## Phase 3: Smart Payload Check
+
+```
+# Phase 3: Check for pre-fetched smart payload (zero MCP calls)
+SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
+HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
+
+IF HAS_SMART_PAYLOAD:
+  smart_data = JSON.parse(SMART_PAYLOAD)
+  Report: "Phase 3: Using smart payload (zero MCP fetching)"
+```
+
 ## Single Task Mode (Event-Driven)
 
 ```
 IF TASK_ID provided:
   Report: "Dev Handler: Processing task {TASK_ID} mode={OPERATION_MODE}"
 
-  task = mcp__joan__get_task(TASK_ID)
-  comments = mcp__joan__list_task_comments(TASK_ID)
-  columns = mcp__joan__list_columns(PROJECT_ID)
+  # Phase 3: Use smart payload if available
+  IF HAS_SMART_PAYLOAD:
+    task = {
+      id: smart_data.task.id,
+      title: smart_data.task.title,
+      description: smart_data.task.description,
+      column_id: smart_data.task.column_id,
+      column_name: smart_data.task.column_name,
+      tags: smart_data.tags
+    }
+    handoff_context = smart_data.handoff_context
+    recent_comments = smart_data.recent_comments
+    COLUMN_CACHE = smart_data.columns OR {}
+  ELSE:
+    # Fallback: Fetch via MCP
+    task = mcp__joan__get_task(TASK_ID)
+    comments = mcp__joan__list_task_comments(TASK_ID)
+    columns = mcp__joan__list_columns(PROJECT_ID)
 
-  COLUMN_CACHE = {}
-  FOR col IN columns:
-    COLUMN_CACHE[col.name] = col.id
+    COLUMN_CACHE = {}
+    FOR col IN columns:
+      COLUMN_CACHE[col.name] = col.id
 
+    handoff_context = null
+    recent_comments = comments
+
+  # Build tag set
   TAG_SET = Set()
   FOR tag IN task.tags:
-    TAG_SET.add(tag.name)
+    IF typeof tag == "string":
+      TAG_SET.add(tag)
+    ELSE:
+      TAG_SET.add(tag.name)
 
   # Verify task is in Development column
-  IF task.column_id != COLUMN_CACHE["Development"]:
+  IF task.column_name != "Development" AND task.column_id != COLUMN_CACHE["Development"]:
     Report: "Task not in Development column, skipping"
     EXIT
 
@@ -72,11 +106,26 @@ IF TASK_ID provided:
       Report: "Cannot determine Dev mode from tags: {TAG_SET}"
       EXIT
 
-  # CLAIM TASK FIRST (atomic operation)
-  GOTO CLAIM_TASK
+  # Build work package (claim happens via result submission)
+  WORK_PACKAGE = {
+    task_id: task.id,
+    task_title: task.title,
+    task_description: task.description,
+    task_tags: Array.from(TAG_SET),
+    mode: OPERATION_MODE,
+    workflow_mode: MODE,
+    project_id: PROJECT_ID,
+    project_name: PROJECT_NAME,
+    handoff_context: handoff_context,
+    recent_comments: recent_comments
+  }
+
+  GOTO DISPATCH_WORKER
 ```
 
 ## Batch Mode (Polling)
+
+When `--all` is provided (legacy mode, no smart payload):
 
 ```
 IF ALL_MODE:
@@ -139,68 +188,30 @@ IF ALL_MODE:
   task = item.task
   OPERATION_MODE = item.mode
 
-  GOTO CLAIM_TASK with task
-```
+  # Fetch full details for work package
+  full_task = mcp__joan__get_task(task.id)
+  comments = mcp__joan__list_task_comments(task.id)
 
-## CLAIM_TASK
+  WORK_PACKAGE = {
+    task_id: full_task.id,
+    task_title: full_task.title,
+    task_description: full_task.description,
+    task_tags: extractTagNames(full_task.tags),
+    mode: OPERATION_MODE,
+    workflow_mode: MODE,
+    project_id: PROJECT_ID,
+    project_name: PROJECT_NAME,
+    handoff_context: null,
+    recent_comments: comments
+  }
 
-```
-Report: "Claiming task '{task.title}' for Dev-1"
-
-# Atomically add Claimed-Dev-1 tag
-project_tags = mcp__joan__list_project_tags(PROJECT_ID)
-claim_tag = find tag IN project_tags WHERE tag.name == "Claimed-Dev-1"
-IF NOT claim_tag:
-  claim_tag = mcp__joan__create_project_tag(PROJECT_ID, "Claimed-Dev-1")
-
-mcp__joan__add_tag_to_task(PROJECT_ID, task.id, claim_tag.id)
-
-# Verify claim succeeded (race condition check)
-verification = mcp__joan__get_task(task.id)
-claimed = false
-FOR tag IN verification.tags:
-  IF tag.name == "Claimed-Dev-1":
-    claimed = true
-    BREAK
-
-IF NOT claimed:
-  Report: "Claim verification failed - race condition, skipping"
-  EXIT
-
-Report: "Claim successful, proceeding with {OPERATION_MODE}"
-
-# Fetch full details for work package
-full_task = mcp__joan__get_task(task.id)
-comments = mcp__joan__list_task_comments(task.id)
-
-# Extract Architect→Dev handoff context
-architect_context = extractStageContext(comments, "architect", "dev")
-
-# For rework mode, extract Reviewer→Dev feedback
-reviewer_feedback = null
-IF OPERATION_MODE == "rework":
-  reviewer_feedback = extractReviewerFeedback(comments)
-
-WORK_PACKAGE = {
-  task_id: full_task.id,
-  task_title: full_task.title,
-  task_description: full_task.description,
-  task_tags: extractTagNames(full_task.tags),
-  mode: OPERATION_MODE,
-  workflow_mode: MODE,
-  project_id: PROJECT_ID,
-  project_name: PROJECT_NAME,
-  previous_stage_context: architect_context,
-  reviewer_feedback: reviewer_feedback
-}
-
-GOTO DISPATCH_WORKER
+  GOTO DISPATCH_WORKER
 ```
 
 ## DISPATCH_WORKER
 
 ```
-Report: "**Dev worker claimed task '{WORK_PACKAGE.task_title}' (mode: {OPERATION_MODE})**"
+Report: "**Dev worker dispatched for '{WORK_PACKAGE.task_title}' (mode: {OPERATION_MODE})**"
 
 logWorkerActivity(".", "Dev", "START", "task=#{WORK_PACKAGE.task_id} '{WORK_PACKAGE.task_title}' mode={OPERATION_MODE}")
 
@@ -211,7 +222,9 @@ Task agent:
   model: MODEL
   max_turns: max_turns
   prompt: |
-    Process this task and return a WorkerResult JSON.
+    ## Dev Worker - Phase 3 Result Protocol
+
+    Process this task and return a structured result.
 
     ## Work Package
     ```json
@@ -224,41 +237,92 @@ Task agent:
     - Create feature branch from develop
     - Implement all sub-tasks (DES-*, DEV-*, TEST-*)
     - Create pull request
-    - On success: Remove Claimed-Dev-1, remove Planned, add Dev-Complete/Design-Complete/Test-Complete
-    - Move to Review column
+    - Return result_type "implementation_complete"
+    - Include PR info in output
 
     ### If mode == "rework":
     - Read reviewer feedback from work package
     - Address specific issues mentioned
     - Push fixes to existing branch
-    - On success: Remove Claimed-Dev-1, remove Rework-Requested, add Rework-Complete
-    - Move to Review column
+    - Return result_type "rework_complete"
 
     ### If mode == "conflict":
     - Merge develop into feature branch
     - Resolve conflicts
     - Run tests
-    - On success: Remove Claimed-Dev-1, remove Merge-Conflict, add Rework-Complete
-    - Move to Review column
+    - Return result_type "rework_complete"
 
-    IMPORTANT: Always return joan_actions to remove Claimed-Dev-1 tag on completion or failure.
+    ### On Failure:
+    - Return result_type "implementation_failed" with error details
+    - Or "branch_setup_failed" if git branch setup fails
+
+    ## Return Format (Phase 3)
+
+    Return a JSON object with:
+    ```json
+    {
+      "success": true,
+      "result_type": "implementation_complete" | "rework_complete" | "implementation_failed" | "branch_setup_failed",
+      "comment": "ALS/1 format handoff comment (see below)",
+      "output": {
+        "pr_number": 42,
+        "pr_url": "https://github.com/...",
+        "branch_name": "feature/task-name",
+        "files_changed": ["file1.ts", "file2.ts"]
+      }
+    }
+    ```
+
+    ## ALS Comment Format
+
+    For implementation_complete/rework_complete (handoff to reviewer):
+    ```
+    ALS/1
+    actor: dev
+    intent: handoff
+    action: context-handoff
+    from_stage: dev
+    to_stage: reviewer
+    summary: [Implementation summary]
+    key_decisions:
+    - [Implementation decision 1]
+    - [Implementation decision 2]
+    files_of_interest:
+    - [Modified file 1]
+    - [Modified file 2]
+    warnings:
+    - [Any concerns or incomplete items]
+    ```
+
+    For implementation_failed:
+    ```
+    ALS/1
+    actor: dev
+    intent: error
+    action: implementation-failed
+    summary: [What failed and why]
+    blockers:
+    - [Blocker 1]
+    - [Blocker 2]
+    ```
+
+    IMPORTANT: Do NOT return joan_actions. Joan backend handles state transitions automatically.
 
 WORKER_RESULT = Task.result
 
+# Log worker completion
 IF WORKER_RESULT.success:
-  logWorkerActivity(".", "Dev", "COMPLETE", "task=#{WORK_PACKAGE.task_id} success")
+  logWorkerActivity(".", "Dev", "COMPLETE", "task=#{WORK_PACKAGE.task_id} success result_type={WORKER_RESULT.result_type}")
 ELSE:
   logWorkerActivity(".", "Dev", "FAIL", "task=#{WORK_PACKAGE.task_id} error={WORKER_RESULT.error}")
 
+# Process worker result
 GOTO PROCESS_RESULT
 ```
 
-## PROCESS_RESULT
+## PROCESS_RESULT (Phase 3)
 
 ```
-# ALWAYS release claim first, even on failure
-ensureClaimReleased(PROJECT_ID, WORK_PACKAGE.task_id)
-
 IF NOT WORKER_RESULT.success:
   Report: "Dev worker failed: {WORKER_RESULT.error}"
 
@@ -267,38 +331,27 @@ IF NOT WORKER_RESULT.success:
     Report: "  [YOLO] Attempting intelligent recovery..."
     GOTO YOLO_RECOVERY
 
-  # Standard mode or recovery already attempted: Add Implementation-Failed tag
-  project_tags = mcp__joan__list_project_tags(PROJECT_ID)
-  fail_tag = find tag IN project_tags WHERE tag.name == "Implementation-Failed"
-  IF NOT fail_tag:
-    fail_tag = mcp__joan__create_project_tag(PROJECT_ID, "Implementation-Failed")
-  mcp__joan__add_tag_to_task(PROJECT_ID, WORK_PACKAGE.task_id, fail_tag.id)
-
-  # Add failure comment
-  mcp__joan__create_task_comment(
-    task_id: WORK_PACKAGE.task_id,
-    content: "ALS/1\nactor: coordinator\nintent: error\naction: implementation-failed\nsummary: Dev worker failed: {WORKER_RESULT.error}\ndetails:\n- Manual intervention required\n- Remove Implementation-Failed tag after resolving issue"
-  )
+  # Standard mode or recovery already attempted: Submit failure
+  Bash: python3 ~/joan-agents/scripts/submit-result.py dev-worker implementation_failed false \
+    --project-id "{PROJECT_ID}" \
+    --task-id "{WORK_PACKAGE.task_id}" \
+    --error "{WORKER_RESULT.error}"
   RETURN
 
-# Execute joan_actions
-FOR action IN WORKER_RESULT.joan_actions:
-  executeJoanAction(action, PROJECT_ID, WORK_PACKAGE.task_id)
+# Phase 3: Submit result to Joan API (state transitions handled server-side)
+result_type = WORKER_RESULT.result_type
+comment = WORKER_RESULT.comment OR ""
+output_json = JSON.stringify(WORKER_RESULT.output OR {})
 
-# Write handoff context (Dev→Reviewer)
-IF WORKER_RESULT.handoff_context:
-  handoff_comment = formatHandoffComment({
-    from_stage: "dev",
-    to_stage: "reviewer",
-    summary: WORKER_RESULT.handoff_context.summary OR "Implementation complete",
-    key_decisions: WORKER_RESULT.handoff_context.key_decisions OR [],
-    files_of_interest: WORKER_RESULT.handoff_context.files_of_interest OR [],
-    warnings: WORKER_RESULT.handoff_context.warnings OR []
-  })
-  mcp__joan__create_task_comment(WORK_PACKAGE.task_id, handoff_comment)
-  Report: "  Wrote Dev→Reviewer handoff"
+Report: "Submitting result: {result_type}"
 
-Report: "**Dev worker completed for '{WORK_PACKAGE.task_title}'**"
+Bash: python3 ~/joan-agents/scripts/submit-result.py dev-worker "{result_type}" true \
+  --project-id "{PROJECT_ID}" \
+  --task-id "{WORK_PACKAGE.task_id}" \
+  --output '{output_json}' \
+  --comment '{comment}'
+
+Report: "**Dev worker completed for '{WORK_PACKAGE.task_title}' - {result_type}**"
 ```
 
 ## YOLO_RECOVERY
@@ -309,9 +362,6 @@ YOLO mode intelligent failure recovery. Instead of giving up, attempt to:
 
 ```
 RECOVERY_ATTEMPTED = true
-
-# Re-claim the task for recovery
-mcp__joan__add_tag_to_task(PROJECT_ID, WORK_PACKAGE.task_id, claim_tag.id)
 
 # Build recovery work package with error context
 RECOVERY_PACKAGE = {
@@ -372,11 +422,12 @@ Task agent:
     - At least one test passes (can be a simple smoke test)
     - PR can be created with description of what was implemented vs. skipped
 
-    ## Output
-    Return a WorkerResult JSON. On success, include in handoff_context.warnings:
-    - What was skipped or stubbed
-    - What manual work remains
-    - Any known limitations
+    ## Output (Phase 3 Format)
+    Return a JSON object with:
+    - success: true/false
+    - result_type: "implementation_complete" or "implementation_failed"
+    - comment: ALS handoff comment (include warnings about skipped/stubbed items)
+    - output: { pr_number, pr_url, files_changed, recovery_notes }
 
 WORKER_RESULT = Task.result
 
@@ -384,12 +435,9 @@ IF WORKER_RESULT.success:
   logWorkerActivity(".", "Dev", "YOLO-RECOVERED", "task=#{WORK_PACKAGE.task_id} recovery succeeded")
   Report: "  [YOLO] Recovery successful!"
 
-  # Add recovery note to handoff context
-  IF NOT WORKER_RESULT.handoff_context:
-    WORKER_RESULT.handoff_context = {}
-  IF NOT WORKER_RESULT.handoff_context.warnings:
-    WORKER_RESULT.handoff_context.warnings = []
-  WORKER_RESULT.handoff_context.warnings.push("YOLO recovery: Some functionality may be incomplete - review carefully")
+  # Add recovery note to comment if not present
+  IF WORKER_RESULT.comment AND NOT "YOLO recovery" IN WORKER_RESULT.comment:
+    WORKER_RESULT.comment = WORKER_RESULT.comment + "\nwarnings:\n- YOLO recovery: Some functionality may be incomplete - review carefully"
 
 ELSE:
   logWorkerActivity(".", "Dev", "YOLO-RECOVERY-FAILED", "task=#{WORK_PACKAGE.task_id} recovery also failed")
@@ -401,117 +449,11 @@ GOTO PROCESS_RESULT
 ## Helper Functions
 
 ```
-def ensureClaimReleased(projectId, taskId):
-  # Always remove Claimed-Dev-1 tag
-  project_tags = mcp__joan__list_project_tags(projectId)
-  claim_tag = find tag IN project_tags WHERE tag.name == "Claimed-Dev-1"
-  IF claim_tag:
-    TRY:
-      mcp__joan__remove_tag_from_task(projectId, taskId, claim_tag.id)
-      Report: "  Released claim (Claimed-Dev-1 removed)"
-    CATCH:
-      Report: "  Warning: Failed to release claim"
-
-def extractReviewerFeedback(comments):
-  # Find most recent rework request comment
-  FOR comment IN reversed(comments):
-    content = comment.content
-    IF "action: rework-requested" IN content OR "intent: rework" IN content:
-      # Parse blockers, warnings, suggestions
-      RETURN {
-        blockers: extractListFromALS(content, "blockers:"),
-        warnings: extractListFromALS(content, "warnings:"),
-        suggestions: extractListFromALS(content, "suggestions:")
-      }
-  RETURN null
-
-def extractListFromALS(content, sectionName):
-  items = []
-  inSection = false
-  FOR line IN content.split("\n"):
-    trimmed = line.trim()
-    IF trimmed == sectionName:
-      inSection = true
-      CONTINUE
-    IF inSection AND trimmed.startsWith("- "):
-      items.push(trimmed.substring(2))
-    ELIF inSection AND NOT trimmed.startsWith("- ") AND trimmed.length > 0:
-      inSection = false  # New section started
-  RETURN items
-
-def executeJoanAction(action, projectId, taskId):
-  type = action.type
-
-  IF type == "add_tag":
-    project_tags = mcp__joan__list_project_tags(projectId)
-    tag = find tag IN project_tags WHERE tag.name == action.tag_name
-    IF NOT tag:
-      tag = mcp__joan__create_project_tag(projectId, action.tag_name)
-    mcp__joan__add_tag_to_task(projectId, taskId, tag.id)
-    Report: "  Added tag: {action.tag_name}"
-
-  ELIF type == "remove_tag":
-    project_tags = mcp__joan__list_project_tags(projectId)
-    tag = find tag IN project_tags WHERE tag.name == action.tag_name
-    IF tag:
-      mcp__joan__remove_tag_from_task(projectId, taskId, tag.id)
-      Report: "  Removed tag: {action.tag_name}"
-
-  ELIF type == "move_to_column":
-    columns = mcp__joan__list_columns(projectId)
-    col = find col IN columns WHERE col.name == action.column_name
-    IF col:
-      mcp__joan__update_task(taskId, column_id: col.id)
-      Report: "  Moved to column: {action.column_name}"
-
-  ELIF type == "update_description":
-    mcp__joan__update_task(taskId, description: action.description)
-    Report: "  Updated description"
-
-  ELIF type == "add_comment":
-    mcp__joan__create_task_comment(taskId, action.content)
-    Report: "  Added comment"
-
-def extractStageContext(comments, fromStage, toStage):
-  FOR comment IN reversed(comments):
-    content = comment.content
-    IF "intent: handoff" IN content AND "from_stage: {fromStage}" IN content AND "to_stage: {toStage}" IN content:
-      RETURN parseHandoffContent(content)
-  RETURN null
-
 def extractTagNames(tags):
   names = []
   FOR tag IN tags:
     names.push(tag.name)
   RETURN names
-
-def formatHandoffComment(context):
-  lines = [
-    "ALS/1",
-    "actor: {context.from_stage}",
-    "intent: handoff",
-    "action: context-handoff",
-    "from_stage: {context.from_stage}",
-    "to_stage: {context.to_stage}",
-    "summary: {context.summary}"
-  ]
-
-  IF context.key_decisions AND context.key_decisions.length > 0:
-    lines.push("key_decisions:")
-    FOR decision IN context.key_decisions:
-      lines.push("- {decision}")
-
-  IF context.files_of_interest AND context.files_of_interest.length > 0:
-    lines.push("files_of_interest:")
-    FOR file IN context.files_of_interest:
-      lines.push("- {file}")
-
-  IF context.warnings AND context.warnings.length > 0:
-    lines.push("warnings:")
-    FOR warning IN context.warnings:
-      lines.push("- {warning}")
-
-  RETURN lines.join("\n")
 
 def logWorkerActivity(projectDir, workerType, status, message):
   logFile = "{projectDir}/.claude/logs/worker-activity.log"

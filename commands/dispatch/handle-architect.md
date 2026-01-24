@@ -29,29 +29,62 @@ IF NOT config.agents.architect.enabled:
   EXIT
 ```
 
+## Phase 3: Smart Payload Check
+
+```
+# Phase 3: Check for pre-fetched smart payload (zero MCP calls)
+SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
+HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
+
+IF HAS_SMART_PAYLOAD:
+  smart_data = JSON.parse(SMART_PAYLOAD)
+  Report: "Phase 3: Using smart payload (zero MCP fetching)"
+```
+
 ## Single Task Mode (Event-Driven)
 
 ```
 IF TASK_ID provided:
   Report: "Architect Handler: Processing task {TASK_ID} mode={OPERATION_MODE}"
 
-  task = mcp__joan__get_task(TASK_ID)
-  comments = mcp__joan__list_task_comments(TASK_ID)
-  columns = mcp__joan__list_columns(PROJECT_ID)
+  # Phase 3: Use smart payload if available
+  IF HAS_SMART_PAYLOAD:
+    task = {
+      id: smart_data.task.id,
+      title: smart_data.task.title,
+      description: smart_data.task.description,
+      column_id: smart_data.task.column_id,
+      column_name: smart_data.task.column_name,
+      tags: smart_data.tags
+    }
+    handoff_context = smart_data.handoff_context
+    recent_comments = smart_data.recent_comments
+    COLUMN_CACHE = smart_data.columns OR {}
+  ELSE:
+    # Fallback: Fetch via MCP
+    task = mcp__joan__get_task(TASK_ID)
+    comments = mcp__joan__list_task_comments(TASK_ID)
+    columns = mcp__joan__list_columns(PROJECT_ID)
 
-  # Build column cache
-  COLUMN_CACHE = {}
-  FOR col IN columns:
-    COLUMN_CACHE[col.name] = col.id
+    # Build column cache
+    COLUMN_CACHE = {}
+    FOR col IN columns:
+      COLUMN_CACHE[col.name] = col.id
+
+    handoff_context = null
+    recent_comments = comments
 
   # Build tag set
   TAG_SET = Set()
   FOR tag IN task.tags:
-    TAG_SET.add(tag.name)
+    IF typeof tag == "string":
+      TAG_SET.add(tag)
+    ELSE:
+      TAG_SET.add(tag.name)
 
   # Verify task is in expected state
-  IF NOT (task.column_id == COLUMN_CACHE["Analyse"] OR
-          (task.column_id == COLUMN_CACHE["Review"] AND TAG_SET.has("Invoke-Architect"))):
+  IF NOT (task.column_name == "Analyse" OR task.column_id == COLUMN_CACHE["Analyse"] OR
+          (task.column_name == "Review" OR task.column_id == COLUMN_CACHE["Review"]) AND TAG_SET.has("Invoke-Architect")):
     Report: "Task not in expected column for Architect, skipping"
     EXIT
 
@@ -69,9 +102,6 @@ IF TASK_ID provided:
       Report: "Cannot determine Architect mode from tags: {TAG_SET}"
       EXIT
 
-  # Extract BA→Architect handoff context
-  ba_context = extractStageContext(comments, "ba", "architect")
-
   # Build work package
   WORK_PACKAGE = {
     task_id: task.id,
@@ -82,13 +112,16 @@ IF TASK_ID provided:
     workflow_mode: MODE,
     project_id: PROJECT_ID,
     project_name: PROJECT_NAME,
-    previous_stage_context: ba_context
+    handoff_context: handoff_context,
+    recent_comments: recent_comments
   }
 
   GOTO DISPATCH_WORKER
 ```
 
 ## Batch Mode (Polling)
+
+When `--all` is provided (legacy mode, no smart payload):
 
 ```
 IF ALL_MODE:
@@ -151,25 +184,21 @@ IF ALL_MODE:
     EXIT
 
   # Check pipeline gate for plan mode tasks
-  # (Serial pipeline: only one task at a time in Dev→Review→Deploy)
   IF hasTasksInDevPipeline(tasks, TAG_INDEX, COLUMN_CACHE):
     Report: "Pipeline gate BLOCKED - task in Development/Review, skipping new plans"
-    # Filter out "plan" mode tasks, keep finalize/revise/advisory
     ARCHITECT_QUEUE = ARCHITECT_QUEUE.filter(item => item.mode != "plan")
 
   IF ARCHITECT_QUEUE.length == 0:
     Report: "All remaining tasks blocked by pipeline gate"
     EXIT
 
-  # Process first task (one at a time for Architect)
+  # Process first task
   item = ARCHITECT_QUEUE[0]
   task = item.task
   mode = item.mode
 
   full_task = mcp__joan__get_task(task.id)
   comments = mcp__joan__list_task_comments(task.id)
-
-  ba_context = extractStageContext(comments, "ba", "architect")
 
   WORK_PACKAGE = {
     task_id: full_task.id,
@@ -180,7 +209,8 @@ IF ALL_MODE:
     workflow_mode: MODE,
     project_id: PROJECT_ID,
     project_name: PROJECT_NAME,
-    previous_stage_context: ba_context
+    handoff_context: null,
+    recent_comments: comments
   }
 
   GOTO DISPATCH_WORKER
@@ -200,7 +230,9 @@ Task agent:
   model: MODEL
   max_turns: max_turns
   prompt: |
-    Process this task and return a WorkerResult JSON.
+    ## Architect Worker - Phase 3 Result Protocol
+
+    Process this task and return a structured result.
 
     ## Work Package
     ```json
@@ -211,78 +243,128 @@ Task agent:
 
     ### If mode == "plan":
     - Analyze codebase and create detailed implementation plan
-    - Add plan to task description
-    - Add Plan-Pending-Approval tag
-    - Remove Ready tag
+    - Return result_type "plan_created"
+    - Include plan content in output.plan_description
 
     ### If mode == "finalize":
-    - Remove Plan-Pending-Approval and Plan-Approved tags
-    - Add Planned tag
-    - Move task to Development column
+    - Finalize the approved plan
+    - Return result_type "plan_finalized"
 
     ### If mode == "revise":
-    - Review rejection feedback in comments
+    - Review rejection feedback in recent_comments
     - Update plan based on feedback
-    - Remove Plan-Rejected tag
-    - Keep Plan-Pending-Approval (awaits re-approval)
+    - Return result_type "plan_revised"
 
     ### If mode == "advisory-conflict":
-    - Analyze merge conflict details in task comments
+    - Analyze merge conflict details in recent_comments
     - Provide resolution strategy
-    - Add Architect-Assist-Complete tag
-    - Remove Invoke-Architect tag
+    - Return result_type "advisory_complete"
 
-    Return WorkerResult JSON with joan_actions array.
+    ## Return Format (Phase 3)
+
+    Return a JSON object with:
+    ```json
+    {
+      "success": true,
+      "result_type": "plan_created" | "plan_finalized" | "plan_revised" | "advisory_complete",
+      "comment": "ALS/1 format handoff comment (see below)",
+      "output": {
+        "plan_description": "Updated task description with plan (for plan_created/plan_revised)",
+        "resolution_strategy": "Strategy for conflict resolution (for advisory_complete)"
+      }
+    }
+    ```
+
+    ## ALS Comment Format
+
+    For plan_created:
+    ```
+    ALS/1
+    actor: architect
+    intent: plan
+    action: plan-created
+    summary: [Brief summary of the plan]
+    key_decisions:
+    - [Decision 1]
+    - [Decision 2]
+    files_of_interest:
+    - [File 1]
+    - [File 2]
+    ```
+
+    For plan_finalized (handoff to dev):
+    ```
+    ALS/1
+    actor: architect
+    intent: handoff
+    action: context-handoff
+    from_stage: architect
+    to_stage: dev
+    summary: [Plan finalized, ready for implementation]
+    key_decisions:
+    - [Key architectural decisions]
+    files_of_interest:
+    - [Files to modify]
+    warnings:
+    - [Any concerns]
+    ```
+
+    For advisory_complete:
+    ```
+    ALS/1
+    actor: architect
+    intent: advisory
+    action: conflict-resolution
+    summary: [Resolution strategy summary]
+    resolution_strategy: [Detailed strategy]
+    files_to_keep:
+    - [Files to prefer from which branch]
+    ```
+
+    IMPORTANT: Do NOT return joan_actions. Joan backend handles state transitions automatically.
 
 WORKER_RESULT = Task.result
 
+# Log worker completion
 IF WORKER_RESULT.success:
-  logWorkerActivity(".", "Architect", "COMPLETE", "task=#{WORK_PACKAGE.task_id} success")
+  logWorkerActivity(".", "Architect", "COMPLETE", "task=#{WORK_PACKAGE.task_id} success result_type={WORKER_RESULT.result_type}")
 ELSE:
   logWorkerActivity(".", "Architect", "FAIL", "task=#{WORK_PACKAGE.task_id} error={WORKER_RESULT.error}")
 
+# Process worker result
 GOTO PROCESS_RESULT
 ```
 
-## PROCESS_RESULT
+## PROCESS_RESULT (Phase 3)
 
 ```
 IF NOT WORKER_RESULT.success:
   Report: "Architect worker failed: {WORKER_RESULT.error}"
-  mcp__joan__create_task_comment(
-    task_id: WORK_PACKAGE.task_id,
-    content: "ALS/1\nactor: coordinator\nintent: error\naction: worker-failed\nsummary: Architect worker failed: {WORKER_RESULT.error}"
-  )
+  # Submit failure result
+  Bash: python3 ~/joan-agents/scripts/submit-result.py architect-worker plan_created false \
+    --project-id "{PROJECT_ID}" \
+    --task-id "{WORK_PACKAGE.task_id}" \
+    --error "{WORKER_RESULT.error}"
   RETURN
 
-# Execute joan_actions
-FOR action IN WORKER_RESULT.joan_actions:
-  executeJoanAction(action, PROJECT_ID, WORK_PACKAGE.task_id)
+# Phase 3: Submit result to Joan API (state transitions handled server-side)
+result_type = WORKER_RESULT.result_type
+comment = WORKER_RESULT.comment OR ""
+output_json = JSON.stringify(WORKER_RESULT.output OR {})
 
-# Write handoff context (Architect→Dev)
-IF WORKER_RESULT.handoff_context AND WORK_PACKAGE.mode IN ["plan", "finalize"]:
-  handoff_comment = formatHandoffComment({
-    from_stage: "architect",
-    to_stage: "dev",
-    summary: WORKER_RESULT.handoff_context.summary,
-    key_decisions: WORKER_RESULT.handoff_context.key_decisions OR [],
-    files_of_interest: WORKER_RESULT.handoff_context.files_of_interest OR [],
-    warnings: WORKER_RESULT.handoff_context.warnings OR [],
-    dependencies: WORKER_RESULT.handoff_context.dependencies OR []
-  })
-  mcp__joan__create_task_comment(WORK_PACKAGE.task_id, handoff_comment)
-  Report: "  Wrote Architect→Dev handoff"
+Report: "Submitting result: {result_type}"
+
+Bash: python3 ~/joan-agents/scripts/submit-result.py architect-worker "{result_type}" true \
+  --project-id "{PROJECT_ID}" \
+  --task-id "{WORK_PACKAGE.task_id}" \
+  --output '{output_json}' \
+  --comment '{comment}'
 
 # YOLO mode: Auto-approve plan immediately after creation
-IF MODE == "yolo" AND WORK_PACKAGE.mode == "plan":
-  Report: "  [YOLO] Auto-approving plan"
-  addTag(PROJECT_ID, WORK_PACKAGE.task_id, "Plan-Approved")
-  mcp__joan__create_task_comment(
-    task_id: WORK_PACKAGE.task_id,
-    content: "ALS/1\nactor: coordinator\nintent: auto-approve\naction: yolo-plan-approved\nsummary: YOLO mode auto-approved plan for implementation"
-  )
+IF MODE == "yolo" AND result_type == "plan_created":
+  Report: "  [YOLO] Auto-approved plan - backend will handle Plan-Approved tag"
 
-Report: "**Architect worker completed for '{WORK_PACKAGE.task_title}'**"
+Report: "**Architect worker completed for '{WORK_PACKAGE.task_title}' - {result_type}**"
 ```
 
 ## Pipeline Gate Check
@@ -290,7 +372,7 @@ Report: "**Architect worker completed for '{WORK_PACKAGE.task_title}'**"
 ```
 def hasTasksInDevPipeline(tasks, TAG_INDEX, COLUMN_CACHE):
   FOR task IN tasks:
-    # Check Development column (not Done or merged)
+    # Check Development column
     IF task.column_id == COLUMN_CACHE["Development"]:
       IF TAG_INDEX[task.id].has("Planned") OR
          TAG_INDEX[task.id].has("Claimed-Dev-1") OR
@@ -309,91 +391,11 @@ def hasTasksInDevPipeline(tasks, TAG_INDEX, COLUMN_CACHE):
 ## Helper Functions
 
 ```
-def addTag(projectId, taskId, tagName):
-  project_tags = mcp__joan__list_project_tags(projectId)
-  tag = find tag IN project_tags WHERE tag.name == tagName
-  IF NOT tag:
-    tag = mcp__joan__create_project_tag(projectId, tagName)
-  mcp__joan__add_tag_to_task(projectId, taskId, tag.id)
-
-def executeJoanAction(action, projectId, taskId):
-  type = action.type
-
-  IF type == "add_tag":
-    project_tags = mcp__joan__list_project_tags(projectId)
-    tag = find tag IN project_tags WHERE tag.name == action.tag_name
-    IF NOT tag:
-      tag = mcp__joan__create_project_tag(projectId, action.tag_name)
-    mcp__joan__add_tag_to_task(projectId, taskId, tag.id)
-    Report: "  Added tag: {action.tag_name}"
-
-  ELIF type == "remove_tag":
-    project_tags = mcp__joan__list_project_tags(projectId)
-    tag = find tag IN project_tags WHERE tag.name == action.tag_name
-    IF tag:
-      mcp__joan__remove_tag_from_task(projectId, taskId, tag.id)
-      Report: "  Removed tag: {action.tag_name}"
-
-  ELIF type == "move_to_column":
-    columns = mcp__joan__list_columns(projectId)
-    col = find col IN columns WHERE col.name == action.column_name
-    IF col:
-      mcp__joan__update_task(taskId, column_id: col.id)
-      Report: "  Moved to column: {action.column_name}"
-
-  ELIF type == "update_description":
-    mcp__joan__update_task(taskId, description: action.description)
-    Report: "  Updated description"
-
-  ELIF type == "add_comment":
-    mcp__joan__create_task_comment(taskId, action.content)
-    Report: "  Added comment"
-
-def extractStageContext(comments, fromStage, toStage):
-  FOR comment IN reversed(comments):
-    content = comment.content
-    IF "intent: handoff" IN content AND "from_stage: {fromStage}" IN content AND "to_stage: {toStage}" IN content:
-      RETURN parseHandoffContent(content)
-  RETURN null
-
 def extractTagNames(tags):
   names = []
   FOR tag IN tags:
     names.push(tag.name)
   RETURN names
-
-def formatHandoffComment(context):
-  lines = [
-    "ALS/1",
-    "actor: {context.from_stage}",
-    "intent: handoff",
-    "action: context-handoff",
-    "from_stage: {context.from_stage}",
-    "to_stage: {context.to_stage}",
-    "summary: {context.summary}"
-  ]
-
-  IF context.key_decisions.length > 0:
-    lines.push("key_decisions:")
-    FOR decision IN context.key_decisions:
-      lines.push("- {decision}")
-
-  IF context.files_of_interest.length > 0:
-    lines.push("files_of_interest:")
-    FOR file IN context.files_of_interest:
-      lines.push("- {file}")
-
-  IF context.warnings.length > 0:
-    lines.push("warnings:")
-    FOR warning IN context.warnings:
-      lines.push("- {warning}")
-
-  IF context.dependencies.length > 0:
-    lines.push("dependencies:")
-    FOR dep IN context.dependencies:
-      lines.push("- {dep}")
-
-  RETURN lines.join("\n")
 
 def logWorkerActivity(projectDir, workerType, status, message):
   logFile = "{projectDir}/.claude/logs/worker-activity.log"

@@ -30,6 +30,18 @@ IF NOT config.agents.businessAnalyst.enabled:
   EXIT
 ```
 
+## Phase 3: Smart Payload Check
+
+```
+# Phase 3: Check for pre-fetched smart payload (zero MCP calls)
+SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
+HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
+
+IF HAS_SMART_PAYLOAD:
+  smart_data = JSON.parse(SMART_PAYLOAD)
+  Report: "Phase 3: Using smart payload (zero MCP fetching)"
+```
+
 ## Single Task Mode (Event-Driven)
 
 When `--task=UUID` is provided:
@@ -38,53 +50,46 @@ When `--task=UUID` is provided:
 IF TASK_ID provided:
   Report: "BA Handler: Processing single task {TASK_ID}"
 
-  # Fetch only the specific task
-  task = mcp__joan__get_task(TASK_ID)
-  comments = mcp__joan__list_task_comments(TASK_ID)
+  # Phase 3: Use smart payload if available
+  IF HAS_SMART_PAYLOAD:
+    task = {
+      id: smart_data.task.id,
+      title: smart_data.task.title,
+      description: smart_data.task.description,
+      column_id: smart_data.task.column_id,
+      column_name: smart_data.task.column_name,
+      tags: smart_data.tags
+    }
+    handoff_context = smart_data.handoff_context
+    recent_comments = smart_data.recent_comments
+  ELSE:
+    # Fallback: Fetch via MCP
+    task = mcp__joan__get_task(TASK_ID)
+    comments = mcp__joan__list_task_comments(TASK_ID)
+    handoff_context = null
+    recent_comments = comments
 
-  # Verify task is in expected state (To Do column, no Ready tag)
-  columns = mcp__joan__list_columns(PROJECT_ID)
-  TODO_COLUMN_ID = find column where name == "To Do"
-
-  IF task.column_id != TODO_COLUMN_ID:
-    Report: "Task not in To Do column, skipping"
-    EXIT
-
-  # Check for Ready tag
-  hasReadyTag = false
-  FOR tag IN task.tags:
-    IF tag.name == "Ready":
-      hasReadyTag = true
-      BREAK
-
-  IF hasReadyTag:
-    Report: "Task already has Ready tag, skipping"
-    EXIT
-
-  # Determine mode
-  hasNeedsClarification = false
-  hasClarificationAnswered = false
-  FOR tag IN task.tags:
-    IF tag.name == "Needs-Clarification":
-      hasNeedsClarification = true
-    IF tag.name == "Clarification-Answered":
-      hasClarificationAnswered = true
+  # Determine mode from tags
+  hasNeedsClarification = task.tags.includes("Needs-Clarification")
+  hasClarificationAnswered = task.tags.includes("Clarification-Answered")
 
   IF hasNeedsClarification AND hasClarificationAnswered:
-    mode = "reevaluate"
+    BA_MODE = "reevaluate"
   ELSE:
-    mode = "evaluate"
+    BA_MODE = "evaluate"
 
   # Build work package
   WORK_PACKAGE = {
     task_id: task.id,
     task_title: task.title,
     task_description: task.description,
-    task_tags: extractTagNames(task.tags),
-    mode: mode,
+    task_tags: task.tags,
+    mode: BA_MODE,
     workflow_mode: MODE,
     project_id: PROJECT_ID,
-    project_name: PROJECT_NAME
+    project_name: PROJECT_NAME,
+    handoff_context: handoff_context,
+    recent_comments: recent_comments
   }
 
   # Dispatch BA worker
@@ -93,14 +98,14 @@ IF TASK_ID provided:
 
 ## Batch Mode (Polling)
 
-When `--all` is provided:
+When `--all` is provided (legacy mode, no smart payload):
 
 ```
 IF ALL_MODE:
   MAX_TASKS = MAX_OVERRIDE OR 10
   Report: "BA Handler: Processing up to {MAX_TASKS} tasks"
 
-  # Fetch all tasks
+  # Fetch all tasks (batch mode doesn't have smart payloads)
   tasks = mcp__joan__list_tasks(project_id: PROJECT_ID)
   columns = mcp__joan__list_columns(PROJECT_ID)
 
@@ -161,7 +166,9 @@ IF ALL_MODE:
       mode: mode,
       workflow_mode: MODE,
       project_id: PROJECT_ID,
-      project_name: PROJECT_NAME
+      project_name: PROJECT_NAME,
+      handoff_context: null,
+      recent_comments: comments
     }
 
     # Dispatch BA worker for this task
@@ -189,7 +196,9 @@ Task agent:
   model: MODEL
   max_turns: max_turns
   prompt: |
-    Process this task and return a WorkerResult JSON.
+    ## BA Worker - Phase 3 Result Protocol
+
+    Evaluate this task and return a structured result.
 
     ## Work Package
     ```json
@@ -197,21 +206,71 @@ Task agent:
     ```
 
     ## Instructions
-    You are the BA (Business Analyst) worker. Evaluate requirements and either:
-    1. Mark task Ready (requirements complete)
-    2. Add Needs-Clarification tag with questions
-    3. Update task description with clarified requirements
 
-    Return a WorkerResult JSON with:
-    - success: boolean
-    - joan_actions: array of MCP operations to execute
-    - handoff_context: context for next stage (Architect)
+    You are the BA (Business Analyst) worker.
+
+    ### If mode == "evaluate":
+    - Analyze the task requirements
+    - Check if requirements are clear and complete
+    - If clear: Return result_type "requirements_complete"
+    - If unclear: Return result_type "needs_clarification" with questions in comment
+
+    ### If mode == "reevaluate":
+    - Read the recent comments for clarification answers
+    - Process the answers and update your understanding
+    - Return result_type "clarification_processed"
+
+    ## Return Format (Phase 3)
+
+    Return a JSON object with:
+    ```json
+    {
+      "success": true,
+      "result_type": "requirements_complete" | "needs_clarification" | "clarification_processed",
+      "comment": "ALS/1 format handoff comment (see below)",
+      "output": {
+        "questions": ["Question 1?", "Question 2?"]  // Only for needs_clarification
+      }
+    }
+    ```
+
+    ## ALS Comment Format
+
+    For requirements_complete or clarification_processed:
+    ```
+    ALS/1
+    actor: ba
+    intent: handoff
+    action: context-handoff
+    from_stage: ba
+    to_stage: architect
+    summary: [Brief summary of requirements]
+    key_decisions:
+    - [Decision 1]
+    - [Decision 2]
+    warnings:
+    - [Any concerns]
+    ```
+
+    For needs_clarification:
+    ```
+    ALS/1
+    actor: ba
+    intent: clarification
+    action: needs-clarification
+    summary: [Why clarification is needed]
+    questions:
+    - [Question 1]
+    - [Question 2]
+    ```
+
+    IMPORTANT: Do NOT return joan_actions. Joan backend handles state transitions automatically.
 
 WORKER_RESULT = Task.result
 
 # Log worker completion
 IF WORKER_RESULT.success:
-  logWorkerActivity(".", "BA", "COMPLETE", "task=#{task.id} success")
+  logWorkerActivity(".", "BA", "COMPLETE", "task=#{task.id} success result_type={WORKER_RESULT.result_type}")
 ELSE:
   logWorkerActivity(".", "BA", "FAIL", "task=#{task.id} error={WORKER_RESULT.error}")
 
@@ -219,60 +278,32 @@ ELSE:
 GOTO PROCESS_RESULT
 ```
 
-## PROCESS_RESULT
+## PROCESS_RESULT (Phase 3)
 
 ```
 IF NOT WORKER_RESULT.success:
   Report: "BA worker failed: {WORKER_RESULT.error}"
-  # Add failure comment
-  mcp__joan__create_task_comment(
-    task_id: WORK_PACKAGE.task_id,
-    content: "ALS/1\nactor: coordinator\nintent: error\naction: worker-failed\nsummary: BA worker failed: {WORKER_RESULT.error}"
-  )
+  # Submit failure result
+  Bash: python3 ~/joan-agents/scripts/submit-result.py ba-worker needs_clarification false \
+    --project-id "{PROJECT_ID}" \
+    --task-id "{WORK_PACKAGE.task_id}" \
+    --error "{WORKER_RESULT.error}"
   RETURN
 
-# Execute joan_actions
-FOR action IN WORKER_RESULT.joan_actions:
-  action_type = action.type
+# Phase 3: Submit result to Joan API (state transitions handled server-side)
+result_type = WORKER_RESULT.result_type
+comment = WORKER_RESULT.comment OR ""
+output_json = JSON.stringify(WORKER_RESULT.output OR {})
 
-  IF action_type == "add_tag":
-    # Find or create tag
-    project_tags = mcp__joan__list_project_tags(PROJECT_ID)
-    tag = find tag IN project_tags WHERE tag.name == action.tag_name
-    IF NOT tag:
-      tag = mcp__joan__create_project_tag(PROJECT_ID, action.tag_name)
-    mcp__joan__add_tag_to_task(PROJECT_ID, WORK_PACKAGE.task_id, tag.id)
-    Report: "  Added tag: {action.tag_name}"
+Report: "Submitting result: {result_type}"
 
-  ELIF action_type == "remove_tag":
-    project_tags = mcp__joan__list_project_tags(PROJECT_ID)
-    tag = find tag IN project_tags WHERE tag.name == action.tag_name
-    IF tag:
-      mcp__joan__remove_tag_from_task(PROJECT_ID, WORK_PACKAGE.task_id, tag.id)
-      Report: "  Removed tag: {action.tag_name}"
+Bash: python3 ~/joan-agents/scripts/submit-result.py ba-worker "{result_type}" true \
+  --project-id "{PROJECT_ID}" \
+  --task-id "{WORK_PACKAGE.task_id}" \
+  --output '{output_json}' \
+  --comment '{comment}'
 
-  ELIF action_type == "move_to_column":
-    columns = mcp__joan__list_columns(PROJECT_ID)
-    col = find col IN columns WHERE col.name == action.column_name
-    IF col:
-      mcp__joan__update_task(WORK_PACKAGE.task_id, column_id: col.id)
-      Report: "  Moved to column: {action.column_name}"
-
-  ELIF action_type == "update_description":
-    mcp__joan__update_task(WORK_PACKAGE.task_id, description: action.description)
-    Report: "  Updated description"
-
-  ELIF action_type == "add_comment":
-    mcp__joan__create_task_comment(WORK_PACKAGE.task_id, action.content)
-    Report: "  Added comment"
-
-# Write handoff context if provided
-IF WORKER_RESULT.handoff_context:
-  handoff_comment = formatHandoffComment(WORKER_RESULT.handoff_context)
-  mcp__joan__create_task_comment(WORK_PACKAGE.task_id, handoff_comment)
-  Report: "  Wrote BA→Architect handoff"
-
-Report: "**BA worker completed for '{WORK_PACKAGE.task_title}'**"
+Report: "**BA worker completed for '{WORK_PACKAGE.task_title}' - {result_type}**"
 ```
 
 ## Helper Functions
@@ -283,29 +314,6 @@ def extractTagNames(tags):
   FOR tag IN tags:
     names.push(tag.name)
   RETURN names
-
-def formatHandoffComment(context):
-  lines = [
-    "ALS/1",
-    "actor: ba",
-    "intent: handoff",
-    "action: context-handoff",
-    "from_stage: ba",
-    "to_stage: architect",
-    "summary: {context.summary OR 'Requirements evaluated'}"
-  ]
-
-  IF context.key_decisions AND context.key_decisions.length > 0:
-    lines.push("key_decisions:")
-    FOR decision IN context.key_decisions:
-      lines.push("- {decision}")
-
-  IF context.warnings AND context.warnings.length > 0:
-    lines.push("warnings:")
-    FOR warning IN context.warnings:
-      lines.push("- {warning}")
-
-  RETURN lines.join("\n")
 
 def logWorkerActivity(projectDir, workerType, status, message):
   logFile = "{projectDir}/.claude/logs/worker-activity.log"

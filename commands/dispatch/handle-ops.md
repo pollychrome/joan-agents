@@ -29,26 +29,61 @@ IF NOT config.agents.ops.enabled:
   EXIT
 ```
 
+## Phase 3: Smart Payload Check
+
+```
+# Phase 3: Check for pre-fetched smart payload (zero MCP calls)
+SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
+HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
+
+IF HAS_SMART_PAYLOAD:
+  smart_data = JSON.parse(SMART_PAYLOAD)
+  Report: "Phase 3: Using smart payload (zero MCP fetching)"
+```
+
 ## Single Task Mode (Event-Driven)
 
 ```
 IF TASK_ID provided:
   Report: "Ops Handler: Processing task {TASK_ID} mode={OPERATION_MODE}"
 
-  task = mcp__joan__get_task(TASK_ID)
-  comments = mcp__joan__list_task_comments(TASK_ID)
-  columns = mcp__joan__list_columns(PROJECT_ID)
+  # Phase 3: Use smart payload if available
+  IF HAS_SMART_PAYLOAD:
+    task = {
+      id: smart_data.task.id,
+      title: smart_data.task.title,
+      description: smart_data.task.description,
+      column_id: smart_data.task.column_id,
+      column_name: smart_data.task.column_name,
+      tags: smart_data.tags
+    }
+    handoff_context = smart_data.handoff_context
+    recent_comments = smart_data.recent_comments
+    COLUMN_CACHE = smart_data.columns OR {}
+  ELSE:
+    # Fallback: Fetch via MCP
+    task = mcp__joan__get_task(TASK_ID)
+    comments = mcp__joan__list_task_comments(TASK_ID)
+    columns = mcp__joan__list_columns(PROJECT_ID)
 
-  COLUMN_CACHE = {}
-  FOR col IN columns:
-    COLUMN_CACHE[col.name] = col.id
+    COLUMN_CACHE = {}
+    FOR col IN columns:
+      COLUMN_CACHE[col.name] = col.id
 
+    handoff_context = null
+    recent_comments = comments
+
+  # Build tag set
   TAG_SET = Set()
   FOR tag IN task.tags:
-    TAG_SET.add(tag.name)
+    IF typeof tag == "string":
+      TAG_SET.add(tag)
+    ELSE:
+      TAG_SET.add(tag.name)
 
   # Verify task is in Review or Deploy column
-  IF task.column_id != COLUMN_CACHE["Review"] AND task.column_id != COLUMN_CACHE["Deploy"]:
+  IF task.column_name != "Review" AND task.column_name != "Deploy" AND
+     task.column_id != COLUMN_CACHE["Review"] AND task.column_id != COLUMN_CACHE["Deploy"]:
     Report: "Task not in Review/Deploy column, skipping"
     EXIT
 
@@ -66,6 +101,8 @@ IF TASK_ID provided:
 ```
 
 ## Batch Mode (Polling)
+
+When `--all` is provided (legacy mode, no smart payload):
 
 ```
 IF ALL_MODE:
@@ -113,34 +150,26 @@ IF ALL_MODE:
   task = item.task
   OPERATION_MODE = item.mode
 
-  GOTO BUILD_WORK_PACKAGE with task
+  full_task = mcp__joan__get_task(task.id)
+  comments = mcp__joan__list_task_comments(task.id)
+
+  GOTO BUILD_WORK_PACKAGE with full_task, comments
 ```
 
 ## BUILD_WORK_PACKAGE
 
 ```
-full_task = mcp__joan__get_task(task.id)
-comments = mcp__joan__list_task_comments(task.id)
-
-# Extract Reviewer→Ops handoff context
-reviewer_context = extractStageContext(comments, "reviewer", "ops")
-
-# For merge-with-guidance, also extract Architect guidance
-architect_guidance = null
-IF OPERATION_MODE == "merge-with-guidance":
-  architect_guidance = extractArchitectGuidance(comments)
-
 WORK_PACKAGE = {
-  task_id: full_task.id,
-  task_title: full_task.title,
-  task_description: full_task.description,
-  task_tags: extractTagNames(full_task.tags),
+  task_id: task.id,
+  task_title: task.title,
+  task_description: task.description,
+  task_tags: Array.from(TAG_SET OR extractTagNames(task.tags)),
   mode: OPERATION_MODE,
   workflow_mode: MODE,
   project_id: PROJECT_ID,
   project_name: PROJECT_NAME,
-  previous_stage_context: reviewer_context,
-  architect_guidance: architect_guidance
+  handoff_context: handoff_context,
+  recent_comments: recent_comments OR comments
 }
 
 GOTO DISPATCH_WORKER
@@ -160,7 +189,9 @@ Task agent:
   model: MODEL
   max_turns: max_turns
   prompt: |
-    Process this task and return a WorkerResult JSON.
+    ## Ops Worker - Phase 3 Result Protocol
+
+    Process this task and return a structured result.
 
     ## Work Package
     ```json
@@ -174,204 +205,135 @@ Task agent:
     2. Merge feature branch into develop
     3. If conflicts: Try AI-assisted resolution
        - If resolution succeeds: Continue
-       - If resolution fails: Return invoke_agent for Architect
+       - If resolution fails: Return result_type "invoke_architect"
     4. Run verification tests
     5. Push to develop
     6. Delete feature branch (local and remote)
-    7. Move task to Deploy column
-    8. Remove Review-Approved, Ops-Ready tags
-    9. In YOLO mode: Immediately complete task to Done
+    7. Return result_type "merge_complete"
 
     ### If mode == "merge-with-guidance":
-    1. Read Architect guidance from work_package.architect_guidance
+    1. Read Architect guidance from handoff_context/recent_comments
     2. Apply recommended conflict resolution
     3. Run verification tests
-    4. If still failing: Return rework-requested to Dev
-    5. If passing: Complete merge, delete branch, move to Deploy
+    4. If still failing: Return result_type "merge_conflict"
+    5. If passing: Return result_type "merge_complete"
 
-    Return WorkerResult JSON with:
-    - success: true/false
-    - joan_actions: tag/column operations
-    - invoke_agent: (optional) if Architect guidance needed
+    ## Return Format (Phase 3)
+
+    Return a JSON object with:
+    ```json
+    {
+      "success": true,
+      "result_type": "merge_complete" | "merge_conflict" | "invoke_architect",
+      "comment": "ALS/1 format comment (see below)",
+      "output": {
+        "merged_commit": "abc123",
+        "branch_deleted": true,
+        "conflict_files": []  // For merge_conflict
+      }
+    }
+    ```
+
+    ## ALS Comment Format
+
+    For merge_complete:
+    ```
+    ALS/1
+    actor: ops
+    intent: complete
+    action: merged-to-develop
+    summary: [Merge summary]
+    merged_commit: [commit hash]
+    branch_deleted: [feature/branch-name]
+    ```
+
+    For invoke_architect (need Architect guidance):
+    ```
+    ALS/1
+    actor: ops
+    intent: request
+    action: invoke-request
+    invoked_agent: architect
+    invocation_mode: advisory-conflict
+    summary: [Why guidance is needed]
+    question: [Specific question for Architect]
+    files_of_interest:
+    - [conflicting file 1]
+    - [conflicting file 2]
+    conflict_details:
+      conflicting_files: [list]
+      develop_summary: [what develop changed]
+      feature_summary: [what feature changed]
+    ```
+
+    For merge_conflict (send back to dev):
+    ```
+    ALS/1
+    actor: ops
+    intent: rework
+    action: merge-conflict-unresolved
+    from_stage: ops
+    to_stage: dev
+    summary: [Conflict cannot be auto-resolved]
+    conflict_files:
+    - [file1]
+    - [file2]
+    ```
+
+    IMPORTANT: Do NOT return joan_actions. Joan backend handles state transitions automatically.
 
 WORKER_RESULT = Task.result
 
+# Log worker completion
 IF WORKER_RESULT.success:
-  logWorkerActivity(".", "Ops", "COMPLETE", "task=#{WORK_PACKAGE.task_id} success")
+  logWorkerActivity(".", "Ops", "COMPLETE", "task=#{WORK_PACKAGE.task_id} success result_type={WORKER_RESULT.result_type}")
 ELSE:
   logWorkerActivity(".", "Ops", "FAIL", "task=#{WORK_PACKAGE.task_id} error={WORKER_RESULT.error}")
 
+# Process worker result
 GOTO PROCESS_RESULT
 ```
 
-## PROCESS_RESULT
+## PROCESS_RESULT (Phase 3)
 
 ```
 IF NOT WORKER_RESULT.success:
   Report: "Ops worker failed: {WORKER_RESULT.error}"
-  mcp__joan__create_task_comment(
-    task_id: WORK_PACKAGE.task_id,
-    content: "ALS/1\nactor: coordinator\nintent: error\naction: worker-failed\nsummary: Ops worker failed: {WORKER_RESULT.error}"
-  )
+  # Submit failure result
+  Bash: python3 ~/joan-agents/scripts/submit-result.py ops-worker merge_conflict false \
+    --project-id "{PROJECT_ID}" \
+    --task-id "{WORK_PACKAGE.task_id}" \
+    --error "{WORKER_RESULT.error}"
   RETURN
 
-# Check for agent invocation request
-IF WORKER_RESULT.invoke_agent:
-  invocation = WORKER_RESULT.invoke_agent
-  Report: "Ops requesting Architect invocation for conflict resolution"
+# Phase 3: Submit result to Joan API (state transitions handled server-side)
+result_type = WORKER_RESULT.result_type
+comment = WORKER_RESULT.comment OR ""
+output_json = JSON.stringify(WORKER_RESULT.output OR {})
 
-  # Add Invoke-Architect tag
-  addTag(PROJECT_ID, WORK_PACKAGE.task_id, "Invoke-Architect")
+Report: "Submitting result: {result_type}"
 
-  # Store invocation context as comment
-  invoke_comment = formatInvokeComment(invocation)
-  mcp__joan__create_task_comment(WORK_PACKAGE.task_id, invoke_comment)
-  Report: "  Stored invocation context, Architect will process next cycle"
+Bash: python3 ~/joan-agents/scripts/submit-result.py ops-worker "{result_type}" true \
+  --project-id "{PROJECT_ID}" \
+  --task-id "{WORK_PACKAGE.task_id}" \
+  --output '{output_json}' \
+  --comment '{comment}'
 
-  # Set INVOCATION_PENDING flag for fast resolution (skip sleep)
-  # This is handled by the router, not this handler
-  RETURN with INVOCATION_PENDING = true
+# YOLO mode: auto-complete to Done is handled by backend
+IF MODE == "yolo" AND result_type == "merge_complete":
+  Report: "  [YOLO] Auto-completing task to Done - backend will handle"
 
-# Execute joan_actions
-FOR action IN WORKER_RESULT.joan_actions:
-  executeJoanAction(action, PROJECT_ID, WORK_PACKAGE.task_id)
-
-# YOLO mode: auto-complete to Done
-IF MODE == "yolo" AND WORKER_RESULT.outcome == "merged":
-  Report: "  [YOLO] Auto-completing task to Done"
-
-  columns = mcp__joan__list_columns(PROJECT_ID)
-  done_col = find col IN columns WHERE col.name == "Done"
-  IF done_col:
-    mcp__joan__update_task(WORK_PACKAGE.task_id, column_id: done_col.id)
-
-  mcp__joan__create_task_comment(
-    task_id: WORK_PACKAGE.task_id,
-    content: "ALS/1\nactor: coordinator\nintent: auto-complete\naction: yolo-done\nsummary: YOLO mode auto-completed task after merge"
-  )
-
-Report: "**Ops worker completed for '{WORK_PACKAGE.task_title}'**"
+Report: "**Ops worker completed for '{WORK_PACKAGE.task_title}' - {result_type}**"
 ```
 
 ## Helper Functions
 
 ```
-def extractArchitectGuidance(comments):
-  FOR comment IN reversed(comments):
-    content = comment.content
-    IF "action: architect-guidance" IN content OR "action: conflict-resolution" IN content:
-      # Parse the guidance
-      RETURN {
-        resolution_strategy: extractField(content, "resolution_strategy:"),
-        files_to_keep: extractListFromALS(content, "files_to_keep:"),
-        changes_to_apply: extractListFromALS(content, "changes_to_apply:"),
-        test_commands: extractListFromALS(content, "test_commands:")
-      }
-  RETURN null
-
-def formatInvokeComment(invocation):
-  lines = [
-    "ALS/1",
-    "actor: ops",
-    "intent: request",
-    "action: invoke-request",
-    "invoked_agent: architect",
-    "invocation_mode: {invocation.mode}",
-    "summary: {invocation.context.reason}"
-  ]
-
-  IF invocation.context.question:
-    lines.push("question: {invocation.context.question}")
-
-  IF invocation.context.files_of_interest:
-    lines.push("files_of_interest:")
-    FOR file IN invocation.context.files_of_interest:
-      lines.push("- {file}")
-
-  IF invocation.context.conflict_details:
-    cd = invocation.context.conflict_details
-    lines.push("conflict_details:")
-    lines.push("  conflicting_files: {cd.conflicting_files}")
-    lines.push("  develop_summary: {cd.develop_summary}")
-    lines.push("  feature_summary: {cd.feature_summary}")
-
-  lines.push("resume_as:")
-  lines.push("  agent_type: ops")
-  lines.push("  mode: merge-with-guidance")
-
-  RETURN lines.join("\n")
-
-def addTag(projectId, taskId, tagName):
-  project_tags = mcp__joan__list_project_tags(projectId)
-  tag = find tag IN project_tags WHERE tag.name == tagName
-  IF NOT tag:
-    tag = mcp__joan__create_project_tag(projectId, tagName)
-  mcp__joan__add_tag_to_task(projectId, taskId, tag.id)
-
-def removeTag(projectId, taskId, tagName):
-  project_tags = mcp__joan__list_project_tags(projectId)
-  tag = find tag IN project_tags WHERE tag.name == tagName
-  IF tag:
-    TRY:
-      mcp__joan__remove_tag_from_task(projectId, taskId, tag.id)
-    CATCH:
-      PASS
-
-def executeJoanAction(action, projectId, taskId):
-  type = action.type
-
-  IF type == "add_tag":
-    addTag(projectId, taskId, action.tag_name)
-    Report: "  Added tag: {action.tag_name}"
-
-  ELIF type == "remove_tag":
-    removeTag(projectId, taskId, action.tag_name)
-    Report: "  Removed tag: {action.tag_name}"
-
-  ELIF type == "move_to_column":
-    columns = mcp__joan__list_columns(projectId)
-    col = find col IN columns WHERE col.name == action.column_name
-    IF col:
-      mcp__joan__update_task(taskId, column_id: col.id)
-      Report: "  Moved to column: {action.column_name}"
-
-  ELIF type == "add_comment":
-    mcp__joan__create_task_comment(taskId, action.content)
-    Report: "  Added comment"
-
-def extractStageContext(comments, fromStage, toStage):
-  FOR comment IN reversed(comments):
-    content = comment.content
-    IF "intent: handoff" IN content AND "from_stage: {fromStage}" IN content AND "to_stage: {toStage}" IN content:
-      RETURN parseHandoffContent(content)
-  RETURN null
-
 def extractTagNames(tags):
   names = []
   FOR tag IN tags:
     names.push(tag.name)
   RETURN names
-
-def extractField(content, fieldName):
-  FOR line IN content.split("\n"):
-    trimmed = line.trim()
-    IF trimmed.startsWith(fieldName):
-      RETURN trimmed.substring(fieldName.length).trim()
-  RETURN null
-
-def extractListFromALS(content, sectionName):
-  items = []
-  inSection = false
-  FOR line IN content.split("\n"):
-    trimmed = line.trim()
-    IF trimmed == sectionName:
-      inSection = true
-      CONTINUE
-    IF inSection AND trimmed.startsWith("- "):
-      items.push(trimmed.substring(2))
-    ELIF inSection AND NOT trimmed.startsWith("- ") AND trimmed.length > 0:
-      inSection = false
-  RETURN items
 
 def logWorkerActivity(projectDir, workerType, status, message):
   logFile = "{projectDir}/.claude/logs/worker-activity.log"

@@ -28,26 +28,60 @@ IF NOT config.agents.reviewer.enabled:
   EXIT
 ```
 
+## Phase 3: Smart Payload Check
+
+```
+# Phase 3: Check for pre-fetched smart payload (zero MCP calls)
+SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
+HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
+
+IF HAS_SMART_PAYLOAD:
+  smart_data = JSON.parse(SMART_PAYLOAD)
+  Report: "Phase 3: Using smart payload (zero MCP fetching)"
+```
+
 ## Single Task Mode (Event-Driven)
 
 ```
 IF TASK_ID provided:
   Report: "Reviewer Handler: Processing task {TASK_ID}"
 
-  task = mcp__joan__get_task(TASK_ID)
-  comments = mcp__joan__list_task_comments(TASK_ID)
-  columns = mcp__joan__list_columns(PROJECT_ID)
+  # Phase 3: Use smart payload if available
+  IF HAS_SMART_PAYLOAD:
+    task = {
+      id: smart_data.task.id,
+      title: smart_data.task.title,
+      description: smart_data.task.description,
+      column_id: smart_data.task.column_id,
+      column_name: smart_data.task.column_name,
+      tags: smart_data.tags
+    }
+    handoff_context = smart_data.handoff_context
+    recent_comments = smart_data.recent_comments
+    COLUMN_CACHE = smart_data.columns OR {}
+  ELSE:
+    # Fallback: Fetch via MCP
+    task = mcp__joan__get_task(TASK_ID)
+    comments = mcp__joan__list_task_comments(TASK_ID)
+    columns = mcp__joan__list_columns(PROJECT_ID)
 
-  COLUMN_CACHE = {}
-  FOR col IN columns:
-    COLUMN_CACHE[col.name] = col.id
+    COLUMN_CACHE = {}
+    FOR col IN columns:
+      COLUMN_CACHE[col.name] = col.id
 
+    handoff_context = null
+    recent_comments = comments
+
+  # Build tag set
   TAG_SET = Set()
   FOR tag IN task.tags:
-    TAG_SET.add(tag.name)
+    IF typeof tag == "string":
+      TAG_SET.add(tag)
+    ELSE:
+      TAG_SET.add(tag.name)
 
   # Verify task is in Review column
-  IF task.column_id != COLUMN_CACHE["Review"]:
+  IF task.column_name != "Review" AND task.column_id != COLUMN_CACHE["Review"]:
     Report: "Task not in Review column, skipping"
     EXIT
 
@@ -66,6 +100,8 @@ IF TASK_ID provided:
 ```
 
 ## Batch Mode (Polling)
+
+When `--all` is provided (legacy mode, no smart payload):
 
 ```
 IF ALL_MODE:
@@ -118,28 +154,26 @@ IF ALL_MODE:
   item = REVIEWER_QUEUE[0]
   task = item.task
 
-  GOTO BUILD_WORK_PACKAGE with task
+  full_task = mcp__joan__get_task(task.id)
+  comments = mcp__joan__list_task_comments(task.id)
+
+  GOTO BUILD_WORK_PACKAGE with full_task, comments
 ```
 
 ## BUILD_WORK_PACKAGE
 
 ```
-full_task = mcp__joan__get_task(task.id)
-comments = mcp__joan__list_task_comments(task.id)
-
-# Extract Dev→Reviewer handoff context
-dev_context = extractStageContext(comments, "dev", "reviewer")
-
 WORK_PACKAGE = {
-  task_id: full_task.id,
-  task_title: full_task.title,
-  task_description: full_task.description,
-  task_tags: extractTagNames(full_task.tags),
+  task_id: task.id,
+  task_title: task.title,
+  task_description: task.description,
+  task_tags: Array.from(TAG_SET OR extractTagNames(task.tags)),
   mode: "review",
   workflow_mode: MODE,
   project_id: PROJECT_ID,
   project_name: PROJECT_NAME,
-  previous_stage_context: dev_context
+  handoff_context: handoff_context,
+  recent_comments: recent_comments OR comments
 }
 
 GOTO DISPATCH_WORKER
@@ -150,13 +184,6 @@ GOTO DISPATCH_WORKER
 ```
 Report: "**Reviewer worker dispatched for '{WORK_PACKAGE.task_title}'**"
 
-# Add Review-In-Progress tag
-project_tags = mcp__joan__list_project_tags(PROJECT_ID)
-review_tag = find tag IN project_tags WHERE tag.name == "Review-In-Progress"
-IF NOT review_tag:
-  review_tag = mcp__joan__create_project_tag(PROJECT_ID, "Review-In-Progress")
-mcp__joan__add_tag_to_task(PROJECT_ID, WORK_PACKAGE.task_id, review_tag.id)
-
 logWorkerActivity(".", "Reviewer", "START", "task=#{WORK_PACKAGE.task_id} '{WORK_PACKAGE.task_title}'")
 
 max_turns = TIMEOUT_REVIEWER * 2
@@ -166,7 +193,9 @@ Task agent:
   model: MODEL
   max_turns: max_turns
   prompt: |
-    Process this task and return a WorkerResult JSON.
+    ## Reviewer Worker - Phase 3 Result Protocol
+
+    Process this task and return a structured result.
 
     ## Work Package
     ```json
@@ -175,195 +204,125 @@ Task agent:
 
     ## Review Process
     1. Merge develop into feature branch (detect conflicts)
-    2. If conflicts: Return rework-requested with Merge-Conflict tag
+    2. If conflicts: Return result_type "review_rejected" with Merge-Conflict details
     3. Run comprehensive code review:
        - Functional completeness (all sub-tasks checked)
        - Code quality (conventions, logic, error handling)
        - Security (no secrets, input validation)
        - Tests (exist and pass)
-    4. If issues found: Return rework-requested with detailed feedback
-    5. If approved: Return approved with Review-Approved tag
+    4. If issues found: Return result_type "review_rejected" with detailed feedback
+    5. If approved: Return result_type "review_approved"
 
-    Return WorkerResult JSON with:
-    - success: true/false
-    - outcome: "approved" | "rework-requested"
-    - joan_actions: tag operations
-    - handoff_context: context for next stage (Ops if approved, Dev if rework)
+    ## YOLO Mode Behavior
+    If workflow_mode == "yolo":
+    - Only reject for CRITICAL issues (security vulnerabilities, crashes, data loss)
+    - Demote BLOCKER issues to warnings
+    - Approve with warnings for non-critical issues
+
+    ## Return Format (Phase 3)
+
+    Return a JSON object with:
+    ```json
+    {
+      "success": true,
+      "result_type": "review_approved" | "review_rejected",
+      "comment": "ALS/1 format handoff comment (see below)",
+      "output": {
+        "issues_found": 0,
+        "blockers": [],
+        "warnings": ["Minor style issue in file.ts:42"]
+      }
+    }
+    ```
+
+    ## ALS Comment Format
+
+    For review_approved (handoff to ops):
+    ```
+    ALS/1
+    actor: reviewer
+    intent: handoff
+    action: context-handoff
+    from_stage: reviewer
+    to_stage: ops
+    summary: [Review summary - approved]
+    key_decisions:
+    - [Review observations]
+    warnings:
+    - [Any non-blocking concerns]
+    ```
+
+    For review_rejected (handoff back to dev):
+    ```
+    ALS/1
+    actor: reviewer
+    intent: rework
+    action: rework-requested
+    from_stage: reviewer
+    to_stage: dev
+    summary: [What needs to be fixed]
+    blockers:
+    - [file:line - Issue description]
+    warnings:
+    - [Non-blocking suggestions]
+    suggestions:
+    - [Optional improvements]
+    ```
+
+    IMPORTANT: Do NOT return joan_actions. Joan backend handles state transitions automatically.
 
 WORKER_RESULT = Task.result
 
+# Log worker completion
 IF WORKER_RESULT.success:
-  logWorkerActivity(".", "Reviewer", "COMPLETE", "task=#{WORK_PACKAGE.task_id} outcome={WORKER_RESULT.outcome}")
+  logWorkerActivity(".", "Reviewer", "COMPLETE", "task=#{WORK_PACKAGE.task_id} success result_type={WORKER_RESULT.result_type}")
 ELSE:
   logWorkerActivity(".", "Reviewer", "FAIL", "task=#{WORK_PACKAGE.task_id} error={WORKER_RESULT.error}")
 
+# Process worker result
 GOTO PROCESS_RESULT
 ```
 
-## PROCESS_RESULT
+## PROCESS_RESULT (Phase 3)
 
 ```
-# Always remove Review-In-Progress
-removeTag(PROJECT_ID, WORK_PACKAGE.task_id, "Review-In-Progress")
-
 IF NOT WORKER_RESULT.success:
   Report: "Reviewer worker failed: {WORKER_RESULT.error}"
-  mcp__joan__create_task_comment(
-    task_id: WORK_PACKAGE.task_id,
-    content: "ALS/1\nactor: coordinator\nintent: error\naction: worker-failed\nsummary: Reviewer worker failed: {WORKER_RESULT.error}"
-  )
+  # Submit failure result
+  Bash: python3 ~/joan-agents/scripts/submit-result.py reviewer-worker review_rejected false \
+    --project-id "{PROJECT_ID}" \
+    --task-id "{WORK_PACKAGE.task_id}" \
+    --error "{WORKER_RESULT.error}"
   RETURN
 
-# Execute joan_actions
-FOR action IN WORKER_RESULT.joan_actions:
-  executeJoanAction(action, PROJECT_ID, WORK_PACKAGE.task_id)
+# Phase 3: Submit result to Joan API (state transitions handled server-side)
+result_type = WORKER_RESULT.result_type
+comment = WORKER_RESULT.comment OR ""
+output_json = JSON.stringify(WORKER_RESULT.output OR {})
 
-# Handle outcome-specific actions
-outcome = WORKER_RESULT.outcome
+Report: "Submitting result: {result_type}"
 
-IF outcome == "approved":
-  # Write Reviewer→Ops handoff
-  IF WORKER_RESULT.handoff_context:
-    handoff_comment = formatHandoffComment({
-      from_stage: "reviewer",
-      to_stage: "ops",
-      summary: WORKER_RESULT.handoff_context.summary OR "Review approved",
-      key_decisions: WORKER_RESULT.handoff_context.key_decisions OR [],
-      warnings: WORKER_RESULT.handoff_context.warnings OR []
-    })
-    mcp__joan__create_task_comment(WORK_PACKAGE.task_id, handoff_comment)
-    Report: "  Wrote Reviewer→Ops handoff"
+Bash: python3 ~/joan-agents/scripts/submit-result.py reviewer-worker "{result_type}" true \
+  --project-id "{PROJECT_ID}" \
+  --task-id "{WORK_PACKAGE.task_id}" \
+  --output '{output_json}' \
+  --comment '{comment}'
 
-  # YOLO mode: auto-add Ops-Ready tag
-  IF MODE == "yolo":
-    addTag(PROJECT_ID, WORK_PACKAGE.task_id, "Ops-Ready")
-    Report: "  [YOLO] Auto-added Ops-Ready tag"
-    mcp__joan__create_task_comment(
-      task_id: WORK_PACKAGE.task_id,
-      content: "ALS/1\nactor: coordinator\nintent: auto-approve\naction: yolo-ops-ready\nsummary: YOLO mode auto-approved for merge"
-    )
+# YOLO mode: auto-add Ops-Ready tag is handled by backend
+IF MODE == "yolo" AND result_type == "review_approved":
+  Report: "  [YOLO] Auto-approved for merge - backend will handle Ops-Ready tag"
 
-ELIF outcome == "rework-requested":
-  # Write Reviewer→Dev rework handoff
-  IF WORKER_RESULT.handoff_context:
-    rework_comment = formatReworkComment(WORKER_RESULT.handoff_context)
-    mcp__joan__create_task_comment(WORK_PACKAGE.task_id, rework_comment)
-    Report: "  Wrote Reviewer→Dev rework feedback"
-
-  # Move task back to Development
-  columns = mcp__joan__list_columns(PROJECT_ID)
-  dev_col = find col IN columns WHERE col.name == "Development"
-  IF dev_col:
-    mcp__joan__update_task(WORK_PACKAGE.task_id, column_id: dev_col.id)
-    Report: "  Moved to Development column"
-
-Report: "**Reviewer worker completed for '{WORK_PACKAGE.task_title}' - {outcome}**"
+Report: "**Reviewer worker completed for '{WORK_PACKAGE.task_title}' - {result_type}**"
 ```
 
 ## Helper Functions
 
 ```
-def formatReworkComment(context):
-  lines = [
-    "ALS/1",
-    "actor: reviewer",
-    "intent: rework",
-    "action: rework-requested",
-    "from_stage: reviewer",
-    "to_stage: dev",
-    "summary: {context.summary OR 'Changes requested'}"
-  ]
-
-  IF context.blockers AND context.blockers.length > 0:
-    lines.push("blockers:")
-    FOR blocker IN context.blockers:
-      lines.push("- {blocker}")
-
-  IF context.warnings AND context.warnings.length > 0:
-    lines.push("warnings:")
-    FOR warning IN context.warnings:
-      lines.push("- {warning}")
-
-  IF context.suggestions AND context.suggestions.length > 0:
-    lines.push("suggestions:")
-    FOR suggestion IN context.suggestions:
-      lines.push("- {suggestion}")
-
-  RETURN lines.join("\n")
-
-def addTag(projectId, taskId, tagName):
-  project_tags = mcp__joan__list_project_tags(projectId)
-  tag = find tag IN project_tags WHERE tag.name == tagName
-  IF NOT tag:
-    tag = mcp__joan__create_project_tag(projectId, tagName)
-  mcp__joan__add_tag_to_task(projectId, taskId, tag.id)
-
-def removeTag(projectId, taskId, tagName):
-  project_tags = mcp__joan__list_project_tags(projectId)
-  tag = find tag IN project_tags WHERE tag.name == tagName
-  IF tag:
-    TRY:
-      mcp__joan__remove_tag_from_task(projectId, taskId, tag.id)
-    CATCH:
-      PASS  # Tag might already be removed
-
-def executeJoanAction(action, projectId, taskId):
-  type = action.type
-
-  IF type == "add_tag":
-    addTag(projectId, taskId, action.tag_name)
-    Report: "  Added tag: {action.tag_name}"
-
-  ELIF type == "remove_tag":
-    removeTag(projectId, taskId, action.tag_name)
-    Report: "  Removed tag: {action.tag_name}"
-
-  ELIF type == "move_to_column":
-    columns = mcp__joan__list_columns(projectId)
-    col = find col IN columns WHERE col.name == action.column_name
-    IF col:
-      mcp__joan__update_task(taskId, column_id: col.id)
-      Report: "  Moved to column: {action.column_name}"
-
-  ELIF type == "add_comment":
-    mcp__joan__create_task_comment(taskId, action.content)
-    Report: "  Added comment"
-
-def extractStageContext(comments, fromStage, toStage):
-  FOR comment IN reversed(comments):
-    content = comment.content
-    IF "intent: handoff" IN content AND "from_stage: {fromStage}" IN content AND "to_stage: {toStage}" IN content:
-      RETURN parseHandoffContent(content)
-  RETURN null
-
 def extractTagNames(tags):
   names = []
   FOR tag IN tags:
     names.push(tag.name)
   RETURN names
-
-def formatHandoffComment(context):
-  lines = [
-    "ALS/1",
-    "actor: {context.from_stage}",
-    "intent: handoff",
-    "action: context-handoff",
-    "from_stage: {context.from_stage}",
-    "to_stage: {context.to_stage}",
-    "summary: {context.summary}"
-  ]
-
-  IF context.key_decisions AND context.key_decisions.length > 0:
-    lines.push("key_decisions:")
-    FOR decision IN context.key_decisions:
-      lines.push("- {decision}")
-
-  IF context.warnings AND context.warnings.length > 0:
-    lines.push("warnings:")
-    FOR warning IN context.warnings:
-      lines.push("- {warning}")
-
-  RETURN lines.join("\n")
 
 def logWorkerActivity(projectDir, workerType, status, message):
   logFile = "{projectDir}/.claude/logs/worker-activity.log"
