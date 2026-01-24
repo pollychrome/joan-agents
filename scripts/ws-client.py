@@ -6,22 +6,34 @@ A WebSocket client that connects to Joan and receives real-time events.
 Replaces the webhook-server.py approach with outbound WebSocket connections
 that work through any firewall.
 
+Phase 3 Architecture:
+- Smart events include pre-fetched payloads (handlers don't re-fetch)
+- Handlers return simple results (success, result_type, output, comment)
+- Joan backend applies state transitions via result-processor
+- Use submit-result.py to report completion from handlers
+
 Features:
 - Outbound WebSocket connection (works through firewalls)
 - Auto-reconnect with exponential backoff
 - State-aware with periodic catchup scans (reduced frequency)
-- Same handler dispatch logic as webhook-server.py
+- Smart event payloads passed to handlers (zero re-fetching)
 - JWT-based authentication (shared with joan-mcp)
 
 Usage:
     ./ws-client.py [--project-dir DIR] [--api-url URL]
 
-Environment variables:
+Environment variables (client config):
     JOAN_API_URL          - Joan API URL (default: https://joan-api.alexbbenson.workers.dev)
     JOAN_PROJECT_DIR      - Project directory (default: current directory)
-    JOAN_CATCHUP_INTERVAL - Seconds between state scans (default: 300, was 60)
+    JOAN_CATCHUP_INTERVAL - Seconds between state scans (default: 300)
     JOAN_WORKFLOW_MODE    - Workflow mode: standard or yolo (default: standard)
     JOAN_AUTH_TOKEN       - JWT auth token (optional, falls back to joan-mcp credentials)
+    JOAN_WEBSOCKET_DEBUG  - Set to "1" for debug logging
+
+Environment variables (passed to handlers - Phase 3):
+    JOAN_PROJECT_ID       - Project ID for result submission
+    JOAN_TASK_ID          - Task ID for result submission
+    JOAN_SMART_PAYLOAD    - JSON string with pre-fetched task data
 
 Authentication:
     Token is loaded in this order:
@@ -265,8 +277,13 @@ def log_debug(message: str):
         log(message, "DEBUG")
 
 
-def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggered_by: str = "user", smart_payload: dict = None):
+def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggered_by: str = "user", smart_payload: dict = None, project_id: str = None):
     """Dispatch the appropriate handler based on event type and tag.
+
+    Phase 3 Architecture:
+    - Smart events include pre-fetched payloads (handlers don't re-fetch)
+    - Handlers return simple results (success, result_type, output, comment)
+    - Joan backend applies state transitions via result-processor
 
     Smart events (Phase 2) are preferred over tag_added events as they:
     - Include pre-fetched task data (no re-fetching needed)
@@ -283,9 +300,10 @@ def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggere
     handler_args = []
 
     # ========================================================================
-    # SMART EVENTS (Phase 2 - Server-side state machine)
+    # SMART EVENTS (Phase 2/3 - Server-side state machine)
     # These events are emitted by Joan's workflow rules engine after it has
     # already executed the state machine transitions. No tag parsing needed.
+    # Payloads include pre-fetched task data for zero-fetch handler execution.
     # ========================================================================
     smart_event_handlers = {
         "task_needs_ba": ("handle-ba", []),
@@ -362,6 +380,17 @@ def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggere
         try:
             env = os.environ.copy()
             env['JOAN_WORKFLOW_MODE'] = config.mode
+
+            # Phase 3: Pass context for result submission
+            # Handlers can use submit-result.py to report completion
+            env['JOAN_PROJECT_ID'] = project_id or config.project_id or ''
+            env['JOAN_TASK_ID'] = task_id
+            env['JOAN_API_URL'] = config.api_url
+
+            # Phase 3: Pass smart payload so handlers don't need to re-fetch
+            if smart_payload:
+                env['JOAN_SMART_PAYLOAD'] = json.dumps(smart_payload)
+                log_debug(f"Smart payload passed to handler ({len(json.dumps(smart_payload))} bytes)")
 
             process = subprocess.Popen(
                 cmd,
@@ -482,6 +511,7 @@ async def websocket_client():
                             payload = data.get('payload', {})
                             event_type = payload.get('event_type', '')
                             task_id = payload.get('task_id', '')
+                            event_project_id = payload.get('project_id', '')
                             triggered_by = payload.get('triggered_by', 'user')
                             metadata = payload.get('metadata', {})
                             smart_payload = metadata.get('smart_payload', None)
@@ -497,7 +527,7 @@ async def websocket_client():
                                 is_smart = "smart" if smart_payload else "legacy"
                                 log(f"Event received: {event_type} task={task_id} tag={tag_name} ({is_smart})")
 
-                            dispatch_handler(event_type, task_id, tag_name, triggered_by, smart_payload)
+                            dispatch_handler(event_type, task_id, tag_name, triggered_by, smart_payload, event_project_id)
 
                         elif msg_type == 'heartbeat':
                             log_debug("Heartbeat received")
