@@ -265,8 +265,14 @@ def log_debug(message: str):
         log(message, "DEBUG")
 
 
-def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggered_by: str = "user"):
-    """Dispatch the appropriate handler based on event type and tag."""
+def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggered_by: str = "user", smart_payload: dict = None):
+    """Dispatch the appropriate handler based on event type and tag.
+
+    Smart events (Phase 2) are preferred over tag_added events as they:
+    - Include pre-fetched task data (no re-fetching needed)
+    - Are semantically clearer (task_ready_for_dev vs tag_added:Planned)
+    - Skip unnecessary state machine transitions (handled server-side)
+    """
 
     # Skip events triggered by agents to prevent loops
     if triggered_by == "agent":
@@ -276,7 +282,30 @@ def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggere
     handler = ""
     handler_args = []
 
-    if event_type == "tag_added":
+    # ========================================================================
+    # SMART EVENTS (Phase 2 - Server-side state machine)
+    # These events are emitted by Joan's workflow rules engine after it has
+    # already executed the state machine transitions. No tag parsing needed.
+    # ========================================================================
+    smart_event_handlers = {
+        "task_needs_ba": ("handle-ba", []),
+        "task_needs_ba_reevaluation": ("handle-ba", []),
+        "task_needs_plan": ("handle-architect", ["--mode=plan"]),
+        "task_ready_for_dev": ("handle-dev", []),
+        "task_needs_rework": ("handle-dev", []),
+        "task_ready_for_review": ("handle-reviewer", []),
+        "task_ready_for_merge": ("handle-ops", []),
+    }
+
+    if event_type in smart_event_handlers:
+        handler, handler_args = smart_event_handlers[event_type]
+        log(f"Smart event: {event_type} -> {handler}")
+
+    # ========================================================================
+    # LEGACY TAG EVENTS (fallback for backward compatibility)
+    # These are still used when workflow rules are disabled or for edge cases.
+    # ========================================================================
+    elif event_type == "tag_added":
         tag_handlers = {
             "Ready": ("handle-architect", ["--mode=plan"]),
             "Plan-Approved": ("handle-architect", ["--mode=finalize"]),
@@ -454,6 +483,8 @@ async def websocket_client():
                             event_type = payload.get('event_type', '')
                             task_id = payload.get('task_id', '')
                             triggered_by = payload.get('triggered_by', 'user')
+                            metadata = payload.get('metadata', {})
+                            smart_payload = metadata.get('smart_payload', None)
 
                             # Extract tag name for tag events
                             tag_name = ""
@@ -463,9 +494,10 @@ async def websocket_client():
                                     tag_name = changes[0].get('new_value') or changes[0].get('old_value', '')
 
                             if event_type != 'connected':
-                                log(f"Event received: {event_type} task={task_id} tag={tag_name}")
+                                is_smart = "smart" if smart_payload else "legacy"
+                                log(f"Event received: {event_type} task={task_id} tag={tag_name} ({is_smart})")
 
-                            dispatch_handler(event_type, task_id, tag_name, triggered_by)
+                            dispatch_handler(event_type, task_id, tag_name, triggered_by, smart_payload)
 
                         elif msg_type == 'heartbeat':
                             log_debug("Heartbeat received")

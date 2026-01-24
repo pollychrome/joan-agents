@@ -108,6 +108,102 @@ WebSocket Real-Time Event Architecture
 
 **Migration:** Same command interface (`/agents:dispatch --loop --mode=yolo`), but now uses WebSocket internally.
 
+## What's New in v5.2 (Hybrid Architecture)
+
+**Server-Side Workflow Rules** - Deterministic state transitions with zero token cost:
+
+Phase 1 of the hybrid architecture moves mechanical operations from Claude to Joan backend, reducing token consumption by ~40-60% for routine workflow transitions.
+
+### Three-Tier Architecture
+
+```
+Tier 1: Joan Backend (Zero Tokens)
+├── Deterministic state transitions
+├── Tag conflict validation
+├── Column auto-movement
+└── YOLO mode auto-approvals
+
+Tier 2: Smart Events (Pre-Validated)
+├── Semantic event types (task_ready_for_dev vs tag_added)
+├── Pre-fetched task payloads
+└── Eliminates Claude re-fetching task data
+
+Tier 3: Claude Workers (Intelligence Only)
+├── BA: Requirements evaluation
+├── Architect: Technical planning
+├── Dev: Implementation
+├── Reviewer: Code review
+└── Ops: Conflict resolution
+```
+
+### Server-Side Workflow Rules
+
+The Joan backend now executes workflow rules automatically when tags are added:
+
+| Trigger | Conditions | Actions | Smart Event |
+|---------|------------|---------|-------------|
+| `Plan-Approved` | + `Plan-Pending-Approval` | Remove both tags, add `Planned`, move to Development | `task_ready_for_dev` |
+| `Plan-Approved` | YOLO mode + `Plan-Pending-Approval` | Auto-add on plan creation | - |
+| `Review-Approved` | YOLO mode | Auto-add `Ops-Ready` | `task_ready_for_merge` |
+| `Dev-Complete` + `Test-Complete` | All completion tags present | Move to Review | `task_ready_for_review` |
+| `Rework-Requested` | - | Move to Development | `task_needs_rework` |
+| `Ready` | Task in To Do/Analyse | - | `task_needs_plan` |
+
+**Validation Rules** (tag conflicts prevented server-side):
+
+| Rule | Prevents |
+|------|----------|
+| `Ready` conflicts with `Plan-Pending-Approval`, `Planned` | Invalid state progression |
+| `Plan-Approved` requires `Plan-Pending-Approval` | Orphaned approval |
+| `Planned` conflicts with `Ready`, `Plan-Pending-Approval` | Multiple queue matching |
+
+### Smart Event Types
+
+Smart events replace generic `tag_added` events with semantic, action-oriented events:
+
+| Smart Event | Meaning | Handler |
+|-------------|---------|---------|
+| `task_needs_ba` | New task needs evaluation | `handle-ba` |
+| `task_needs_ba_reevaluation` | Clarification answered | `handle-ba` |
+| `task_needs_plan` | Task ready for planning | `handle-architect --mode=plan` |
+| `task_ready_for_dev` | Plan approved, ready for implementation | `handle-dev` |
+| `task_needs_rework` | Rework requested | `handle-dev` |
+| `task_ready_for_review` | All completion tags present | `handle-reviewer` |
+| `task_ready_for_merge` | Review approved, ready for ops | `handle-ops` |
+
+Smart events include pre-fetched payloads with task data, tags, and project settings, eliminating the need for handlers to re-fetch.
+
+### Enabling Workflow Rules
+
+Workflow rules are enabled per-project via the `workflow_mode` column:
+
+```sql
+-- Enable workflow rules for a project
+UPDATE projects SET workflow_mode = 'yolo' WHERE id = 'project-uuid';
+
+-- Standard mode still uses workflow rules but requires human gates
+UPDATE projects SET workflow_mode = 'standard' WHERE id = 'project-uuid';
+```
+
+| Mode | Server-Side Behavior |
+|------|---------------------|
+| `standard` | Workflow rules execute, human gates required |
+| `yolo` | Workflow rules execute + auto-approval rules active |
+
+### Token Savings
+
+**Before (v5.1):** Each state transition required Claude to:
+1. Receive event
+2. Fetch task details
+3. Validate tag state
+4. Determine actions
+5. Execute tag/column changes
+
+**After (v5.2):** Joan backend handles steps 2-5 for deterministic transitions:
+- ~40-60% reduction in tokens per task lifecycle
+- 2-3x faster for mechanical operations
+- Claude only invoked for intelligent decisions
+
 ### How WebSocket Dispatch Works
 
 The client is **state-aware**, not just event-reactive:
@@ -340,6 +436,20 @@ The WebSocket client requires a JWT token for authentication:
 
 ### Event → Handler Mapping
 
+**Smart Events (v5.2 - recommended):**
+
+| Smart Event | Handler Dispatched | Pre-fetched Payload |
+|-------------|-------------------|---------------------|
+| `task_needs_ba` | `handle-ba --task=ID` | ✓ task, tags |
+| `task_needs_ba_reevaluation` | `handle-ba --task=ID` | ✓ task, tags |
+| `task_needs_plan` | `handle-architect --task=ID --mode=plan` | ✓ task, tags, settings |
+| `task_ready_for_dev` | `handle-dev --task=ID` | ✓ task, tags, settings |
+| `task_needs_rework` | `handle-dev --task=ID` | ✓ task, tags |
+| `task_ready_for_review` | `handle-reviewer --task=ID` | ✓ task, tags |
+| `task_ready_for_merge` | `handle-ops --task=ID` | ✓ task, tags |
+
+**Legacy Events (backward compatible):**
+
 | Event | Tag/Condition | Handler Dispatched |
 |-------|---------------|-------------------|
 | `task_created` | New task in To Do | `handle-ba --task=ID` |
@@ -353,6 +463,8 @@ The WebSocket client requires a JWT token for authentication:
 | `tag_added` | `Rework-Complete` | `handle-reviewer --task=ID` |
 | `tag_added` | `Ops-Ready` | `handle-ops --task=ID` |
 | `tag_added` | `Clarification-Answered` | `handle-ba --task=ID` |
+
+**Note:** When workflow rules are enabled, smart events replace many legacy events. The client handles both event types for backward compatibility.
 
 ### Graceful Shutdown
 
