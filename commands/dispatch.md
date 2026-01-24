@@ -1,6 +1,6 @@
 ---
-description: Run coordinator (single pass or continuous webhook receiver)
-argument-hint: [--loop] [--port=N] [--mode=standard|yolo]
+description: Run coordinator (single pass or continuous WebSocket client)
+argument-hint: [--loop] [--mode=standard|yolo]
 allowed-tools: Bash, Read
 ---
 
@@ -8,16 +8,15 @@ allowed-tools: Bash, Read
 
 ## Arguments
 
-**CRITICAL: If no `--loop` flag is passed, you MUST run in single-pass mode. Do NOT start the webhook receiver.**
+**CRITICAL: If no `--loop` flag is passed, you MUST run in single-pass mode. Do NOT start the WebSocket client.**
 
-- `--loop` → Start webhook receiver for event-driven dispatch
+- `--loop` → Start WebSocket client for real-time event-driven dispatch
 - No flag → **DEFAULT: Single pass** (process all queues once, then exit)
-- `--port=N` → Webhook receiver port (default: 9847)
 - `--mode=standard|yolo` → Override workflow mode (default: read from config)
 
 **Argument Detection Rule:**
 Look for the LITERAL string `--loop` in the command arguments. If it is NOT present, you are in single-pass mode.
-This is especially important during bootstrap scans where the webhook receiver invokes dispatch WITHOUT `--loop`.
+This is especially important during bootstrap scans where the WebSocket client invokes dispatch WITHOUT `--loop`.
 
 ## Configuration
 
@@ -30,9 +29,9 @@ MODE = --mode override or config.settings.mode (default: "standard")
 DEV_COUNT = config.agents.devs.count (default: 1)  # STRICT SERIAL: Must be 1
 STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes (default: 120)
 
-# Webhook settings
-WEBHOOK_PORT = --port override or config.settings.webhook.port (default: 9847)
-WEBHOOK_SECRET = config.settings.webhook.secret (default: null)
+# WebSocket settings
+CATCHUP_INTERVAL = config.settings.websocket.catchupIntervalSeconds (default: 300)
+# Auth token is read from JOAN_AUTH_TOKEN environment variable
 
 # Worker timeout settings (in minutes)
 WORKER_TIMEOUT_BA = config.settings.workerTimeouts.ba (default: 10)
@@ -62,7 +61,6 @@ Parse arguments:
 LOOP_MODE = true ONLY if "--loop" is EXPLICITLY present in arguments
             false in all other cases (this is the default!)
 
-PORT_OVERRIDE = --port value if present, else null
 MODE_OVERRIDE = --mode value if present, else null
 ```
 
@@ -80,27 +78,23 @@ Report: "Running in {MODE} mode"
 
 **Branch based on LOOP_MODE:**
 
-### If LOOP_MODE is TRUE (Webhook Receiver Mode)
+### If LOOP_MODE is TRUE (WebSocket Client Mode)
 
 **ONLY execute this section if you found the literal string `--loop` in the command arguments.**
 **If `--loop` was NOT present, SKIP THIS ENTIRE SECTION and go to "Configuration Validation".**
 
-Start the webhook receiver for event-driven dispatch.
+Start the WebSocket client for real-time event-driven dispatch.
 
-**No Bootstrap**: The webhook receiver goes directly into listening mode. If you have existing
+**No Bootstrap**: The WebSocket client runs a startup catchup scan then connects. If you have existing
 tasks that need to be integrated into the workflow, run `/agents:clean-project --apply` first.
 
 ```
 # Get project name for file naming
 PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 
-# Build webhook receiver arguments
-PORT = PORT_OVERRIDE or WEBHOOK_PORT or 9847
-
-Report: "Starting webhook receiver for event-driven dispatch"
+Report: "Starting WebSocket client for real-time event-driven dispatch"
 Report: "  Mode: {MODE}"
-Report: "  Port: {PORT}"
-Report: "  Secret: {WEBHOOK_SECRET ? 'configured' : 'none'}"
+Report: "  Catchup interval: {CATCHUP_INTERVAL}s"
 Report: ""
 Report: "NOTE: If you have existing tasks, run '/agents:clean-project --apply' first"
 Report: "      to integrate them into the workflow."
@@ -116,35 +110,47 @@ Report: "  Stop gracefully: Ctrl+C or kill the process"
 Report: "═══════════════════════════════════════════════════════════════"
 Report: ""
 
-# Execute the webhook receiver script
-RECEIVER_SCRIPT="$HOME/joan-agents/scripts/webhook-receiver.sh"
+# Execute the WebSocket client script
+WS_CLIENT_SCRIPT="$HOME/joan-agents/scripts/ws-client.py"
 
-IF receiver script does not exist at $RECEIVER_SCRIPT:
-  Report: "ERROR: Webhook receiver script not found at {RECEIVER_SCRIPT}"
+IF WebSocket client script does not exist at $WS_CLIENT_SCRIPT:
+  Report: "ERROR: WebSocket client not found at {WS_CLIENT_SCRIPT}"
   Report: "Expected joan-agents repository at ~/joan-agents"
   Report: ""
   Report: "Installation issue - verify joan-agents is cloned to ~/joan-agents:"
   Report: "  git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents"
   EXIT with error
 
-# Build receiver arguments (space-separated, NOT --key=value format)
-RECEIVER_ARGS = "--port {PORT} --project-dir . --mode {MODE}"
-IF WEBHOOK_SECRET:
-  RECEIVER_ARGS += " --secret {WEBHOOK_SECRET}"
+# Check for required JOAN_AUTH_TOKEN environment variable
+IF NOT environment variable JOAN_AUTH_TOKEN:
+  Report: "ERROR: JOAN_AUTH_TOKEN environment variable not set"
+  Report: ""
+  Report: "Set your Joan API token:"
+  Report: "  export JOAN_AUTH_TOKEN='your-jwt-token'"
+  Report: ""
+  Report: "You can get a token from the Joan web app (Profile → API Token)"
+  EXIT with error
+
+# Build WebSocket client arguments
+WS_CLIENT_ARGS = "--project-dir . --mode {MODE}"
+IF CATCHUP_INTERVAL:
+  WS_CLIENT_ARGS += " --catchup-interval {CATCHUP_INTERVAL}"
 
 Bash:
-  command: "$HOME/joan-agents/scripts/webhook-receiver.sh" {RECEIVER_ARGS}
-  description: Start webhook receiver for event-driven dispatch
+  command: python3 "$HOME/joan-agents/scripts/ws-client.py" {WS_CLIENT_ARGS}
+  description: Start WebSocket client for real-time event-driven dispatch
   # NOT run_in_background - we want to keep this session alive for monitoring
 
-# The receiver will:
+# The WebSocket client will:
 # 1. Verify project config exists
-# 2. Enter event-driven mode (listen for webhooks)
-# 3. Dispatch handlers as events arrive
+# 2. Run startup catchup scan (catches missed work while client was down)
+# 3. Connect to Joan via WebSocket (outbound connection, works through firewalls)
+# 4. Dispatch handlers as events arrive in real-time
+# 5. Run periodic catchup scans as safety net (default every 5 min)
 
-# Receiver exited (user stopped it)
+# Client exited (user stopped it)
 Report: ""
-Report: "Webhook receiver stopped."
+Report: "WebSocket client stopped."
 EXIT
 ```
 

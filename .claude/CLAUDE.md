@@ -1,6 +1,6 @@
-# Joan Multi-Agent System (v5.0 - Webhook-Driven Architecture)
+# Joan Multi-Agent System (v5.1 - WebSocket Event Architecture)
 
-This system uses **tag-based state transitions**, **webhook-driven dispatch** for instant response, and a **strict serial dev pipeline** to prevent merge conflicts.
+This system uses **tag-based state transitions**, **WebSocket-driven dispatch** for real-time response, and a **strict serial dev pipeline** to prevent merge conflicts.
 
 ## Quick Start
 
@@ -14,7 +14,7 @@ This system uses **tag-based state transitions**, **webhook-driven dispatch** fo
 # Or add tasks manually in Joan web app
 
 # 3. Start the coordinator
-/agents:dispatch --loop                   # Webhook receiver (event-driven, recommended)
+/agents:dispatch --loop                   # WebSocket client (real-time events, recommended)
 /agents:dispatch --loop --mode=yolo       # Fully autonomous mode
 /agents:dispatch                          # Single pass (testing/debugging)
 
@@ -28,32 +28,48 @@ joan logs myproject        # Tail logs in real-time
 /agents:doctor --dry-run   # Preview fixes without applying
 ```
 
-**Why webhooks?** Instant response to events with state-aware resilience. The `--loop` mode starts a webhook receiver that:
-- Responds immediately to Joan events (webhooks)
-- Scans Joan state periodically to catch any missed events
+**Why WebSockets?** Real-time response to events with state-aware resilience. The `--loop` mode starts a WebSocket client that:
+- Connects outbound to Joan (works through any firewall)
+- Receives events instantly via persistent WebSocket connection
+- Scans Joan state periodically to catch any missed events (safety net)
 - Processes existing backlog on startup
 
-This means you can **safely restart the receiver at any time** without losing work.
+This means you can **safely restart the client at any time** without losing work.
 
 ## Architecture
 
 ```
-Webhook-Driven Event Architecture
+WebSocket Real-Time Event Architecture
 ──────────────────────────────────────────────────────────────────────────
 
-  ┌─────────────┐      ┌──────────────────┐      ┌─────────────────────┐
-  │ Joan Backend│ ───► │ Webhook Receiver │ ───► │ Focused Handlers    │
-  │  (events)   │      │  (HTTP server)   │      │ (one task each)     │
-  └─────────────┘      └──────────────────┘      └─────────────────────┘
-        │                      │                         │
-        │  task_created        │  Dispatches:            │  Executes:
-        │  tag_added           │  handle-ba              │  BA evaluation
-        │  tag_removed         │  handle-architect       │  Plan creation
-        │  task_updated        │  handle-dev             │  Implementation
-        │  task_moved          │  handle-reviewer        │  Code review
-        │  task_deleted        │  handle-ops             │  Merge to develop
-        │                      │                         │
-        └──────────────────────┴─────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                    Joan Backend (Cloudflare Worker)                  │
+  │  ┌───────────────────────────────────────────────────────────────┐  │
+  │  │  Routes                       Durable Object                   │  │
+  │  │  ┌─────────────┐             ┌─────────────────────┐          │  │
+  │  │  │ /tasks      │──event────► │ ProjectEventsDO     │          │  │
+  │  │  │ /tags       │             │ - WebSocket conns   │          │  │
+  │  │  │ /comments   │             │ - Event broadcast   │          │  │
+  │  │  └─────────────┘             └──────────┬──────────┘          │  │
+  │  │                                         │                      │  │
+  │  │  GET /projects/:id/events/ws ───────────┘                      │  │
+  │  │  (WebSocket upgrade)                    │ Push events          │  │
+  │  └─────────────────────────────────────────│──────────────────────┘  │
+  └────────────────────────────────────────────│──────────────────────────┘
+                                               │
+                                               ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                       joan-agents (Local)                           │
+  │  ┌───────────────────────────────────────────────────────────────┐  │
+  │  │  ws-client.py                                                  │  │
+  │  │  ┌─────────────────┐    ┌─────────────────┐                    │  │
+  │  │  │ WebSocket Conn  │───►│ dispatch_handler│───► claude /agents │  │
+  │  │  │  (outbound)     │    │   (same logic)  │                    │  │
+  │  │  └─────────────────┘    └─────────────────┘                    │  │
+  │  │                                                                │  │
+  │  │  Fallback: Catchup scan every 5 min (safety net)               │  │
+  │  └────────────────────────────────────────────────────────────────┘  │
+  └─────────────────────────────────────────────────────────────────────┘
 
   Event → Handler Mapping:
   ─────────────────────────────────────────────────────────────────────
@@ -65,49 +81,51 @@ Webhook-Driven Event Architecture
   tag_added: Ops-Ready      → handle-ops
 
   Key Principles:
-  • State-aware: Resilient to missed events via periodic state scans
-  • Event-driven: Instant response to webhook events
+  • Outbound connection: Works through any firewall (no inbound ports needed)
+  • Real-time: Events pushed instantly via WebSocket
+  • State-aware: Periodic catchup scans ensure nothing gets stuck
   • Focused handlers: Each invocation processes ONE task
   • Stateless: Handlers check Joan state on each invocation
-  • Strict serial: Pipeline gate enforced by tag presence checks
   • Self-healing: Run /agents:doctor periodically or on-demand
 ```
 
-## What's New in v5.0
+## What's New in v5.1
 
-**Webhook-Driven Architecture** - Complete replacement of polling-based coordination with event-driven dispatch:
+**WebSocket Event Architecture** - Real-time events via outbound WebSocket connections:
 
 **Key Improvements:**
 1. **Zero idle cost** - No tokens consumed when waiting for work
-2. **Instant response** - Events trigger handlers immediately (no polling delay)
-3. **Simpler architecture** - Each handler processes one task, stateless design
-4. **Better scalability** - No coordinator bottleneck, handlers run independently
+2. **Instant response** - Events pushed via WebSocket (<100ms latency)
+3. **Works through firewalls** - Outbound WebSocket connection (no inbound ports needed)
+4. **Simpler architecture** - Each handler processes one task, stateless design
+5. **Better scalability** - No coordinator bottleneck, handlers run independently
 
-**Breaking Changes from v4.x:**
-- `joan-scheduler.sh` is deprecated (internal script replaced by `webhook-receiver.sh`)
-- `/agents:dispatch --loop` now starts webhook receiver (not polling scheduler)
-- Polling-related settings (`pollingIntervalMinutes`, `maxIdlePolls`) are ignored
-- Self-healing now runs via `/agents:doctor` (schedule with cron if needed)
+**Breaking Changes from v5.0:**
+- `webhook-receiver.sh` replaced by `ws-client.py` (WebSocket client)
+- HTTP webhook configuration (`webhook.port`, `webhook.secret`) no longer used
+- Requires `JOAN_AUTH_TOKEN` environment variable for authentication
+- Catchup interval increased from 60s to 300s (5 min) - WebSocket provides real-time events
 
-**Migration:** Same command interface (`/agents:dispatch --loop --mode=yolo`), but now uses webhooks internally.
+**Migration:** Same command interface (`/agents:dispatch --loop --mode=yolo`), but now uses WebSocket internally.
 
-### How Webhook Dispatch Works
+### How WebSocket Dispatch Works
 
-The receiver is **state-aware**, not just event-reactive:
+The client is **state-aware**, not just event-reactive:
 
 1. **On startup**: Scans Joan state for any actionable work (catches missed events while down)
-2. **On webhook**: Dispatches handler for the specific event immediately
-3. **Periodically**: Scans Joan state every 60 seconds (catches anything that slipped through)
+2. **On WebSocket event**: Dispatches handler for the specific event immediately
+3. **Periodically**: Scans Joan state every 5 minutes (safety net for any edge cases)
 
 **Handler dispatch flow:**
-1. Joan backend sends HTTP POST to webhook URL when events occur
-2. Webhook receiver parses event type and tag changes
-3. Handler dispatched via `claude /agents:dispatch/handle-*` with task ID
-4. Handler executes focused work on single task
+1. Client connects to Joan via outbound WebSocket
+2. Joan backend pushes events through the connection in real-time
+3. Client parses event type and tag changes
+4. Handler dispatched via `claude /agents:dispatch/handle-*` with task ID
+5. Handler executes focused work on single task
 
 Each handler is stateless and checks Joan state on invocation, ensuring correct behavior regardless of execution order.
 
-**Why state-aware?** Webhooks are fire-and-forget - if the receiver misses an event (crash, restart, network issue), that work would be lost. The periodic state scan ensures **nothing gets stuck** just because a webhook was missed. The state (tags + columns) is always the source of truth.
+**Why state-aware?** WebSockets can disconnect temporarily. The periodic state scan ensures **nothing gets stuck** during brief connection interruptions. The state (tags + columns) is always the source of truth.
 
 ## Configuration
 
@@ -121,9 +139,8 @@ Agents read from `.joan-agents.json` in project root:
     "model": "opus",
     "mode": "standard",
     "staleClaimMinutes": 120,
-    "webhook": {
-      "port": 9847,
-      "secret": "optional-hmac-secret"
+    "websocket": {
+      "catchupIntervalSeconds": 300
     },
     "workerTimeouts": {
       "ba": 10,
@@ -152,14 +169,14 @@ Run `/agents:init` to generate this file interactively.
 | `model` | opus | Claude model for all agents: `opus`, `sonnet`, or `haiku` |
 | `mode` | standard | Workflow mode: `standard` (human gates) or `yolo` (autonomous) |
 | `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released (used by doctor) |
-| `webhook.port` | 9847 | Port for webhook receiver to listen on |
-| `webhook.secret` | (none) | HMAC secret for webhook signature verification |
+| `websocket.catchupIntervalSeconds` | 300 | Seconds between periodic state scans (safety net) |
 
 **Environment variable overrides:**
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JOAN_CATCHUP_INTERVAL` | 60 | Seconds between state scans (set to 0 to disable periodic scans) |
-| `JOAN_WEBHOOK_DEBUG` | (none) | Set to "1" to enable debug logging |
+| `JOAN_AUTH_TOKEN` | (required) | JWT token for WebSocket authentication |
+| `JOAN_CATCHUP_INTERVAL` | 300 | Seconds between state scans (set to 0 to disable periodic scans) |
+| `JOAN_WEBSOCKET_DEBUG` | (none) | Set to "1" to enable debug logging |
 
 ### Worker Timeouts
 
@@ -237,42 +254,43 @@ Fully autonomous operation with auto-approval at both gates:
 
 **Audit trail:** In YOLO mode, all auto-approvals are logged as ALS comments for debugging and compliance tracking.
 
-## Webhook Receiver
+## WebSocket Client
 
-The webhook receiver is a **state-aware** HTTP server that responds to Joan events AND periodically checks for missed work.
+The WebSocket client is a **state-aware** Python application that connects to Joan and receives real-time events via WebSocket.
 
 ### Key Features
 
-- **Startup scan**: Catches any work missed while receiver was down
-- **Periodic scan**: Every 60 seconds (configurable via `JOAN_CATCHUP_INTERVAL`)
-- **Immediate response**: Webhooks trigger instant handler dispatch
+- **Outbound connection**: Works through any firewall (no inbound ports needed)
+- **Startup scan**: Catches any work missed while client was down
+- **Periodic scan**: Every 5 minutes (configurable via `JOAN_CATCHUP_INTERVAL`)
+- **Real-time events**: WebSocket pushes events instantly
+- **Auto-reconnect**: Exponential backoff on connection loss
 - **Graceful restart**: Safe to restart at any time without losing work
 
-### Starting the Receiver
+### Starting the Client
 
 ```bash
-# Start with defaults
-./scripts/webhook-receiver.sh --project-dir .
+# Start via dispatch command (recommended)
+/agents:dispatch --loop
 
-# With custom port
-./scripts/webhook-receiver.sh --project-dir . --port 9847
+# Or run directly
+export JOAN_AUTH_TOKEN='your-jwt-token'
+python3 ~/joan-agents/scripts/ws-client.py --project-dir .
 
-# With HMAC signature verification
-./scripts/webhook-receiver.sh --project-dir . --secret "your-secret"
+# With custom catchup interval (default 300 seconds / 5 min)
+JOAN_CATCHUP_INTERVAL=600 python3 ~/joan-agents/scripts/ws-client.py --project-dir .
 
-# Environment variables also work
-JOAN_WEBHOOK_PORT=9847 JOAN_WEBHOOK_SECRET="secret" ./scripts/webhook-receiver.sh --project-dir .
-
-# Adjust catchup interval (default 60 seconds)
-JOAN_CATCHUP_INTERVAL=30 ./scripts/webhook-receiver.sh --project-dir .
+# Enable debug logging
+JOAN_WEBSOCKET_DEBUG=1 python3 ~/joan-agents/scripts/ws-client.py --project-dir .
 ```
 
-### Configuring Joan to Send Webhooks
+### Authentication
 
-In the Joan web app or via MCP:
-1. Go to Project Settings
-2. Set Webhook URL to `http://your-host:9847/webhook`
-3. Optionally set Webhook Secret for HMAC verification
+The WebSocket client requires a JWT token for authentication:
+
+1. Log in to Joan web app
+2. Go to Profile → API Token (or copy from browser dev tools)
+3. Set the `JOAN_AUTH_TOKEN` environment variable
 
 ### Event → Handler Mapping
 
@@ -294,20 +312,20 @@ In the Joan web app or via MCP:
 
 ```bash
 # Send SIGINT or SIGTERM
-kill -INT $(pgrep -f webhook-receiver.sh)
+kill -INT $(pgrep -f ws-client.py)
 
 # Or press Ctrl+C in terminal
 ```
 
-Logs are written to `.claude/logs/webhook-receiver.log`.
+Logs are written to `.claude/logs/websocket-client.log`.
 
 ### State-Aware Resilience
 
-The receiver automatically catches missed webhooks via periodic state scans. This means:
+The client automatically catches missed events via periodic state scans. This means:
 
-- **Missed webhook?** Caught within 60 seconds by periodic scan
-- **Receiver crashed?** On restart, startup scan catches pending work immediately
-- **Network blip?** Periodic scan ensures nothing stays stuck
+- **Connection lost?** Auto-reconnect with exponential backoff (1s → 60s max)
+- **Events during reconnect?** Caught within 5 minutes by periodic scan
+- **Client crashed?** On restart, startup scan catches pending work immediately
 
 For deeper anomaly detection (stale claims, invalid tag combinations), use the doctor:
 
@@ -874,13 +892,13 @@ Output (static):
 ```
 
 Mode icons:
-- ⚡ = Webhook mode (event-driven, recommended)
+- ⚡ = WebSocket mode (real-time events, recommended)
 - 🔄 = Polling mode (legacy)
 
-Status indicators (webhook mode):
+Status indicators (WebSocket mode):
 - 📡 Active (Xs ago) - Recent event processed
-- 📡 Listening (Xm) - Waiting for events
-- 📡 Idle (Xm) - No events for extended period
+- 📡 Connected (Xm) - Waiting for events
+- 📡 Reconnecting - Connection lost, attempting to reconnect
 - 🔄 N workers - Handler(s) currently running
 
 Live view (`-f`) adds:
@@ -907,12 +925,12 @@ Shows:
 joan logs yolo-test
 ```
 
-Streams the webhook receiver log in real-time (equivalent to `tail -f`).
+Streams the WebSocket client log in real-time (equivalent to `tail -f`).
 
 ### Features
 
-- **Auto-discovery**: Finds running webhook receivers and legacy schedulers
-- **Mode-aware**: Shows appropriate metrics for webhook vs polling mode
+- **Auto-discovery**: Finds running WebSocket clients and legacy schedulers
+- **Mode-aware**: Shows appropriate metrics for WebSocket vs polling mode
 - **Global visibility**: Monitor multiple projects from a single command
 - **Zero tokens**: Pure local operation, no Claude API calls
 - **Project matching**: Partial name matching (e.g., `joan status yolo` matches `yolo-test`)
@@ -926,7 +944,7 @@ joan status -f
 # Live view of specific project
 joan status yolo-test -f
 
-# Quick health check - show only webhook receivers
+# Quick health check - show only WebSocket clients
 joan status | grep "⚡"
 
 # Show only projects with active workers

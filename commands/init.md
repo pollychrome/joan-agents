@@ -239,60 +239,62 @@ Ready for webhook receiver and worker activity logging.
 
 ---
 
-## Step 5c: Webhook Configuration
+## Step 5c: WebSocket Authentication
 
-The Joan agent system uses **event-driven webhooks** for instant response to task changes. This is required for the `--loop` mode.
+The Joan agent system uses **WebSocket connections** for real-time event streaming. Authentication is shared with the Joan MCP server.
 
-### Generate Webhook Secret
+### Check Authentication Status
 
-Generate a secure random HMAC secret (32 bytes hex):
+First, check if the user is already authenticated via joan-mcp:
 
 ```bash
-WEBHOOK_SECRET=$(openssl rand -hex 32)
+# Check if ~/.joan-mcp/credentials.json exists and is valid
 ```
 
-### Configure Webhook Port
+If credentials exist and are not expired, report:
+```
+✓ Authentication: Using existing joan-mcp credentials
+  Email: {email from credentials}
+  Expires: {expiry date}
+```
 
-The webhook receiver will listen on a local port. Default: `9847`
+### Authenticate if Needed
+
+If no valid credentials exist:
 
 ```
-AskUserQuestion: "Which port should the webhook receiver use?"
+AskUserQuestion: "WebSocket authentication is required. How would you like to authenticate?"
 Options:
-  - "9847 (default, recommended)"
-  - "Custom port (I'll specify)"
+  - "Login via browser (recommended)"
+  - "Skip - I'll run 'joan-mcp login' later"
 ```
 
-If custom port selected, ask for the port number.
-
-### Update Joan Project Settings
-
-Use MCP to configure the webhook URL and secret on the Joan project:
-
+If "Login via browser" selected:
 ```
-mcp__joan__update_project(
-  project_id: {PROJECT_ID},
-  webhook_url: "http://localhost:{PORT}/webhook",
-  webhook_secret: {WEBHOOK_SECRET}
-)
+Please run the following command in a separate terminal:
+
+  joan-mcp login
+
+This will open your browser to authenticate with Joan.
+Once complete, press Enter to continue...
 ```
+
+Wait for user confirmation, then verify credentials were created.
 
 ### Display Configuration Summary
 
 ```
 ╔═══════════════════════════════════════════════════════════════╗
-║  WEBHOOK CONFIGURATION                                        ║
+║  WEBSOCKET AUTHENTICATION                                     ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-✓ Webhook configured in Joan project settings
+✓ Authentication configured
 
-Port: {PORT}
-Secret: Generated (32 bytes)
-URL: http://localhost:{PORT}/webhook
+Credentials: ~/.joan-mcp/credentials.json
+Shared with: Joan MCP server (same login)
 
-The webhook receiver starts automatically with:
-  /agents:dispatch --loop
-
-Events will trigger handlers instantly when tasks change.
+The WebSocket client will automatically use these credentials.
+To re-authenticate later, run: joan-mcp login
 ```
 
 ---
@@ -331,9 +333,8 @@ Create `.joan-agents.json` in project root with the user's selections:
     "model": "{opus|sonnet|haiku}",
     "mode": "{standard|yolo}",
     "staleClaimMinutes": 120,
-    "webhook": {
-      "port": {webhook-port, default: 9847},
-      "secret": "{WEBHOOK_SECRET}"
+    "websocket": {
+      "catchupIntervalSeconds": 300
     },
     "workerTimeouts": {
       "ba": 10,
@@ -467,10 +468,9 @@ Project Structure:
   • Permissions: {N} bash rules configured for autonomous operation
   • Agent Commands: Available via plugin (or symlinks if legacy install)
 
-Webhook Configuration:
-  • Port: {PORT}
-  • Secret: Configured in Joan project settings
-  • URL: http://localhost:{PORT}/webhook
+WebSocket Configuration:
+  • Authentication: ~/.joan-mcp/credentials.json (shared with MCP)
+  • Catchup interval: 300s (safety net for missed events)
 ═══════════════════════════════════════════════════════════════
 ```
 
@@ -569,30 +569,30 @@ Ask: "Ready to learn how to run agents? (Continue / Ask a question)"
 
 ```
 ╔═══════════════════════════════════════════════════════════════╗
-║  RUNNING AGENTS (Webhook-Driven)                              ║
+║  RUNNING AGENTS (WebSocket-Driven)                            ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-The system uses event-driven webhooks for instant response.
+The system uses WebSocket connections for real-time events.
 When task state changes in Joan, handlers execute immediately.
 
 INVOCATION MODES:
 ─────────────────────────────────────
-  /agents:dispatch --loop    Webhook receiver (recommended)
+  /agents:dispatch --loop    WebSocket client (recommended)
   /agents:dispatch           Single pass (testing/debugging)
 
 WHEN TO USE EACH:
 ─────────────────────────────────────
-  --loop mode:    Production use - listens for webhook events
+  --loop mode:    Production use - WebSocket event streaming
   Single pass:    Testing, debugging, manual intervention
 
-  The --loop flag starts a webhook receiver that responds to
-  Joan events instantly. Zero token cost when idle!
+  The --loop flag starts a WebSocket client that receives
+  Joan events in real-time. Zero token cost when idle!
 
 HOW IT WORKS (Event-Driven):
 ─────────────────────────────────────
   1. Task changes in Joan (created, tagged, moved)
-  2. Joan sends webhook to your local receiver
-  3. Receiver dispatches the appropriate handler
+  2. Joan pushes event via WebSocket connection
+  3. Client dispatches the appropriate handler
   4. Handler processes ONE task and exits
   5. Back to listening (zero cost when idle)
 
@@ -694,15 +694,15 @@ After tutorial (or if skipped), show:
 
 ```
 Start agents with:
-  /agents:dispatch --loop              - Webhook receiver (recommended)
+  /agents:dispatch --loop              - WebSocket client (recommended)
   /agents:dispatch --loop --mode=yolo  - Fully autonomous
   /agents:dispatch                     - Single pass (testing only)
 
 Stop: Ctrl+C
 
-Change model anytime with: /agents:model
-
-Onboard existing backlog: /agents:clean-project
+Re-authenticate: joan-mcp login
+Change model: /agents:model
+Onboard backlog: /agents:clean-project
 ```
 
 Begin the initialization now.
