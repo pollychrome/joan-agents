@@ -21,13 +21,48 @@ Process BA queue: evaluate requirements, ask clarifying questions, mark tasks Re
 config = JSON.parse(read(".joan-agents.json"))
 PROJECT_ID = config.projectId
 PROJECT_NAME = config.projectName
-MODEL = config.settings.model OR "opus"
+
+# Model resolution: settings.models.ba → settings.model → "haiku" (built-in default)
+MODEL = config.settings.models?.ba OR config.settings.model OR "haiku"
+
 MODE = config.settings.mode OR "standard"
 TIMEOUT_BA = config.settings.workerTimeouts.ba OR 10
 
 IF NOT config.agents.businessAnalyst.enabled:
   Report: "BA agent disabled in config"
   EXIT
+```
+
+## Model Escalation (BA-specific)
+
+BA uses haiku by default but auto-escalates to sonnet for complex tasks:
+
+```
+# BA escalation: haiku → sonnet for complex tasks
+IF MODEL == "haiku":
+  ESCALATE = false
+  ESCALATE_REASON = ""
+
+  # Trigger 1: Long description (>2000 chars)
+  IF task_description.length > 2000:
+    ESCALATE = true
+    ESCALATE_REASON = "description >2000 chars"
+
+  # Trigger 2: Integration keywords
+  keywords = ["integration", "api", "third-party", "external", "oauth", "webhook", "database migration"]
+  IF any keyword in task_description.toLowerCase():
+    ESCALATE = true
+    ESCALATE_REASON = "integration keyword detected"
+
+  # Trigger 3: Many acceptance criteria (>5 bullets)
+  bullet_count = count occurrences of "- [ ]" or "- " in task_description
+  IF bullet_count > 5:
+    ESCALATE = true
+    ESCALATE_REASON = "{bullet_count} acceptance criteria"
+
+  IF ESCALATE:
+    MODEL = "sonnet"
+    Report: "BA escalating to sonnet: {ESCALATE_REASON}"
 ```
 
 ## Phase 3: Smart Payload Check

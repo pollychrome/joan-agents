@@ -20,7 +20,10 @@ Process Ops queue: merge approved PRs to develop, handle conflict resolution wit
 config = JSON.parse(read(".joan-agents.json"))
 PROJECT_ID = config.projectId
 PROJECT_NAME = config.projectName
-MODEL = config.settings.model OR "opus"
+
+# Model resolution: settings.models.ops → settings.model → "haiku" (built-in default)
+MODEL = config.settings.models?.ops OR config.settings.model OR "haiku"
+
 MODE = config.settings.mode OR "standard"
 TIMEOUT_OPS = config.settings.workerTimeouts.ops OR 15
 

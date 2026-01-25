@@ -23,7 +23,43 @@
           "type": "string",
           "enum": ["opus", "sonnet", "haiku"],
           "default": "opus",
-          "description": "Claude model to use for all agents"
+          "description": "Claude model to use for all agents (legacy fallback)"
+        },
+        "models": {
+          "type": "object",
+          "description": "Per-worker model selection. Resolution order: models.{worker} → model → built-in default",
+          "properties": {
+            "ba": {
+              "type": "string",
+              "enum": ["opus", "sonnet", "haiku"],
+              "default": "haiku",
+              "description": "Model for BA worker (default: haiku - simple evaluation, auto-escalates for complex tasks)"
+            },
+            "architect": {
+              "type": "string",
+              "enum": ["opus", "sonnet", "haiku"],
+              "default": "opus",
+              "description": "Model for Architect worker (default: opus - complex planning requires full capability)"
+            },
+            "dev": {
+              "type": "string",
+              "enum": ["opus", "sonnet", "haiku"],
+              "default": "opus",
+              "description": "Model for Dev worker (default: opus - implementation quality critical)"
+            },
+            "reviewer": {
+              "type": "string",
+              "enum": ["opus", "sonnet", "haiku"],
+              "default": "opus",
+              "description": "Model for Reviewer worker (default: opus - quality gate, no compromise)"
+            },
+            "ops": {
+              "type": "string",
+              "enum": ["opus", "sonnet", "haiku"],
+              "default": "haiku",
+              "description": "Model for Ops worker (default: haiku - mechanical merge operations)"
+            }
+          }
         },
         "mode": {
           "type": "string",

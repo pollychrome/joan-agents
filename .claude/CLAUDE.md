@@ -232,7 +232,13 @@ Agents read from `.joan-agents.json` in project root:
   "projectId": "uuid-from-joan",
   "projectName": "My Project",
   "settings": {
-    "model": "opus",
+    "models": {
+      "ba": "haiku",
+      "architect": "opus",
+      "dev": "opus",
+      "reviewer": "opus",
+      "ops": "haiku"
+    },
     "mode": "standard",
     "staleClaimMinutes": 120,
     "websocket": {
@@ -262,7 +268,8 @@ Run `/agents:init` to generate this file interactively.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `model` | opus | Claude model for all agents: `opus`, `sonnet`, or `haiku` |
+| `model` | opus | Legacy: Claude model for all agents (fallback if `models` not set) |
+| `models` | (see below) | Per-worker model selection (recommended) |
 | `mode` | standard | Workflow mode: `standard` (human gates) or `yolo` (autonomous) |
 | `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released (used by doctor) |
 | `websocket.catchupIntervalSeconds` | 300 | Seconds between periodic state scans (safety net) |
@@ -273,6 +280,52 @@ Run `/agents:init` to generate this file interactively.
 | `JOAN_AUTH_TOKEN` | (required) | JWT token for WebSocket authentication |
 | `JOAN_CATCHUP_INTERVAL` | 300 | Seconds between state scans (set to 0 to disable periodic scans) |
 | `JOAN_WEBSOCKET_DEBUG` | (none) | Set to "1" to enable debug logging |
+
+### Model Configuration
+
+Per-worker model selection reduces token costs by ~25-30% while maintaining quality where it matters.
+
+**Resolution Order:** `settings.models.{worker}` → `settings.model` → built-in default
+
+| Worker | Default | Rationale |
+|--------|---------|-----------|
+| BA | haiku | Simple evaluation, auto-escalates for complex tasks |
+| Architect | opus | Complex planning requires full capability |
+| Dev | opus | Implementation quality critical |
+| Reviewer | opus | Quality gate, no compromise |
+| Ops | haiku | Mechanical merge operations |
+
+**Configuration Options:**
+
+```json
+// Option 1: Per-worker (recommended, ~25-30% cost savings)
+"settings": {
+  "models": {
+    "ba": "haiku",
+    "architect": "opus",
+    "dev": "opus",
+    "reviewer": "opus",
+    "ops": "haiku"
+  }
+}
+
+// Option 2: Uniform (all workers same model)
+"settings": {
+  "model": "opus"
+}
+
+// Option 3: No config (uses built-in defaults)
+"settings": {}
+```
+
+**BA Auto-Escalation:**
+
+When BA uses haiku, it automatically escalates to sonnet for complex tasks:
+- Long descriptions (>2000 characters)
+- Integration keywords: `integration`, `api`, `third-party`, `external`, `oauth`, `webhook`, `database migration`
+- Many acceptance criteria (>5 bullets)
+
+Change model configuration anytime with `/agents:model`.
 
 ### Worker Timeouts
 
@@ -286,13 +339,6 @@ Run `/agents:init` to generate this file interactively.
 
 **IMPORTANT: `devs.count` must be 1 (enforced by schema)**
 This ensures strict serial execution and prevents merge conflicts.
-
-**Model Selection:**
-- `opus` - Best instruction-following, most thorough (recommended for complex workflows)
-- `sonnet` - Faster, lower cost, good for simpler tasks
-- `haiku` - Fastest, lowest cost, for very simple operations
-
-Change model anytime with `/agents:model`.
 
 ### Workflow Modes
 

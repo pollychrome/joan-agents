@@ -19,7 +19,10 @@ Process Reviewer queue: deep code review, merge develop into feature, approve or
 config = JSON.parse(read(".joan-agents.json"))
 PROJECT_ID = config.projectId
 PROJECT_NAME = config.projectName
-MODEL = config.settings.model OR "opus"
+
+# Model resolution: settings.models.reviewer → settings.model → "opus" (built-in default)
+MODEL = config.settings.models?.reviewer OR config.settings.model OR "opus"
+
 MODE = config.settings.mode OR "standard"
 TIMEOUT_REVIEWER = config.settings.workerTimeouts.reviewer OR 20
 

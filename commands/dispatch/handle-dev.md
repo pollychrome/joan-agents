@@ -20,7 +20,10 @@ Process Dev queue: claim tasks, implement on feature branches, handle rework and
 config = JSON.parse(read(".joan-agents.json"))
 PROJECT_ID = config.projectId
 PROJECT_NAME = config.projectName
-MODEL = config.settings.model OR "opus"
+
+# Model resolution: settings.models.dev → settings.model → "opus" (built-in default)
+MODEL = config.settings.models?.dev OR config.settings.model OR "opus"
+
 MODE = config.settings.mode OR "standard"
 TIMEOUT_DEV = config.settings.workerTimeouts.dev OR 60
 

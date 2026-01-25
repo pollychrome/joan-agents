@@ -31,10 +31,36 @@ Present the projects to the user and ask them to select one.
 
 Ask the user for their preferences using AskUserQuestion:
 
-1. **Model**: Which Claude model should agents use? (default: opus)
+1. **Model Configuration**: How should agent models be configured?
+
+   Use AskUserQuestion with options:
+
+   - `optimized` - Cost-optimized per-worker defaults **(RECOMMENDED)**
+     * BA: haiku (simple evaluation, auto-escalates for complex tasks)
+     * Architect: opus (complex planning requires full capability)
+     * Dev: opus (implementation quality critical)
+     * Reviewer: opus (quality gate, no compromise)
+     * Ops: haiku (mechanical merge operations)
+     * **Saves ~25-30% on token costs while maintaining quality**
+
+   - `uniform` - Same model for all workers
+     * Follow-up question: opus, sonnet, or haiku?
+     * Simpler configuration, consistent behavior
+
+   - `custom` - Configure each worker individually
+     * Choose model for each: BA, Architect, Dev, Reviewer, Ops
+
+   **If "uniform" selected**, ask follow-up:
    - `opus` - Best instruction-following, most thorough (recommended for complex workflows)
    - `sonnet` - Faster, lower cost, good for simpler tasks
    - `haiku` - Fastest, lowest cost, best for very simple operations
+
+   **If "custom" selected**, ask for each worker:
+   - BA model? (opus/sonnet/haiku)
+   - Architect model? (opus/sonnet/haiku)
+   - Dev model? (opus/sonnet/haiku)
+   - Reviewer model? (opus/sonnet/haiku)
+   - Ops model? (opus/sonnet/haiku)
 
 2. **Workflow Mode**: Which mode should agents operate in? (default: standard)
 
@@ -324,6 +350,44 @@ ln -sf ~/joan-agents/commands ~/.claude/commands/agents
 
 Create `.joan-agents.json` in project root with the user's selections:
 
+**If "optimized" model config selected:**
+```json
+{
+  "$schema": "./.claude/schemas/joan-agents.schema.json",
+  "projectId": "{selected-project-uuid}",
+  "projectName": "{selected-project-name}",
+  "settings": {
+    "models": {
+      "ba": "haiku",
+      "architect": "opus",
+      "dev": "opus",
+      "reviewer": "opus",
+      "ops": "haiku"
+    },
+    "mode": "{standard|yolo}",
+    "staleClaimMinutes": 120,
+    "websocket": {
+      "catchupIntervalSeconds": 300
+    },
+    "workerTimeouts": {
+      "ba": 10,
+      "architect": 20,
+      "dev": 60,
+      "reviewer": 20,
+      "ops": 15
+    }
+  },
+  "agents": {
+    "businessAnalyst": { "enabled": {true/false} },
+    "architect": { "enabled": {true/false} },
+    "reviewer": { "enabled": {true/false} },
+    "ops": { "enabled": {true/false} },
+    "devs": { "enabled": {true/false}, "count": 1 }
+  }
+}
+```
+
+**If "uniform" model config selected:**
 ```json
 {
   "$schema": "./.claude/schemas/joan-agents.schema.json",
@@ -331,6 +395,43 @@ Create `.joan-agents.json` in project root with the user's selections:
   "projectName": "{selected-project-name}",
   "settings": {
     "model": "{opus|sonnet|haiku}",
+    "mode": "{standard|yolo}",
+    "staleClaimMinutes": 120,
+    "websocket": {
+      "catchupIntervalSeconds": 300
+    },
+    "workerTimeouts": {
+      "ba": 10,
+      "architect": 20,
+      "dev": 60,
+      "reviewer": 20,
+      "ops": 15
+    }
+  },
+  "agents": {
+    "businessAnalyst": { "enabled": {true/false} },
+    "architect": { "enabled": {true/false} },
+    "reviewer": { "enabled": {true/false} },
+    "ops": { "enabled": {true/false} },
+    "devs": { "enabled": {true/false}, "count": 1 }
+  }
+}
+```
+
+**If "custom" model config selected:**
+```json
+{
+  "$schema": "./.claude/schemas/joan-agents.schema.json",
+  "projectId": "{selected-project-uuid}",
+  "projectName": "{selected-project-name}",
+  "settings": {
+    "models": {
+      "ba": "{user-selected}",
+      "architect": "{user-selected}",
+      "dev": "{user-selected}",
+      "reviewer": "{user-selected}",
+      "ops": "{user-selected}"
+    },
     "mode": "{standard|yolo}",
     "staleClaimMinutes": 120,
     "websocket": {
@@ -452,7 +553,10 @@ Report the configuration summary:
 ═══════════════════════════════════════════════════════════════
 
 Project: {name}
-Model: {opus|sonnet|haiku}
+Model Config: {optimized|uniform|custom}
+  {If optimized: BA=haiku, Architect=opus, Dev=opus, Reviewer=opus, Ops=haiku}
+  {If uniform: All workers use {model}}
+  {If custom: BA={ba}, Architect={architect}, Dev={dev}, Reviewer={reviewer}, Ops={ops}}
 Mode: {standard|yolo}
 
 Enabled Agents:
