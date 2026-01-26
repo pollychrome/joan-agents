@@ -98,6 +98,9 @@ Base URL: JOAN_API_URL (default includes /api/v1). MCP client paths are relative
 - update_milestone_resource -> PATCH /projects/:projectId/milestones/:milestoneId/resources/:resourceId
 - delete_milestone_resource -> DELETE /projects/:projectId/milestones/:milestoneId/resources/:resourceId
 
+### Workflow
+- get_actionable_tasks -> GET /projects/:projectId/actionable-tasks?mode=&include_payloads=&include_recovery=&stale_claim_minutes=&stuck_state_minutes=
+
 ## Resources -> endpoints
 - joan://projects -> GET /projects
 - joan://projects/{projectId} -> GET /projects/{projectId}

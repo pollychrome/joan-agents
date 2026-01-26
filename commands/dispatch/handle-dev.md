@@ -1,7 +1,7 @@
 ---
 description: Handle Dev queue - claim tasks, implement features, handle rework
 argument-hint: [--task=UUID] [--mode=implement|rework|conflict] [--all]
-allowed-tools: Bash, Read, Task
+allowed-tools: Bash, Read, Task, mcp__joan__*, mcp__plugin_agents_joan__*
 ---
 
 # Dev Handler

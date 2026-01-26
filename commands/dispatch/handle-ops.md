@@ -1,7 +1,7 @@
 ---
 description: Handle Ops queue - merge to develop, track deployments
 argument-hint: [--task=UUID] [--mode=merge|merge-with-guidance] [--all]
-allowed-tools: Bash, Read, Task
+allowed-tools: Bash, Read, Task, mcp__joan__*, mcp__plugin_agents_joan__*
 ---
 
 # Ops Handler

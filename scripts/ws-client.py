@@ -13,9 +13,9 @@ Phase 3 Architecture:
 - Use submit-result.py to report completion from handlers
 
 Features:
+- State-driven startup: queries actionable-tasks API on launch (zero cold start)
 - Outbound WebSocket connection (works through firewalls)
 - Auto-reconnect with exponential backoff
-- State-aware with periodic catchup scans (reduced frequency)
 - Smart event payloads passed to handlers (zero re-fetching)
 - JWT-based authentication (shared with joan-mcp)
 
@@ -25,7 +25,6 @@ Usage:
 Environment variables (client config):
     JOAN_API_URL          - Joan API URL (default: https://joan-api.alexbbenson.workers.dev)
     JOAN_PROJECT_DIR      - Project directory (default: current directory)
-    JOAN_CATCHUP_INTERVAL - Seconds between state scans (default: 300)
     JOAN_WORKFLOW_MODE    - Workflow mode: standard or yolo (default: standard)
     JOAN_AUTH_TOKEN       - JWT auth token (optional, falls back to joan-mcp credentials)
     JOAN_WEBSOCKET_DEBUG  - Set to "1" for debug logging
@@ -52,6 +51,9 @@ import signal
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -181,7 +183,6 @@ class WebSocketConfig:
         self.api_url = os.environ.get('JOAN_API_URL', 'https://joan-api.alexbbenson.workers.dev')
         self.project_dir = Path(os.environ.get('JOAN_PROJECT_DIR', '.'))
         self.mode = os.environ.get('JOAN_WORKFLOW_MODE', 'standard')
-        self.catchup_interval = int(os.environ.get('JOAN_CATCHUP_INTERVAL', 300))  # 5 min default
         self.auth_token = get_auth_token() or ''
         self.debug = os.environ.get('JOAN_WEBSOCKET_DEBUG', '') == '1'
 
@@ -200,7 +201,6 @@ class WebSocketConfig:
         parser.add_argument('--project-dir', type=str, help='Project directory')
         parser.add_argument('--api-url', type=str, help='Joan API URL')
         parser.add_argument('--mode', type=str, choices=['standard', 'yolo'], help='Workflow mode')
-        parser.add_argument('--catchup-interval', type=int, help='Catchup scan interval in seconds')
         parser.add_argument('--token', type=str, help='JWT auth token')
 
         parsed = parser.parse_args(args)
@@ -214,8 +214,6 @@ class WebSocketConfig:
             self.api_url = parsed.api_url
         if parsed.mode:
             self.mode = parsed.mode
-        if parsed.catchup_interval:
-            self.catchup_interval = parsed.catchup_interval
         if parsed.token:
             self.auth_token = parsed.token
 
@@ -233,14 +231,8 @@ class WebSocketConfig:
         if not self.project_id:
             raise ValueError("projectId not found in .joan-agents.json")
 
-        # Get WebSocket settings if available
-        settings = data.get('settings', {})
-        ws_settings = settings.get('websocket', {})
-
-        if ws_settings.get('catchupIntervalSeconds'):
-            self.catchup_interval = ws_settings['catchupIntervalSeconds']
-
         # Check for mode override
+        settings = data.get('settings', {})
         if settings.get('mode'):
             self.mode = settings['mode']
 
@@ -275,6 +267,24 @@ def log_debug(message: str):
     """Write debug log entry (only if debug mode enabled)."""
     if config.debug:
         log(message, "DEBUG")
+
+
+def rotate_log():
+    """Rotate existing log file on startup so each session gets a clean log."""
+    if not config.log_file.exists() or config.log_file.stat().st_size == 0:
+        return
+
+    mtime = datetime.fromtimestamp(config.log_file.stat().st_mtime)
+    stamp = mtime.strftime('%Y%m%d-%H%M%S')
+    rotated = config.log_dir / f'websocket-client.{stamp}.log'
+
+    # Avoid overwriting if multiple restarts in the same second
+    counter = 1
+    while rotated.exists():
+        rotated = config.log_dir / f'websocket-client.{stamp}-{counter}.log'
+        counter += 1
+
+    config.log_file.rename(rotated)
 
 
 # =============================================================================
@@ -420,15 +430,16 @@ def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggere
         return
 
     if handler:
-        # Build command
-        cmd = [
-            "claude",
-            f"/agents:dispatch/{handler}",
-            f"--task={task_id}",
-            f"--mode={config.mode}"
-        ] + handler_args
+        # Skill arguments must be part of the prompt string, not separate argv entries.
+        # Claude Code CLI parses --flags as its own options before interpreting the skill.
+        # Workflow mode is passed via JOAN_WORKFLOW_MODE env var (already set below).
+        skill_args = f"--task={task_id}"
+        if handler_args:
+            skill_args += " " + " ".join(handler_args)
 
-        log(f"Dispatching: {handler} --task={task_id} {' '.join(handler_args)}")
+        cmd = ["claude", f"/agents:dispatch/{handler} {skill_args}"]
+
+        log(f"Dispatching: {handler} {skill_args}")
 
         # Run handler in background
         try:
@@ -481,16 +492,54 @@ def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggere
             log(f"Failed to dispatch handler: {e}", "ERROR")
 
 
-def run_catchup_scan(reason: str = "scheduled"):
-    """Run a catchup scan using single-pass dispatch."""
-    log(f"CATCHUP [{reason}]: Running single-pass dispatch to catch missed work...")
+# =============================================================================
+# Startup Dispatch (replaces catchup loop)
+# =============================================================================
+
+def fetch_actionable_tasks() -> dict:
+    """Fetch actionable tasks from Joan API.
+
+    Queries the pre-computed priority queues endpoint which replicates
+    the queue-building logic from dispatch.md Steps 1-3b server-side.
+    """
+    url = f"{config.api_url}/api/v1/projects/{config.project_id}/actionable-tasks"
+    url += f"?mode={config.mode}&include_payloads=true&include_recovery=true"
+
+    req = urllib.request.Request(url, headers={
+        'Authorization': f'Bearer {config.auth_token}',
+        'Content-Type': 'application/json',
+    })
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def dispatch_handler_direct(handler: str, task_id: str, handler_args: list,
+                            smart_payload: dict = None, project_id: str = None):
+    """Dispatch a handler directly from startup dispatch (bypasses event routing).
+
+    Same subprocess pattern as dispatch_handler() but without event_type mapping.
+    """
+    skill_args = f"--task={task_id}"
+    if handler_args:
+        skill_args += " " + " ".join(handler_args)
+
+    cmd = ["claude", f"/agents:dispatch/{handler} {skill_args}"]
+    log(f"STARTUP: Dispatching {handler} {skill_args}")
 
     try:
         env = os.environ.copy()
         env['JOAN_WORKFLOW_MODE'] = config.mode
+        env['JOAN_PROJECT_ID'] = project_id or config.project_id or ''
+        env['JOAN_TASK_ID'] = task_id
+        env['JOAN_API_URL'] = config.api_url
+
+        if smart_payload:
+            filtered = filter_payload_for_handler(handler, smart_payload)
+            env['JOAN_SMART_PAYLOAD'] = json.dumps(filtered)
 
         process = subprocess.Popen(
-            ["claude", "/agents:dispatch"],
+            cmd,
             cwd=str(config.project_dir),
             env=env,
             stdout=subprocess.PIPE,
@@ -498,43 +547,89 @@ def run_catchup_scan(reason: str = "scheduled"):
             text=True
         )
 
-        log(f"CATCHUP [{reason}]: Dispatch started (PID: {process.pid})")
+        log(f"STARTUP: Handler dispatched (PID: {process.pid})")
 
-        # Log output in background thread
         def log_output():
             try:
                 for line in process.stdout:
                     line = line.strip()
                     if line:
-                        log(f"[dispatch] {line}")
+                        log(f"[{handler}] {line}")
                 process.wait()
-                log(f"CATCHUP [{reason}]: Single-pass dispatch complete")
+                log(f"Handler {handler} completed (exit code: {process.returncode})")
             except Exception as e:
-                log(f"Error reading dispatch output: {e}", "ERROR")
+                log(f"Error reading handler output: {e}", "ERROR")
 
         thread = threading.Thread(target=log_output, daemon=True)
         thread.start()
 
     except Exception as e:
-        log(f"CATCHUP [{reason}]: Failed to start dispatch: {e}", "ERROR")
+        log(f"STARTUP: Failed to dispatch handler: {e}", "ERROR")
 
 
-async def catchup_loop():
-    """Background task that runs periodic catchup scans."""
-    log(f"Starting periodic catchup (every {config.catchup_interval}s)")
+def run_startup_dispatch():
+    """Query actionable tasks and dispatch handlers immediately.
 
-    while not shutdown_event.is_set():
-        try:
-            await asyncio.wait_for(
-                shutdown_event.wait(),
-                timeout=config.catchup_interval
+    Called once at startup before WebSocket connects. Eliminates cold start
+    delay by processing existing actionable work without waiting for events.
+    """
+    log("=== STARTUP: QUERYING ACTIONABLE TASKS ===")
+
+    try:
+        data = fetch_actionable_tasks()
+    except urllib.error.HTTPError as e:
+        log(f"STARTUP: API returned {e.code}: {e.reason}", "ERROR")
+        log("STARTUP: Will rely on WebSocket events (cold-start delay possible)")
+        return
+    except Exception as e:
+        log(f"STARTUP: Failed to query actionable tasks: {e}", "ERROR")
+        log("STARTUP: Will rely on WebSocket events (cold-start delay possible)")
+        return
+
+    summary = data.get('summary', {})
+    log(f"STARTUP: {summary.get('total_actionable', 0)} actionable, "
+        f"{summary.get('total_recovery_issues', 0)} recovery issues, "
+        f"{summary.get('pending_human_action', 0)} pending human action")
+
+    # Log pipeline status
+    pipeline = data.get('pipeline', {})
+    if pipeline.get('blocked'):
+        log(f"STARTUP: Pipeline BLOCKED: '{pipeline.get('blocking_task_title')}' - "
+            f"{pipeline.get('blocking_reason')}")
+
+    # Log recovery issues
+    recovery = data.get('recovery', {})
+    for stale in recovery.get('stale_claims', []):
+        log(f"  STALE CLAIM: '{stale['task_title']}' "
+            f"({stale['claim_age_minutes']}m, threshold: {stale['threshold_minutes']}m)")
+    for anomaly in recovery.get('anomalies', []):
+        log(f"  ANOMALY: '{anomaly['task_title']}' "
+            f"[{anomaly['type']}] tags={anomaly['stale_tags']} col={anomaly['column']}")
+    for invalid in recovery.get('invalid_states', []):
+        log(f"  INVALID STATE: '{invalid['task_title']}' "
+            f"[{invalid['type']}] tags={invalid['tags']} fix={invalid['remediation']}")
+
+    # Dispatch handlers for each queue item (priority order: ops, reviewer, dev, architect, ba)
+    queues = data.get('queues', {})
+    dispatched = 0
+
+    for queue_name in ['ops', 'reviewer', 'dev', 'architect', 'ba']:
+        for item in queues.get(queue_name, []):
+            handler = item['handler']
+            handler_args = item.get('handler_args', [])
+            mode = item.get('mode', '')
+
+            log(f"STARTUP: {handler} → task {item['task_id'][:8]}... "
+                f"'{item.get('task_title', '')}' (mode: {mode})")
+
+            dispatch_handler_direct(
+                handler, item['task_id'], handler_args,
+                item.get('smart_payload'), config.project_id
             )
-            # If we get here, shutdown was requested
-            break
-        except asyncio.TimeoutError:
-            # Timeout means it's time for a catchup scan
-            if not shutdown_event.is_set():
-                run_catchup_scan("periodic")
+            dispatched += 1
+
+    log(f"STARTUP: Dispatched {dispatched} handler(s)")
+    log("")
 
 
 async def websocket_client():
@@ -585,6 +680,8 @@ async def websocket_client():
                             if event_type != 'connected':
                                 is_smart = "smart" if smart_payload else "legacy"
                                 log(f"Event received: {event_type} task={task_id} tag={tag_name} ({is_smart})")
+                                if config.debug and smart_payload:
+                                    log_debug(f"Smart payload keys: {list(smart_payload.keys())}")
 
                             dispatch_handler(event_type, task_id, tag_name, triggered_by, smart_payload, event_project_id)
 
@@ -626,10 +723,7 @@ async def websocket_client():
 
 async def main_async():
     """Async main entry point."""
-    # Start catchup loop in background
-    catchup_task = asyncio.create_task(catchup_loop())
-
-    # Run WebSocket client
+    # Run WebSocket client (startup dispatch already completed synchronously)
     ws_task = asyncio.create_task(websocket_client())
 
     # Wait for shutdown
@@ -639,11 +733,10 @@ async def main_async():
         pass
 
     # Cancel tasks
-    catchup_task.cancel()
     ws_task.cancel()
 
     try:
-        await asyncio.gather(catchup_task, ws_task, return_exceptions=True)
+        await asyncio.gather(ws_task, return_exceptions=True)
     except:
         pass
 
@@ -687,7 +780,6 @@ def verify_ready():
     log(f"Project: {config.project_name}")
     log(f"Project ID: {config.project_id}")
     log(f"API URL: {config.api_url}")
-    log(f"Catchup interval: {config.catchup_interval}s")
     log("Config: Valid")
     log("")
 
@@ -701,25 +793,27 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+    # Rotate previous session's log before writing anything
+    rotate_log()
+
     # Verify project
     verify_ready()
 
     log("=== STARTING WEBSOCKET CLIENT ===")
     log("")
 
-    # Run initial catchup scan
-    log("Running startup catchup scan...")
-    run_catchup_scan("startup")
+    # Immediate: dispatch existing actionable work (eliminates cold start)
+    run_startup_dispatch()
 
-    log("")
+    # Then: connect WebSocket for real-time events
     log("=== CONNECTING TO JOAN ===")
     log(f"API: {config.api_url}")
     log(f"Project: {config.project_name}")
     log("")
     log("WebSocket mode active:")
-    log(f"  - Real-time events via WebSocket")
-    log(f"  - Periodic catchup: every {config.catchup_interval}s (safety net)")
-    log(f"  - Auto-reconnect with exponential backoff")
+    log(f"  Real-time events via WebSocket")
+    log(f"  No catchup scans (state-driven startup)")
+    log(f"  Auto-reconnect with exponential backoff")
     log("")
 
     # Run async event loop

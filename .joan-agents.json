@@ -3,6 +3,13 @@
   "projectId": "2aeb0d02-5ece-4673-aa55-a42350fdac61",
   "projectName": "Joan Agents",
   "settings": {
+    "models": {
+      "ba": "haiku",
+      "architect": "opus",
+      "dev": "opus",
+      "reviewer": "opus",
+      "ops": "haiku"
+    },
     "model": "opus",
     "pollingIntervalMinutes": 5,
     "maxIdlePolls": 12,

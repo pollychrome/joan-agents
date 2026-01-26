@@ -1,7 +1,7 @@
 ---
 description: Handle BA queue - evaluate requirements, mark tasks Ready
 argument-hint: [--task=UUID] [--all] [--max=N]
-allowed-tools: Bash, Read, Task
+allowed-tools: Bash, Read, Task, mcp__joan__*, mcp__plugin_agents_joan__*
 ---
 
 # BA Handler

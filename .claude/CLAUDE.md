@@ -42,7 +42,7 @@ tag_added: Ops-Ready      → handle-ops
 
 Key Principles:
 • Outbound WebSocket connection (works through any firewall)
-• Real-time events pushed instantly; periodic catchup scans (5 min) as safety net
+• State-driven startup dispatch via actionable-tasks API; real-time events via WebSocket
 • Each handler invocation processes ONE task, stateless
 • Safe to restart client at any time without losing work
 • Run /agents:doctor for anomaly detection
@@ -143,9 +143,6 @@ Agents read from `.joan-agents.json` in project root:
     },
     "mode": "standard",
     "staleClaimMinutes": 120,
-    "websocket": {
-      "catchupIntervalSeconds": 300
-    },
     "workerTimeouts": {
       "ba": 10,
       "architect": 20,
@@ -174,14 +171,12 @@ Run `/agents:init` to generate this file interactively.
 | `model` | opus | Fallback if `models` not set |
 | `mode` | standard | `standard` (human gates) or `yolo` (autonomous) |
 | `staleClaimMinutes` | 120 | Minutes before orphaned dev claims are auto-released |
-| `websocket.catchupIntervalSeconds` | 300 | Seconds between periodic state scans |
 
 **Environment variables:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `JOAN_AUTH_TOKEN` | (required) | JWT token for WebSocket authentication |
-| `JOAN_CATCHUP_INTERVAL` | 300 | Seconds between state scans (0 to disable) |
 | `JOAN_WEBSOCKET_DEBUG` | (none) | Set to "1" for debug logging |
 
 ### Model Configuration
@@ -241,7 +236,7 @@ YOLO mode prioritizes forward progress. All decisions are logged as ALS comments
 
 ## WebSocket Client
 
-The client is **state-aware**: startup scan catches missed work, WebSocket pushes events in real-time, periodic scan (5 min) acts as safety net.
+The client is **state-aware**: startup queries the actionable-tasks API and dispatches existing work immediately, then WebSocket pushes real-time events for ongoing changes.
 
 **Starting:**
 ```bash

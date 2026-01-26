@@ -366,9 +366,6 @@ Create `.joan-agents.json` in project root with the user's selections:
     },
     "mode": "{standard|yolo}",
     "staleClaimMinutes": 120,
-    "websocket": {
-      "catchupIntervalSeconds": 300
-    },
     "workerTimeouts": {
       "ba": 10,
       "architect": 20,
@@ -397,9 +394,6 @@ Create `.joan-agents.json` in project root with the user's selections:
     "model": "{opus|sonnet|haiku}",
     "mode": "{standard|yolo}",
     "staleClaimMinutes": 120,
-    "websocket": {
-      "catchupIntervalSeconds": 300
-    },
     "workerTimeouts": {
       "ba": 10,
       "architect": 20,
@@ -434,9 +428,6 @@ Create `.joan-agents.json` in project root with the user's selections:
     },
     "mode": "{standard|yolo}",
     "staleClaimMinutes": 120,
-    "websocket": {
-      "catchupIntervalSeconds": 300
-    },
     "workerTimeouts": {
       "ba": 10,
       "architect": 20,

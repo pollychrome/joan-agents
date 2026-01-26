@@ -30,8 +30,8 @@ DEV_COUNT = config.agents.devs.count (default: 1)  # STRICT SERIAL: Must be 1
 STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes (default: 120)
 
 # WebSocket settings
-CATCHUP_INTERVAL = config.settings.websocket.catchupIntervalSeconds (default: 300)
 # Auth token is read from JOAN_AUTH_TOKEN environment variable
+API_URL = config.settings.apiUrl (default: "https://joan.nintai.app")
 
 # Worker timeout settings (in minutes)
 WORKER_TIMEOUT_BA = config.settings.workerTimeouts.ba (default: 10)
@@ -85,8 +85,9 @@ Report: "Running in {MODE} mode"
 
 Start the WebSocket client for real-time event-driven dispatch.
 
-**No Bootstrap**: The WebSocket client runs a startup catchup scan then connects. If you have existing
-tasks that need to be integrated into the workflow, run `/agents:clean-project --apply` first.
+**State-Driven Startup**: The WebSocket client queries the actionable-tasks API on startup,
+dispatches handlers for existing work immediately, then connects for real-time events.
+If you have existing tasks that need to be integrated into the workflow, run `/agents:clean-project --apply` first.
 
 ```
 # Get project name for file naming
@@ -94,7 +95,7 @@ PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 
 Report: "Starting WebSocket client for real-time event-driven dispatch"
 Report: "  Mode: {MODE}"
-Report: "  Catchup interval: {CATCHUP_INTERVAL}s"
+Report: "  Startup: state-driven (actionable-tasks API)"
 Report: ""
 Report: "NOTE: If you have existing tasks, run '/agents:clean-project --apply' first"
 Report: "      to integrate them into the workflow."
@@ -121,20 +122,13 @@ IF WebSocket client script does not exist at $WS_CLIENT_SCRIPT:
   Report: "  git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents"
   EXIT with error
 
-# Check for required JOAN_AUTH_TOKEN environment variable
-IF NOT environment variable JOAN_AUTH_TOKEN:
-  Report: "ERROR: JOAN_AUTH_TOKEN environment variable not set"
-  Report: ""
-  Report: "Set your Joan API token:"
-  Report: "  export JOAN_AUTH_TOKEN='your-jwt-token'"
-  Report: ""
-  Report: "You can get a token from the Joan web app (Profile → API Token)"
-  EXIT with error
+# Auth is handled by ws-client.py which resolves tokens from:
+# 1. JOAN_AUTH_TOKEN environment variable
+# 2. ~/.joan-mcp/credentials.json (shared with joan-mcp, auto-decrypted)
+# If neither source provides a token, ws-client.py reports the error with guidance.
 
 # Build WebSocket client arguments
 WS_CLIENT_ARGS = "--project-dir . --mode {MODE}"
-IF CATCHUP_INTERVAL:
-  WS_CLIENT_ARGS += " --catchup-interval {CATCHUP_INTERVAL}"
 
 Bash:
   command: python3 "$HOME/joan-agents/scripts/ws-client.py" {WS_CLIENT_ARGS}
@@ -143,10 +137,9 @@ Bash:
 
 # The WebSocket client will:
 # 1. Verify project config exists
-# 2. Run startup catchup scan (catches missed work while client was down)
+# 2. Query actionable-tasks API (dispatches handlers for existing work immediately)
 # 3. Connect to Joan via WebSocket (outbound connection, works through firewalls)
 # 4. Dispatch handlers as events arrive in real-time
-# 5. Run periodic catchup scans as safety net (default every 5 min)
 
 # Client exited (user stopped it)
 Report: ""
@@ -231,27 +224,104 @@ Execute one coordinator cycle, then exit:
 
 ```
 Step 0: Immediate Heartbeat & Startup Diagnostics (FIRST - before any MCP calls)
-Step 1: Cache Tags and Columns
-Step 2: Fetch Tasks
+Step 1: Query Actionable Tasks API (pre-computed queues + recovery)
+  IF fails → GOTO Legacy Queue Building (Steps 1-legacy through 3b-legacy)
+Step 1a: Cache Tags and Columns (always via MCP, needed for result execution)
+Step 1b: Handle Recovery (apply mutations from API recovery data)
 Step 2a: Update Heartbeat (for external scheduler monitoring)
-Step 2b: Recover Stale Claims (self-healing)
-Step 2c: Detect and Clean Anomalies (self-healing)
-Step 2d: Detect Stuck Workflow States (self-healing)
-Step 2e: State Machine Validation (self-healing)
+Step 3a: YOLO Mode Auto-Approval (Pre-Dispatch) [YOLO mode only]
+Step 4: Dispatch Workers (uses smart_payload from API when available)
+Step 5: Exit
+
+--- Legacy Queue Building (fallback when API unavailable) ---
+Step 1-legacy: Cache Tags and Columns
+Step 2: Fetch Tasks
+Step 2a: Update Heartbeat
+Step 2b-2e: Self-healing (stale claims, anomalies, stuck states, validation)
 Step 2f: YOLO Auto-Complete (Deploy → Done) [YOLO mode only]
 Step 3: Build Priority Queues
-Step 3-Doctor: Doctor Diagnostic Pass (if queues empty OR stale claims detected)
-Step 3a: YOLO Mode Auto-Approval (Pre-Dispatch)
+Step 3-Doctor: Doctor Diagnostic Pass
+Step 3a: YOLO Mode Auto-Approval
 Step 3b: Serial Pipeline Gate Check
-Step 4: Dispatch Workers
-Step 5: Exit
+→ Continue to Step 4
 
 EXIT (external scheduler will respawn if in loop mode)
 ```
 
 ---
 
-## Step 1: Cache Tags and Columns (once per loop iteration)
+## Step 1: Query Actionable Tasks API
+
+Query the pre-computed actionable tasks endpoint. This replaces Steps 2-3b with a single HTTP call, returning pre-built priority queues, pipeline gate status, and recovery diagnostics.
+
+```
+Report: "Step 1: Querying actionable tasks API..."
+
+# Resolve auth token (same sources as ws-client.py)
+AUTH_TOKEN = JOAN_AUTH_TOKEN env var OR token from ~/.joan-mcp/credentials.json
+
+IF NOT AUTH_TOKEN:
+  Report: "WARNING: No auth token available, using legacy MCP queue building"
+  GOTO legacy_queue_building
+
+# Build API URL
+ACTIONABLE_URL = "{API_URL}/api/v1/projects/{PROJECT_ID}/actionable-tasks"
+ACTIONABLE_URL += "?mode={MODE}&include_payloads=true&include_recovery=true"
+ACTIONABLE_URL += "&stale_claim_minutes={STALE_CLAIM_MINUTES}"
+
+# Make HTTP request
+Run bash command:
+  curl -s -f -w "\n%{http_code}" \
+    -H "Authorization: Bearer {AUTH_TOKEN}" \
+    -H "Content-Type: application/json" \
+    "{ACTIONABLE_URL}"
+
+IF request fails (non-200, timeout, connection error):
+  Report: "WARNING: Actionable tasks API unavailable ({error}), using legacy MCP queue building"
+  GOTO legacy_queue_building
+
+# Parse response
+actionable = JSON.parse(response_body)
+
+# Populate queues from API response
+BA_QUEUE = actionable.queues.ba          # [{task_id, priority, mode, handler, handler_args, smart_payload}]
+ARCHITECT_QUEUE = actionable.queues.architect
+DEV_QUEUE = actionable.queues.dev
+REVIEWER_QUEUE = actionable.queues.reviewer
+OPS_QUEUE = actionable.queues.ops
+
+# Pipeline gate from API
+PIPELINE_BLOCKED = actionable.pipeline.blocked
+IF PIPELINE_BLOCKED:
+  BLOCKING_TASK = {id: actionable.pipeline.blocking_task_id, title: actionable.pipeline.blocking_task_title}
+  BLOCKING_REASON = actionable.pipeline.blocking_reason
+  Report: "Pipeline BLOCKED: '{BLOCKING_TASK.title}' - {BLOCKING_REASON}"
+ELSE:
+  Report: "Pipeline CLEAR"
+
+# Store recovery data for Step 1b
+RECOVERY_DATA = actionable.recovery
+
+# Log summary
+summary = actionable.summary
+Report: "  Actionable: {summary.total_actionable} tasks"
+Report: "  Recovery issues: {summary.total_recovery_issues}"
+Report: "  Pipeline blocked: {summary.pipeline_blocked}"
+Report: "  Pending human action: {summary.pending_human_action}"
+Report: "  Claimed tasks: {summary.claimed_tasks}"
+Report: "  Queues: BA={BA_QUEUE.length}, Architect={ARCHITECT_QUEUE.length}, Dev={DEV_QUEUE.length}, Reviewer={REVIEWER_QUEUE.length}, Ops={OPS_QUEUE.length}"
+
+# Flag: API path succeeded, skip legacy queue building
+API_PATH = true
+
+GOTO step_1a  # Always cache tags + columns
+```
+
+---
+
+## Step 1a: Cache Tags and Columns
+
+This step always runs (both API and legacy paths). Tags and columns are needed for result execution in Step 4f.
 
 ```
 1. Fetch all project tags:
@@ -293,7 +363,70 @@ EXIT (external scheduler will respawn if in loop mode)
 
 IMPORTANT: Always use inColumn(task, "Column Name") to check columns.
 Do NOT compare task.status string - it may be out of sync with column_id.
+
+IF API_PATH:
+  GOTO step_1b  # Handle recovery from API data
+ELSE:
+  GOTO step_2   # Legacy: fetch tasks
 ```
+
+---
+
+## Step 1b: Handle Recovery (API path only)
+
+Apply recovery mutations from the API response data. The API detects issues but does NOT mutate — the coordinator applies fixes via MCP tools.
+
+```
+IF NOT RECOVERY_DATA:
+  GOTO step_2a  # Skip to heartbeat
+
+Report: "Step 1b: Applying recovery actions..."
+
+# 1b-1: Release stale claims
+FOR stale IN RECOVERY_DATA.stale_claims:
+  Report: "  Releasing stale claim on '{stale.task_title}' ({stale.claim_tag}, {stale.claim_age_minutes}m)"
+
+  IF TAG_CACHE[stale.claim_tag]:
+    mcp__joan__remove_tag_from_task(PROJECT_ID, stale.task_id, TAG_CACHE[stale.claim_tag])
+
+    mcp__joan__create_task_comment(stale.task_id,
+      "ALS/1\nactor: coordinator\naction: release-stale-claim\ntags.remove: [{stale.claim_tag}]\nsummary: Released stale claim ({stale.claim_age_minutes} min)")
+
+# 1b-2: Log anomalies (informational — API detects, human resolves complex cases)
+FOR anomaly IN RECOVERY_DATA.anomalies:
+  Report: "  ANOMALY: task {anomaly.task_id} - {anomaly.type}"
+  IF anomaly.stale_tags:
+    Report: "    Stale tags: {anomaly.stale_tags} in column: {anomaly.column}"
+
+# 1b-3: Log invalid states
+FOR invalid IN RECOVERY_DATA.invalid_states:
+  Report: "  INVALID STATE: task {invalid.task_id} - {invalid.type}"
+  Report: "    Tags: {invalid.tags}, Remediation: {invalid.remediation}"
+
+# 1b-4: Log stuck states
+FOR stuck IN RECOVERY_DATA.stuck_states:
+  Report: "  STUCK: task {stuck.task_id} in '{stuck.state}' for {stuck.age_minutes}m (threshold: {stuck.threshold_minutes}m)"
+
+recovery_total = RECOVERY_DATA.stale_claims.length + RECOVERY_DATA.anomalies.length +
+                 RECOVERY_DATA.invalid_states.length + RECOVERY_DATA.stuck_states.length
+Report: "  Recovery complete: {RECOVERY_DATA.stale_claims.length} stale claims released, {recovery_total} total issues"
+
+GOTO step_2a  # Continue to heartbeat update
+```
+
+---
+
+## Legacy Queue Building (fallback when API unavailable)
+
+**IMPORTANT:** This section only runs if Step 1 failed (API unavailable). When the API is available, Steps 1-1b handle queue building and recovery. Jump here via `GOTO legacy_queue_building`.
+
+```
+API_PATH = false
+Report: "Using legacy MCP-based queue building (API fallback)"
+GOTO step_1a  # Cache tags + columns, then step_1a routes to step_2 for legacy path
+```
+
+After Step 1a caches tags and columns, the legacy path continues here:
 
 ---
 
@@ -317,6 +450,8 @@ Always use task.column_id with the inColumn() helper.
 
 ## Step 2a: Update Heartbeat
 
+Both API and legacy paths run this step.
+
 ```
 # Get project name for heartbeat file naming (sanitize for filesystem)
 PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
@@ -325,11 +460,14 @@ Run bash command:
   echo $(date +%s) > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
 
 # Silent operation - only report if debugging
+
+IF API_PATH:
+  GOTO step_3a  # API path: skip legacy self-healing, go to YOLO auto-approval then dispatch
 ```
 
 ---
 
-## Step 2b: Recover Stale Claims
+## Step 2b: Recover Stale Claims (Legacy path only)
 
 ```
 STALE_THRESHOLD_MINUTES = STALE_CLAIM_MINUTES  # From config, default 60
@@ -373,7 +511,7 @@ Report: "Stale claim recovery complete"
 
 ---
 
-## Step 2c: Detect and Clean Anomalies
+## Step 2c: Detect and Clean Anomalies (Legacy path only)
 
 ```
 WORKFLOW_TAGS = ["Review-Approved", "Ops-Ready", "Plan-Approved", "Planned",
@@ -454,7 +592,7 @@ Report: "Anomaly detection complete"
 
 ---
 
-## Step 2d: Detect Stuck Workflow States
+## Step 2d: Detect Stuck Workflow States (Legacy path only)
 
 ```
 STUCK_THRESHOLD_MINUTES = STUCK_STATE_MINUTES  # From config, default 120
@@ -551,7 +689,7 @@ ELSE:
 
 ---
 
-## Step 2e: State Machine Validation
+## Step 2e: State Machine Validation (Legacy path only)
 
 ```
 # Define invalid tag combinations that should never coexist
@@ -673,7 +811,7 @@ ELSE:
 
 ---
 
-## Step 2f: YOLO Auto-Complete (Deploy → Done)
+## Step 2f: YOLO Auto-Complete (Deploy → Done) (Legacy path only)
 
 ```
 IF MODE == "yolo":
@@ -703,7 +841,7 @@ IF MODE == "yolo":
 
 ---
 
-## Step 3: Build Priority Queues
+## Step 3: Build Priority Queues (Legacy path only)
 
 Build queues in priority order. Each task goes into AT MOST one queue.
 
@@ -784,7 +922,7 @@ Report queue sizes:
 
 ---
 
-## Step 3-Doctor: Doctor Diagnostic Pass
+## Step 3-Doctor: Doctor Diagnostic Pass (Legacy path only)
 
 ```
 # Trigger conditions: empty queues with work, stale claims, or stuck tasks
@@ -1020,8 +1158,10 @@ IF DOCTOR_TRIGGERED:
 
 ## Step 3a: YOLO Mode Auto-Approval (Pre-Dispatch)
 
-In YOLO mode, auto-approve any pending approvals BEFORE dispatch begins.
+Both API and legacy paths run this step. In YOLO mode, auto-approve any pending approvals BEFORE dispatch begins.
 This handles both fresh approvals (just added this cycle) and stale approvals (from previous cycles).
+
+**Note:** In the API path, the task list is not fetched locally. The API response includes queue items that may need auto-approval. For YOLO, the API pre-applies approvals server-side, but this step catches edge cases where approvals were added between the API call and dispatch.
 
 ```
 IF MODE == "yolo":
@@ -1071,7 +1211,7 @@ IF MODE == "yolo":
 
 ---
 
-## Step 3b: Serial Pipeline Gate Check
+## Step 3b: Serial Pipeline Gate Check (Legacy path only)
 
 ```
 PIPELINE_BLOCKED = false
@@ -1155,6 +1295,10 @@ ELSE:
 ---
 
 ## Step 4: Dispatch Workers
+
+Both API and legacy paths converge here. Queue items may contain `smart_payload` (API path) or just `task` objects (legacy path).
+
+**Smart Payload Optimization (API path):** When `item.smart_payload` is present, use it directly as the work package base instead of making separate `mcp__joan__get_task()` + `mcp__joan__list_task_comments()` calls. This saves 2 MCP calls per dispatched task.
 
 ```
 DISPATCHED = 0
@@ -1333,6 +1477,68 @@ def format_invoke_comment(invocation):
 
   RETURN "\n".join(lines)
 
+# Helper: Build work package from smart_payload or MCP fallback
+def build_work_package(item, worker_type, MODE, PROJECT_ID, PROJECT_NAME, COLUMN_CACHE):
+  """
+  When item.smart_payload exists (API path), use it directly.
+  Otherwise, fetch via MCP (legacy path).
+  """
+  IF item.smart_payload:
+    # API path: smart_payload already contains filtered task data
+    sp = item.smart_payload
+    task_id = item.task_id OR item.task.id
+    work_package = {
+      "task_id": task_id,
+      "task_title": sp.task_title,
+      "task_description": sp.task_description || "",
+      "task_tags": sp.task_tags || [],
+      "task_column": sp.task_column || "",
+      "task_comments": sp.recent_comments || [],
+      "subtasks": sp.subtasks || [],
+      "handoff_context": sp.handoff_context || null,
+      "rework_feedback": sp.rework_feedback || null,
+      "mode": item.mode,
+      "workflow_mode": MODE,
+      "project_id": PROJECT_ID,
+      "project_name": PROJECT_NAME,
+      "previous_stage_context": sp.handoff_context
+    }
+    RETURN work_package
+
+  ELSE:
+    # Legacy path: fetch via MCP
+    task_id = item.task.id
+    full_task = mcp__joan__get_task(task_id)
+    task_comments = mcp__joan__list_task_comments(task_id)
+    task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
+
+    # Extract previous stage context if applicable
+    previous_stage_context = null
+    IF worker_type == "architect":
+      previous_stage_context = extract_stage_context_from_comments(task_comments, "ba", "architect")
+    ELIF worker_type == "dev":
+      expected_from = (item.mode == "rework" OR item.mode == "conflict") ? "reviewer" : "architect"
+      previous_stage_context = extract_stage_context_from_comments(task_comments, expected_from, "dev")
+    ELIF worker_type == "reviewer":
+      previous_stage_context = extract_stage_context_from_comments(task_comments, "dev", "reviewer")
+    ELIF worker_type == "ops":
+      previous_stage_context = extract_stage_context_from_comments(task_comments, "reviewer", "ops")
+
+    work_package = {
+      "task_id": full_task.id,
+      "task_title": full_task.title,
+      "task_description": full_task.description || "",
+      "task_tags": extract_tag_names(full_task.tags),
+      "task_column": task_column_name,
+      "task_comments": task_comments,
+      "mode": item.mode,
+      "workflow_mode": MODE,
+      "project_id": PROJECT_ID,
+      "project_name": PROJECT_NAME,
+      "previous_stage_context": previous_stage_context
+    }
+    RETURN work_package
+
 # 4a: Dispatch BA workers (drain queue)
 MAX_BA_TASKS_PER_CYCLE = config.settings.pipeline.maxBaTasksPerCycle OR 10
 BA_DRAINING_ENABLED = config.settings.pipeline.baQueueDraining OR true
@@ -1348,28 +1554,8 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
     WHILE BA_QUEUE.length > 0 AND ba_count < MAX_BA_TASKS_PER_CYCLE:
       item = BA_QUEUE.shift()
 
-      # EXPLICIT WORK PACKAGE BUILDING (not pseudocode - actual MCP calls)
-      # Fetch full task details via MCP
-      full_task = mcp__joan__get_task(item.task.id)
-      task_comments = mcp__joan__list_task_comments(item.task.id)
-
-      # Get column name from COLUMN_CACHE
-      task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
-
-      # Build work package JSON
-      work_package = {
-        "task_id": full_task.id,
-        "task_title": full_task.title,
-        "task_description": full_task.description || "",
-        "task_tags": extract_tag_names(full_task.tags),
-        "task_column": task_column_name,
-        "task_comments": task_comments,
-        "mode": item.mode,
-        "workflow_mode": MODE,  // "standard" or "yolo"
-        "project_id": PROJECT_ID,
-        "project_name": PROJECT_NAME,
-        "previous_stage_context": null  // BA is first stage
-      }
+      # Build work package (uses smart_payload if available, MCP fallback otherwise)
+      work_package = build_work_package(item, "ba", MODE, PROJECT_ID, PROJECT_NAME, COLUMN_CACHE)
 
       Report: "BA [{ba_count + 1}/{MAX_BA_TASKS_PER_CYCLE}] Dispatching for '{item.task.title}' (mode: {item.mode})"
 
@@ -1432,24 +1618,8 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
     # Legacy single-task mode (for debugging or if draining disabled)
     item = BA_QUEUE.shift()
 
-    # EXPLICIT WORK PACKAGE BUILDING
-    full_task = mcp__joan__get_task(item.task.id)
-    task_comments = mcp__joan__list_task_comments(item.task.id)
-    task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
-
-    work_package = {
-      "task_id": full_task.id,
-      "task_title": full_task.title,
-      "task_description": full_task.description || "",
-      "task_tags": extract_tag_names(full_task.tags),
-      "task_column": task_column_name,
-      "task_comments": task_comments,
-      "mode": item.mode,
-      "workflow_mode": MODE,  // "standard" or "yolo"
-      "project_id": PROJECT_ID,
-      "project_name": PROJECT_NAME,
-      "previous_stage_context": null
-    }
+    # Build work package (uses smart_payload if available, MCP fallback otherwise)
+    work_package = build_work_package(item, "ba", MODE, PROJECT_ID, PROJECT_NAME, COLUMN_CACHE)
 
     Report: "Dispatching BA worker for '{item.task.title}' (mode: {item.mode})"
     worker_dispatch_start = Date.now()
@@ -1496,27 +1666,8 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
   Report: "=== PHASE 2: ARCHITECT (1 task) ==="
   item = ARCHITECT_QUEUE.shift()  # Take first (oldest) Ready task
 
-  # EXPLICIT WORK PACKAGE BUILDING
-  full_task = mcp__joan__get_task(item.task.id)
-  task_comments = mcp__joan__list_task_comments(item.task.id)
-  task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
-
-  # Extract previous stage context (BA → Architect handoff)
-  previous_stage_context = extract_stage_context_from_comments(task_comments, "ba", "architect")
-
-  work_package = {
-    "task_id": full_task.id,
-    "task_title": full_task.title,
-    "task_description": full_task.description || "",
-    "task_tags": extract_tag_names(full_task.tags),
-    "task_column": task_column_name,
-    "task_comments": task_comments,
-    "mode": item.mode,
-    "workflow_mode": MODE,  // "standard" or "yolo"
-    "project_id": PROJECT_ID,
-    "project_name": PROJECT_NAME,
-    "previous_stage_context": previous_stage_context
-  }
+  # Build work package (uses smart_payload if available, MCP fallback otherwise)
+  work_package = build_work_package(item, "architect", MODE, PROJECT_ID, PROJECT_NAME, COLUMN_CACHE)
 
   Report: "Dispatching Architect worker for '{item.task.title}' (mode: {item.mode})"
   worker_dispatch_start = Date.now()
@@ -1576,29 +1727,9 @@ IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
     updated_task = mcp__joan__get_task(task.id)
 
     IF claim verified (Claimed-Dev-{dev_id} tag present):
-      # EXPLICIT WORK PACKAGE BUILDING
-      full_task = mcp__joan__get_task(task.id)
-      task_comments = mcp__joan__list_task_comments(task.id)
-      task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
-
-      # Extract previous stage context (Architect → Dev or Reviewer → Dev for rework)
-      expected_from = (item.mode == "rework" OR item.mode == "conflict") ? "reviewer" : "architect"
-      previous_stage_context = extract_stage_context_from_comments(task_comments, expected_from, "dev")
-
-      work_package = {
-        "task_id": full_task.id,
-        "task_title": full_task.title,
-        "task_description": full_task.description || "",
-        "task_tags": extract_tag_names(full_task.tags),
-        "task_column": task_column_name,
-        "task_comments": task_comments,
-        "mode": item.mode,
-        "workflow_mode": MODE,  // "standard" or "yolo"
-        "project_id": PROJECT_ID,
-        "project_name": PROJECT_NAME,
-        "dev_id": dev_id,
-        "previous_stage_context": previous_stage_context
-      }
+      # Build work package (uses smart_payload if available, MCP fallback otherwise)
+      work_package = build_work_package(item, "dev", MODE, PROJECT_ID, PROJECT_NAME, COLUMN_CACHE)
+      work_package.dev_id = dev_id  # Add dev_id to work package
 
       Report: "Dispatching Dev worker for '{task.title}' (mode: {item.mode})"
       worker_dispatch_start = Date.now()
@@ -1659,27 +1790,8 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
   Report: "=== PHASE 2: REVIEW (1 task) ==="
   item = REVIEWER_QUEUE.shift()
 
-  # EXPLICIT WORK PACKAGE BUILDING
-  full_task = mcp__joan__get_task(item.task.id)
-  task_comments = mcp__joan__list_task_comments(item.task.id)
-  task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
-
-  # Extract previous stage context (Dev → Reviewer handoff)
-  previous_stage_context = extract_stage_context_from_comments(task_comments, "dev", "reviewer")
-
-  work_package = {
-    "task_id": full_task.id,
-    "task_title": full_task.title,
-    "task_description": full_task.description || "",
-    "task_tags": extract_tag_names(full_task.tags),
-    "task_column": task_column_name,
-    "task_comments": task_comments,
-    "mode": "review",
-    "workflow_mode": MODE,  // "standard" or "yolo"
-    "project_id": PROJECT_ID,
-    "project_name": PROJECT_NAME,
-    "previous_stage_context": previous_stage_context
-  }
+  # Build work package (uses smart_payload if available, MCP fallback otherwise)
+  work_package = build_work_package(item, "reviewer", MODE, PROJECT_ID, PROJECT_NAME, COLUMN_CACHE)
 
   Report: "Dispatching Reviewer worker for '{item.task.title}'"
   worker_dispatch_start = Date.now()
@@ -1726,27 +1838,8 @@ IF OPS_ENABLED AND OPS_QUEUE.length > 0:
   Report: "=== PHASE 2: OPS (1 task, unlocks pipeline) ==="
   item = OPS_QUEUE.shift()
 
-  # EXPLICIT WORK PACKAGE BUILDING
-  full_task = mcp__joan__get_task(item.task.id)
-  task_comments = mcp__joan__list_task_comments(item.task.id)
-  task_column_name = get_column_name_from_cache(full_task.column_id, COLUMN_CACHE)
-
-  # Extract previous stage context (Reviewer → Ops handoff)
-  previous_stage_context = extract_stage_context_from_comments(task_comments, "reviewer", "ops")
-
-  work_package = {
-    "task_id": full_task.id,
-    "task_title": full_task.title,
-    "task_description": full_task.description || "",
-    "task_tags": extract_tag_names(full_task.tags),
-    "task_column": task_column_name,
-    "task_comments": task_comments,
-    "mode": item.mode,
-    "workflow_mode": MODE,  // "standard" or "yolo"
-    "project_id": PROJECT_ID,
-    "project_name": PROJECT_NAME,
-    "previous_stage_context": previous_stage_context
-  }
+  # Build work package (uses smart_payload if available, MCP fallback otherwise)
+  work_package = build_work_package(item, "ops", MODE, PROJECT_ID, PROJECT_NAME, COLUMN_CACHE)
 
   Report: "Dispatching Ops worker for '{item.task.title}' (mode: {item.mode})"
   worker_dispatch_start = Date.now()

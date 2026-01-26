@@ -1,7 +1,7 @@
 ---
 description: Handle Reviewer queue - code review, approve or request rework
 argument-hint: [--task=UUID] [--all]
-allowed-tools: Bash, Read, Task
+allowed-tools: Bash, Read, Task, mcp__joan__*, mcp__plugin_agents_joan__*
 ---
 
 # Reviewer Handler

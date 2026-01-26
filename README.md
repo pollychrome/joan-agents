@@ -176,9 +176,6 @@ Created by `/agents:init` at `.joan-agents.json`:
     },
     "mode": "standard",
     "staleClaimMinutes": 120,
-    "websocket": {
-      "catchupIntervalSeconds": 300
-    },
     "workerTimeouts": {
       "ba": 10,
       "architect": 20,
@@ -213,9 +210,9 @@ Created by `/agents:init` at `.joan-agents.json`:
 The system uses real-time WebSocket events instead of polling. The coordinator connects outbound to Joan, receives events instantly, and dispatches focused single-pass handlers.
 
 ```
-Joan Backend ──WebSocket──► ws-client.py ──► claude /agents:dispatch/handle-*
-                                  │
-                           Periodic catchup scan (5 min safety net)
+                              ┌── Startup: actionable-tasks API → dispatch existing work
+ws-client.py ─────────────────┤
+                              └── Runtime: WebSocket events → dispatch new work
 ```
 
 Each handler processes ONE task, is stateless, and checks Joan state on invocation.
