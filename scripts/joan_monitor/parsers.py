@@ -299,11 +299,13 @@ def parse_webhook_log_stats(log_file: Path) -> dict:
         "tasks_completed": 0,
         "recent_events": [],
         "handlers_by_type": {},
-        "catchup": {
-            "in_progress": False,
-            "started_at": None,
-            "last_completed_at": None,
-            "last_scan": None,
+        "startup": {
+            "total_actionable": 0,
+            "recovery_issues": 0,
+            "pending_human": 0,
+            "pipeline_blocked": False,
+            "pipeline_reason": "",
+            "dispatched": 0,
         },
     }
 
@@ -368,83 +370,41 @@ def parse_webhook_log_stats(log_file: Path) -> dict:
             ):
                 stats["tasks_completed"] += 1
 
-            # CATCHUP messages — track scan lifecycle
-            if "CATCHUP" in line and "Dispatch started" in line:
-                if timestamp:
-                    stats["catchup"]["started_at"] = timestamp
-                    stats["last_event"] = timestamp
-            elif "Single-pass dispatch complete" in line:
-                if timestamp:
-                    stats["catchup"]["last_completed_at"] = timestamp
-                    stats["last_event"] = timestamp
+            # STARTUP dispatch messages — parse actionable-tasks API results
+            if "STARTUP:" in line:
+                startup_msg = line.split("STARTUP:", 1)[1].strip()
 
-            # [dispatch] lines — parse coordinator summary output
-            if "[dispatch]" in line:
-                dispatch_msg = line.split("[dispatch]", 1)[1].strip()
-
-                # Queue counts: "BA:               0" or "Architect:        4 (processed 1)"
-                queue_match = re.match(
-                    r"(BA|Architect|Dev|Reviewer|Ops):\s+(\d+)", dispatch_msg
+                # Summary: "3 actionable, 0 recovery issues, 1 pending human action"
+                summary_match = re.search(
+                    r"(\d+) actionable.*?(\d+) recovery issues.*?(\d+) pending human",
+                    startup_msg,
                 )
-                if queue_match:
-                    if stats["catchup"]["last_scan"] is None:
-                        stats["catchup"]["last_scan"] = {}
-                    queues = stats["catchup"]["last_scan"].setdefault("queues", {})
-                    queues[queue_match.group(1)] = int(queue_match.group(2))
+                if summary_match:
+                    stats["startup"]["total_actionable"] = int(summary_match.group(1))
+                    stats["startup"]["recovery_issues"] = int(summary_match.group(2))
+                    stats["startup"]["pending_human"] = int(summary_match.group(3))
 
-                # Tasks scanned
-                scanned_match = re.match(r"Tasks scanned:\s+(\d+)", dispatch_msg)
-                if scanned_match:
-                    if stats["catchup"]["last_scan"] is None:
-                        stats["catchup"]["last_scan"] = {}
-                    stats["catchup"]["last_scan"]["tasks_scanned"] = int(
-                        scanned_match.group(1)
-                    )
+                # Pipeline blocked: "Pipeline BLOCKED: 'task name' - reason"
+                if "Pipeline BLOCKED:" in startup_msg:
+                    stats["startup"]["pipeline_blocked"] = True
+                    reason_match = re.search(r"Pipeline BLOCKED:\s*(.+)", startup_msg)
+                    if reason_match:
+                        stats["startup"]["pipeline_reason"] = reason_match.group(1)
 
-                # Pipeline gate
-                gate_match = re.match(r"Pipeline gate:\s+(\w+)", dispatch_msg)
-                if gate_match:
-                    if stats["catchup"]["last_scan"] is None:
-                        stats["catchup"]["last_scan"] = {}
-                    stats["catchup"]["last_scan"]["pipeline_gate"] = gate_match.group(1)
-
-                # Dispatched workers
-                dispatched_match = re.match(r"Dispatched:\s+(\d+)", dispatch_msg)
+                # Dispatched count: "Dispatched 3 handler(s)"
+                dispatched_match = re.search(r"Dispatched (\d+) handler", startup_msg)
                 if dispatched_match:
-                    if stats["catchup"]["last_scan"] is None:
-                        stats["catchup"]["last_scan"] = {}
-                    stats["catchup"]["last_scan"]["dispatched"] = int(
-                        dispatched_match.group(1)
-                    )
+                    stats["startup"]["dispatched"] = int(dispatched_match.group(1))
 
-                # Self-healing stats
-                for key, label in [
-                    ("stale_claims", "Stale claims"),
-                    ("anomalies", "Anomalies"),
-                    ("stuck_states", "Stuck states"),
-                    ("invalid_states", "Invalid states"),
-                ]:
-                    heal_match = re.match(
-                        rf"{label}:\s+(\d+)", dispatch_msg
-                    )
-                    if heal_match:
-                        if stats["catchup"]["last_scan"] is None:
-                            stats["catchup"]["last_scan"] = {}
-                        healing = stats["catchup"]["last_scan"].setdefault(
-                            "self_healing", {}
+                # Individual handler dispatches count toward handlers_dispatched
+                if "Dispatching" in startup_msg:
+                    stats["handlers_dispatched"] += 1
+                    handler_match = re.search(r"Dispatching (handle-\w+)", startup_msg)
+                    if handler_match:
+                        handler_type = handler_match.group(1).replace("handle-", "").capitalize()
+                        stats["handlers_by_type"][handler_type] = (
+                            stats["handlers_by_type"].get(handler_type, 0) + 1
                         )
-                        healing[key] = int(heal_match.group(1))
-
-                # Pending human action
-                pending_match = re.match(
-                    r"(\d+) tasks? awaiting human action", dispatch_msg
-                )
-                if pending_match:
-                    if stats["catchup"]["last_scan"] is None:
-                        stats["catchup"]["last_scan"] = {}
-                    stats["catchup"]["last_scan"]["pending_human"] = int(
-                        pending_match.group(1)
-                    )
 
             # Build recent events list
             if any(
@@ -454,9 +414,10 @@ def parse_webhook_log_stats(log_file: Path) -> dict:
                     "Received event:",
                     "Webhook received:",
                     "Event received:",
+                    "Smart event:",
                     "completed",
                     "error",
-                    "CATCHUP",
+                    "STARTUP:",
                     "Handler",
                 ]
             ):
@@ -466,15 +427,6 @@ def parse_webhook_log_stats(log_file: Path) -> dict:
                     )
 
         stats["recent_events"] = stats["recent_events"][-20:]
-
-        # Determine if catchup scan is in progress
-        catchup = stats["catchup"]
-        if catchup["started_at"]:
-            if (
-                catchup["last_completed_at"] is None
-                or catchup["started_at"] > catchup["last_completed_at"]
-            ):
-                catchup["in_progress"] = True
 
     except Exception:
         pass
@@ -606,10 +558,19 @@ def parse_worker_activity(worker_log: Path) -> dict:
             if not line:
                 continue
 
+            # Handle both timestamp formats:
+            # [2026-01-26 12:28:32] [Dev] [PROGRESS] message  (brackets, space)
+            # [2026-01-26T12:28:32] [Dev] [PROGRESS] message  (brackets, T-separator)
+            # 2026-01-26 12:28:32 [Dev] [PROGRESS] message    (no brackets)
             match = re.match(
-                r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[(\w+)\] \[(\w+)\] (.+)",
+                r"\[(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})\] \[(\w+)\] \[(\w+)\] (.+)",
                 line,
             )
+            if not match:
+                match = re.match(
+                    r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}) \[(\w+)\] \[(\w+)\] (.+)",
+                    line,
+                )
             if match:
                 timestamp_str = match.group(1)
                 worker_type = match.group(2)
@@ -617,7 +578,8 @@ def parse_worker_activity(worker_log: Path) -> dict:
                 message = match.group(4)
 
                 try:
-                    timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    # Handle both space and T separators
+                    timestamp = datetime.fromisoformat(timestamp_str.replace(" ", "T"))
                 except Exception:
                     timestamp = datetime.now()
 

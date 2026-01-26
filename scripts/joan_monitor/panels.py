@@ -70,18 +70,9 @@ def generate_global_table(instances: dict) -> Table:
             mode_str = "[green]\u26a1[/green]"
             events_str = str(stats.get("events_received", 0))
             active_count = len(stats.get("active_workers", []))
-            catchup = stats.get("catchup", {})
             if active_count > 0:
                 status = f"\U0001f504 {active_count} worker{'s' if active_count > 1 else ''}"
                 status_style = "green"
-            elif catchup.get("in_progress"):
-                scan_start = catchup.get("started_at")
-                if scan_start:
-                    elapsed_s = int((now - scan_start).total_seconds())
-                    status = f"\U0001f50d Scanning ({elapsed_s}s)"
-                else:
-                    status = "\U0001f50d Scanning"
-                status_style = "cyan"
             else:
                 last_event = stats.get("last_event")
                 if last_event:
@@ -155,23 +146,31 @@ def get_combined_recent_logs(instances: dict, lines: int = 8) -> Text:
             with open(log_file, "r") as f:
                 recent_lines = f.readlines()[-20:]
             for line in recent_lines:
+                # Handle both timestamp formats:
+                # [2026-01-26 12:28:32] and [2026-01-26T12:28:32]
                 ts_match = re.match(
-                    r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]", line
+                    r"\[(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})\]", line
                 )
                 if ts_match:
-                    timestamp = datetime.strptime(
-                        ts_match.group(1), "%Y-%m-%d %H:%M:%S"
-                    )
+                    try:
+                        ts_str = ts_match.group(1).replace(" ", "T")
+                        timestamp = datetime.fromisoformat(ts_str)
+                    except Exception:
+                        continue
                     if any(
                         keyword in line
                         for keyword in [
                             "worker",
                             "Cycle",
                             "dispatched",
+                            "Dispatching",
                             "completed",
                             "Idle",
                             "Starting",
                             "Shutdown",
+                            "STARTUP",
+                            "Smart event",
+                            "Event received",
                         ]
                     ):
                         all_logs.append(
@@ -283,13 +282,6 @@ def generate_pipeline_visual(
 
     pipeline_state = stats.get("pipeline_state", {})
 
-    # In webhook mode, use catchup scan queue counts as pipeline state
-    catchup = stats.get("catchup", {})
-    last_scan = catchup.get("last_scan") or {}
-    scan_queues = last_scan.get("queues", {})
-    if not pipeline_state and scan_queues:
-        pipeline_state = {stage: scan_queues.get(stage, 0) for stage in PIPELINE_STAGES}
-
     if not active_stage and pipeline_state:
         waiting_stages = pipeline_state
         for stage in reversed(PIPELINE_STAGES):
@@ -387,35 +379,24 @@ def generate_pipeline_visual(
             text.append("  \U0001f3e5 DOCTOR ", "bold red")
         text.append(" Diagnosing issues...", "red")
 
-    # Catchup scan indicator
-    catchup_in_progress = catchup.get("in_progress", False)
-    if catchup_in_progress:
+    # Pipeline blocked indicator from startup dispatch
+    startup = stats.get("startup", {})
+    if startup.get("pipeline_blocked") and not is_actively_working:
         text.append("\n\n  ")
-        scan_started = catchup.get("started_at")
         if blink_state:
-            text.append("  \U0001f50d SCANNING ", "bold bright_cyan on blue")
+            text.append("  \u26d4 BLOCKED ", "bold bright_yellow on red")
         else:
-            text.append("  \U0001f50d SCANNING ", "bold cyan")
-        text.append(" Catchup scan running", "cyan")
-        if scan_started:
-            elapsed = datetime.now() - scan_started
-            text.append(f" ({format_duration(elapsed)})", "dim")
-    elif not is_actively_working and not active_stage and last_scan:
-        # No active work — show last scan summary
-        gate = last_scan.get("pipeline_gate", "")
-        dispatched = last_scan.get("dispatched", 0)
-        tasks_scanned = last_scan.get("tasks_scanned", 0)
-        pending = last_scan.get("pending_human", 0)
+            text.append("  \u26d4 BLOCKED ", "bold yellow")
+        reason = startup.get("pipeline_reason", "")
+        if reason:
+            text.append(f" {reason[:60]}", "yellow")
+
+    # Startup dispatch summary when idle
+    elif not is_actively_working and not active_stage and startup.get("dispatched", 0) > 0:
         text.append("\n\n  ")
-        text.append("  Last scan: ", "dim")
-        text.append(f"{tasks_scanned} tasks", "dim")
-        if dispatched:
-            text.append(f", {dispatched} dispatched", "dim green")
-        if gate:
-            gate_style = "dim yellow" if gate == "BLOCKED" else "dim green"
-            text.append(f", gate {gate}", gate_style)
-        if pending:
-            text.append(f", {pending} awaiting human", "dim yellow")
+        text.append(f"  Startup: {startup['dispatched']} dispatched", "dim green")
+        if startup.get("pending_human", 0) > 0:
+            text.append(f", {startup['pending_human']} awaiting human", "dim yellow")
 
     return text
 
@@ -447,10 +428,16 @@ def get_worker_progress_content(
             if not line:
                 continue
 
+            # Handle both timestamp formats (brackets + T or space, no brackets)
             match = re.match(
-                r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[(\w+)\] \[(\w+)\] (.+)",
+                r"\[(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})\] \[(\w+)\] \[(\w+)\] (.+)",
                 line,
             )
+            if not match:
+                match = re.match(
+                    r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}) \[(\w+)\] \[(\w+)\] (.+)",
+                    line,
+                )
             if match:
                 timestamp_str = match.group(1)
                 event_worker = match.group(2)
@@ -461,7 +448,7 @@ def get_worker_progress_content(
                     continue
 
                 try:
-                    timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    timestamp = datetime.fromisoformat(timestamp_str.replace(" ", "T"))
                 except Exception:
                     timestamp = now
 
@@ -899,42 +886,28 @@ def generate_project_layout(
     else:
         stats_table.add_row("Cycle", str(stats.get("cycle", 0)))
         stats_table.add_row("Idle", f"{stats.get('idle_count', 0)}/{stats.get('max_idle', 12)}")
+        stats_table.add_row("Workers Dispatched", str(stats.get("workers_dispatched", 0)))
         if stats.get("last_poll"):
             elapsed = (now - stats["last_poll"]).total_seconds()
             stats_table.add_row("Last Poll", f"{int(elapsed)}s ago")
 
     stats_table.add_row("Tasks Completed", str(stats.get("tasks_completed", 0)))
-    stats_table.add_row("Workers Dispatched", str(stats.get("workers_dispatched", 0)))
 
     if stats.get("started_at"):
         runtime = now - stats["started_at"]
         stats_table.add_row("Runtime", format_duration(runtime))
 
-    # Catchup scan info
-    catchup = stats.get("catchup", {})
-    last_scan = catchup.get("last_scan") or {}
-    if catchup.get("in_progress"):
-        scan_start = catchup.get("started_at")
-        if scan_start:
-            elapsed_s = int((now - scan_start).total_seconds())
-            stats_table.add_row("Scan", f"[cyan]Running ({elapsed_s}s)[/cyan]")
-        else:
-            stats_table.add_row("Scan", "[cyan]Running[/cyan]")
-    elif last_scan:
-        gate = last_scan.get("pipeline_gate", "")
-        if gate:
-            gate_style = "yellow" if gate == "BLOCKED" else "green"
-            stats_table.add_row("Pipeline Gate", f"[{gate_style}]{gate}[/{gate_style}]")
-        scan_queues = last_scan.get("queues", {})
-        if scan_queues:
-            active_queues = [
-                f"{s}:{scan_queues[s]}" for s in PIPELINE_STAGES if scan_queues.get(s, 0) > 0
-            ]
-            if active_queues:
-                stats_table.add_row("Queues", " ".join(active_queues))
-        pending = last_scan.get("pending_human", 0)
-        if pending:
-            stats_table.add_row("Human Action", f"[yellow]{pending} pending[/yellow]")
+    # Startup dispatch info (websocket mode)
+    startup = stats.get("startup", {})
+    if startup.get("total_actionable", 0) > 0 or startup.get("dispatched", 0) > 0:
+        stats_table.add_row(
+            "Startup",
+            f"{startup.get('dispatched', 0)} dispatched / {startup.get('total_actionable', 0)} actionable",
+        )
+    if startup.get("pipeline_blocked"):
+        stats_table.add_row("Pipeline", "[yellow]BLOCKED[/yellow]")
+    if startup.get("pending_human", 0) > 0:
+        stats_table.add_row("Human Action", f"[yellow]{startup['pending_human']} pending[/yellow]")
 
     layout["stats"].update(Panel(stats_table, title="Stats", border_style="green"))
 

@@ -27,13 +27,13 @@ from rich.text import Text
 
 
 STARTUP_BANNER = r"""
-     ██╗ ██████╗  █████╗ ███╗   ██╗
-     ██║██╔═══██╗██╔══██╗████╗  ██║
-     ██║██║   ██║███████║██╔██╗ ██║
-██   ██║██║   ██║██╔══██║██║╚██╗██║
-╚█████╔╝╚██████╔╝██║  ██║██║ ╚████║
- ╚════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝
-        A G E N T S
+     _  ___    _    _   _
+    | |/ _ \  / \  | \ | |
+ _  | | | | |/ _ \ |  \| |
+| |_| | |_| / ___ \| |\  |
+ \___/ \___/_/   \_\_| \_|
+
+       A G E N T S
 """
 
 
@@ -71,7 +71,7 @@ class EffectManager:
     def _play_tte_startup(self):
         """TTE Decrypt effect on ASCII art banner."""
         try:
-            effect = Decrypt(STARTUP_BANNER.strip())
+            effect = Decrypt(STARTUP_BANNER.strip("\n"))
             effect.effect_config.final_gradient_frames = 5
             with effect.terminal_output() as terminal:
                 for frame in effect:
@@ -82,7 +82,7 @@ class EffectManager:
 
     def _play_rich_startup(self):
         """Rich fallback: styled banner panel."""
-        banner = Text(STARTUP_BANNER.strip(), style="bold cyan")
+        banner = Text(STARTUP_BANNER.strip("\n"), style="bold cyan")
         self.console.print(
             Panel(banner, border_style="cyan", title="Starting Dashboard")
         )
