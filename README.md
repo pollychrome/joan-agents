@@ -1,10 +1,57 @@
-# Joan Multi-Agent Orchestration System (v4.7)
+# Joan Multi-Agent Orchestration System
 
 A multi-agent system that automates software development workflows using Claude Code. Agents handle requirements analysis, architecture planning, implementation, code review, and deployment—all orchestrated through your Joan project board.
 
 ---
 
-## 🚀 Quick Start (5 Minutes)
+## Why Joan Agents?
+
+Claude Code is excellent at implementing tasks when you sit with it, describe what you want, and iterate interactively. Joan Agents solves a different problem: **what if you want Claude to autonomously process a backlog of work without you in the loop?**
+
+### The Problem
+
+With vanilla Claude Code, you are the orchestrator. You decide what to work on next, you review the output, you tell it to move on. This works well for single tasks but breaks down when you have 10, 20, or 50 tasks on a board and want them executed with consistent quality while you do something else.
+
+Running multiple Claude Code sessions in parallel creates its own problems: merge conflicts, stale plans built against code another session already changed, no shared understanding of what's in flight, and no structured handoffs between phases of work.
+
+### What Joan Agents Adds
+
+| Concern | Claude Code alone | With Joan Agents |
+|---------|------------------|------------------|
+| **Task selection** | You pick what to work on | Agents pull from your Kanban board automatically |
+| **Quality pipeline** | You review everything | BA validates requirements → Architect plans → Dev implements → Reviewer gates → Ops merges |
+| **Merge safety** | You manage branches | Strict serial pipeline: one task through Dev→Review→Merge at a time, zero conflicts |
+| **Context between phases** | Lost between sessions | Structured handoffs carry decisions, files, and warnings between agents |
+| **Progress visibility** | You watch the terminal | Joan board updates in real-time; `joan status` dashboard costs zero tokens |
+| **Failure recovery** | You restart manually | Self-healing: stale claims released, stuck states detected, doctor agent for diagnostics |
+| **Human gates** | Always required | Standard mode: approve plans + merges. YOLO mode: fully autonomous |
+| **Cost control** | Tokens consumed while idle | WebSocket events: zero tokens when no work; per-worker model selection (haiku for simple tasks) |
+
+### When to Use Joan Agents
+
+**Good fit:**
+- You have a backlog of well-defined tasks and want them executed autonomously
+- You want structured code review and quality gates without manual oversight
+- You're building a product incrementally and want a predictable pipeline
+- You want to prototype rapidly in YOLO mode, then tighten controls for production
+
+**Not the right tool:**
+- You're doing one-off exploratory work (just use Claude Code directly)
+- You want real-time pair programming (Claude Code is better for that)
+- Your tasks are highly interdependent and can't be serialized
+- You don't have a Joan project board set up
+
+### Tradeoffs
+
+**What you gain:** Autonomous execution, consistent quality pipeline, merge safety, audit trail, structured handoffs, cost optimization, failure recovery.
+
+**What you trade:** Setup overhead (init, board config, tags), serial throughput (one task at a time through dev→review→merge), token cost for the pipeline stages themselves, less direct control over implementation decisions (though YOLO vs standard mode lets you tune this).
+
+The system is opinionated about workflow: tasks go through BA → Architect → Dev → Reviewer → Ops in order. If your workflow is fundamentally different, the agent pipeline may not fit.
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
@@ -14,7 +61,7 @@ A multi-agent system that automates software development workflows using Claude 
 | **Git** | 2.x+ with push access to your repository |
 | **Joan Account** | With a project created and Joan MCP server configured |
 
-> **Joan MCP**: The agents communicate with Joan via MCP. Ensure your Joan MCP server is configured in `~/.claude/mcp.json` before proceeding.
+> **Joan MCP**: Agents communicate with Joan via MCP. Ensure your Joan MCP server is configured in `~/.claude/mcp.json` before proceeding.
 
 ### Step 1: Install the Plugin
 
@@ -25,8 +72,6 @@ claude plugin marketplace add github:pollychrome/joan-agents
 # Install the agents plugin (available to all your projects)
 claude plugin install agents@alexbenson-joan-agents
 ```
-
-This installs all agent commands (`/agents:dispatch`, `/agents:init`, etc.) globally.
 
 ### Step 2: Initialize Your Project
 
@@ -39,12 +84,11 @@ claude
 ```
 
 The initialization wizard will:
-- ✅ Connect to your Joan project
-- ✅ Configure agent settings (model, polling interval, dev count)
-- ✅ Auto-create required Kanban columns
-- ✅ Auto-create all workflow tags
-- ✅ **Configure bash permissions** for autonomous operation
-- ✅ Generate `.joan-agents.json` in your project
+- Connect to your Joan project
+- Configure agent settings (models, workflow mode, timeouts)
+- Auto-create required Kanban columns and workflow tags
+- Configure bash permissions for autonomous operation
+- Generate `.joan-agents.json` in your project
 
 ### Step 3: Ensure `develop` Branch Exists
 
@@ -57,263 +101,150 @@ git push -u origin develop
 
 ```bash
 # In Claude Code:
-> /agents:dispatch --loop    # Continuous operation (recommended)
+> /agents:dispatch --loop    # WebSocket client, real-time events (recommended)
 
 # In a separate terminal (zero token cost):
 $ joan status myproject -f   # Live monitoring dashboard
 ```
 
-**That's it!** Your agents are now monitoring your Joan board.
-
-> **Note:** The `--loop` flag uses an external scheduler that prevents context bloat. Always use `--loop` for runs longer than 15 minutes.
+**That's it.** Agents are now monitoring your Joan board via WebSocket, processing tasks as they appear.
 
 ---
 
-## 📋 Setup Checklist
+## Setup Checklist
 
 ```
-☐ Claude Code installed
-☐ Git installed with push access
-☐ Joan account with project created
-☐ Joan MCP server configured in ~/.claude/mcp.json
-
-☐ Plugin installed (claude plugin install agents@alexbenson-joan-agents)
-☐ /agents:init completed for your project
-☐ develop branch exists and pushed
-☐ /agents:dispatch --loop running
+[ ] Claude Code installed
+[ ] Git installed with push access
+[ ] Joan account with project created
+[ ] Joan MCP server configured in ~/.claude/mcp.json
+[ ] Plugin installed (claude plugin install agents@alexbenson-joan-agents)
+[ ] /agents:init completed for your project
+[ ] develop branch exists and pushed
+[ ] /agents:dispatch --loop running
 ```
 
 ---
 
-## 📖 Detailed Setup Guide
-
-For comprehensive setup instructions, see:
-- **[Full Setup Guide](shared/joan-shared-specs/docs/joan-agents/setup.md)** - All configuration options
-- **[Troubleshooting](shared/joan-shared-specs/docs/joan-agents/troubleshooting.md)** - Common issues
-
-### Alternative: Manual Installation (Legacy)
-
-If the plugin approach doesn't work, you can install manually:
+## Commands
 
 ```bash
-# Clone the repository
-git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
+# Initialize project configuration
+/agents:init
 
-# Create symlinks to your user's Claude config
-mkdir -p ~/.claude/commands
-ln -sf ~/joan-agents/commands ~/.claude/commands/agents
-ln -sf ~/joan-agents/agents ~/.claude/agents
+# Run coordinator
+/agents:dispatch                          # Single pass (testing/debugging)
+/agents:dispatch --loop                   # WebSocket client (recommended)
+/agents:dispatch --loop --mode=yolo       # Fully autonomous
 
-# Initialize and run
-cd /path/to/your/project
-claude
-> /agents:init
-> /agents:dispatch --loop
+# Project maintenance
+/agents:clean-project                     # Preview fixes (dry run)
+/agents:clean-project --apply             # Apply all fixes
+/agents:doctor                            # Diagnose and fix task states
+/agents:doctor --dry-run                  # Preview only
+
+# Model configuration
+/agents:model                             # Change per-worker model selection
+
+# Task planning
+/agents:project-planner --file=plan.md    # Import tasks from plan file
+/agents:project-planner --interactive     # Guided task creation
+
+# Monitoring (separate terminal, zero token cost)
+joan status                               # Global view of all projects
+joan status myproject -f                  # Live dashboard
+joan logs myproject                       # Tail logs
 ```
 
-### Joan MCP Configuration
+---
 
-Add to `~/.claude/mcp.json`:
+## Configuration
 
-```json
-{
-  "mcpServers": {
-    "joan": {
-      "command": "node",
-      "args": ["/path/to/joan-mcp-server/index.js"],
-      "env": {
-        "JOAN_API_URL": "https://your-joan-instance.com/api",
-        "JOAN_API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-### Configuration File: `.joan-agents.json`
-
-Created by `/agents:init`, this file controls agent behavior:
+Created by `/agents:init` at `.joan-agents.json`:
 
 ```json
 {
   "projectId": "uuid-from-joan",
   "projectName": "My Project",
   "settings": {
-    "model": "opus",
-    "pollingIntervalMinutes": 10,
-    "maxIdlePolls": 6
+    "models": {
+      "ba": "haiku",
+      "architect": "opus",
+      "dev": "opus",
+      "reviewer": "opus",
+      "ops": "haiku"
+    },
+    "mode": "standard",
+    "staleClaimMinutes": 120,
+    "websocket": {
+      "catchupIntervalSeconds": 300
+    },
+    "workerTimeouts": {
+      "ba": 10,
+      "architect": 20,
+      "dev": 60,
+      "reviewer": 20,
+      "ops": 15
+    }
   },
   "agents": {
     "businessAnalyst": { "enabled": true },
     "architect": { "enabled": true },
     "reviewer": { "enabled": true },
     "ops": { "enabled": true },
-    "devs": { "enabled": true, "count": 2 }
+    "devs": { "enabled": true, "count": 1 }
   }
 }
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `model` | `opus` | Claude model: `opus`, `sonnet`, or `haiku` |
-| `pollingIntervalMinutes` | `10` | Minutes between polls when idle |
-| `maxIdlePolls` | `6` | Idle polls before auto-shutdown (~1 hour) |
-| `devs.count` | `1` | Number of dev workers (strict serial mode) |
-
-### Bash Permissions (Auto-Configured)
-
-`/agents:init` creates `.claude/settings.local.json` with permissions for autonomous operation:
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(git fetch:*)",
-      "Bash(git checkout:*)",
-      "Bash(git merge:*)",
-      "Bash(git push:*)",
-      "Bash(npm install:*)",
-      "Bash(npm test:*)",
-      "mcp__joan__*",
-      "mcp__github__*"
-    ]
-  }
-}
-```
-
-This prevents permission prompts from interrupting the agent loop. The file is git-ignored and local to your machine.
+| `models` | per-worker | Per-worker model selection (haiku for BA/Ops, opus for rest) |
+| `mode` | `standard` | `standard` (human gates) or `yolo` (fully autonomous) |
+| `staleClaimMinutes` | `120` | Minutes before orphaned dev claims are auto-released |
+| `devs.count` | `1` | Must be 1 (strict serial mode, enforced by schema) |
 
 ---
 
-## 🔧 Commands
+## Architecture
 
-```bash
-# Initialize project configuration
-/agents:init
+### WebSocket Event-Driven Dispatch
 
-# Onboard existing backlog & fix broken states (comprehensive cure-all)
-/agents:clean-project         # Dry run - preview changes
-/agents:clean-project --apply # Apply all fixes
-
-# Run coordinator (single pass - testing/debugging)
-/agents:dispatch
-
-# Run coordinator (continuous - recommended for production)
-/agents:dispatch --loop
-
-# Extended idle threshold (e.g., 2 hours at 5-min intervals)
-/agents:dispatch --loop --max-idle=24
-
-# Note: /agents:start is deprecated (use /agents:dispatch instead, kept for backward compatibility)
-
-# Monitor agents (in separate terminal, zero token cost)
-joan status              # Global view of all projects
-joan status myproject -f # Live dashboard for specific project
-joan logs myproject      # Tail logs in real-time
-
-# Change model for all agents
-/agents:model
-```
-
-### Project Cleanup & Recovery
-
-The `/agents:clean-project` command is a comprehensive tool that handles:
-
-✅ **Fresh backlog onboarding** - Integrates new tasks into workflow
-✅ **Broken state recovery** - Fixes incorrectly tagged tasks
-✅ **Column drift correction** - Moves misplaced tasks to correct columns
-✅ **Tag inconsistency cleanup** - Removes stale workflow tags
-
-**When to use:**
-- Initial project setup after `/agents:init`
-- After manual changes in Joan UI
-- Recovery from tagging errors
-- Periodic maintenance to prevent drift
-
-**Example workflow:**
-```bash
-# 1. See what will be fixed
-/agents:clean-project
-
-# 2. Review the output, then apply
-/agents:clean-project --apply
-
-# 3. Start agents
-/agents:dispatch --loop
-```
-
-### Shell Scripts (macOS) - Legacy
-
-> **Note:** These shell scripts are legacy and kept for backward compatibility. The recommended approach is to use `/agents:dispatch --loop` directly in Claude Code.
-
-```bash
-chmod +x ~/joan-agents/*.sh
-
-# iTerm2 (opens tabs) - DEPRECATED
-~/joan-agents/start-agents-iterm.sh [--max-idle=N]
-
-# Terminal.app - DEPRECATED
-~/joan-agents/start-agents.sh [--max-idle=N]
-
-# Stop agents
-~/joan-agents/stop-agents.sh
-```
-
-These scripts now call `/agents:dispatch --loop` internally.
-
----
-
-## 🏗️ Architecture
-
-### Tag-Driven Orchestration
-
-v4 uses **tag-based state transitions** instead of comment parsing. A single coordinator polls Joan once per interval and dispatches single-pass workers.
+The system uses real-time WebSocket events instead of polling. The coordinator connects outbound to Joan, receives events instantly, and dispatches focused single-pass handlers.
 
 ```
-Coordinator ────► poll Joan ────► dispatch workers ────► sleep ────► repeat
-     │
-     ├──► spawn BA-worker (task X)
-     ├──► spawn Architect-worker (task Y)
-     ├──► spawn Dev-worker (task Z)
-     ├──► spawn Reviewer-worker (task W)
-     └──► spawn Ops-worker (task V)
+Joan Backend ──WebSocket──► ws-client.py ──► claude /agents:dispatch/handle-*
+                                  │
+                           Periodic catchup scan (5 min safety net)
 ```
+
+Each handler processes ONE task, is stateless, and checks Joan state on invocation.
+
+### Three-Tier Processing
+
+- **Tier 1 - Joan Backend (zero tokens):** Deterministic state transitions, tag validation, column auto-movement, YOLO auto-approvals
+- **Tier 2 - Smart Events:** Semantic event types with pre-fetched payloads, filtered per handler
+- **Tier 3 - Claude Workers:** BA, Architect, Dev, Reviewer, Ops — intelligence only
 
 ### Agents
 
 | Agent | Role |
 |-------|------|
-| **Business Analyst** | Evaluates requirements, asks clarifying questions |
-| **Architect** | Creates implementation plans with sub-tasks |
-| **Dev** (×1) | Claims tasks, implements on feature branches, creates PRs |
-| **Reviewer** | Code review, quality gate, approves or requests rework |
-| **Ops** | Merges to develop, tracks deployments |
+| **Business Analyst** | Evaluates requirements, asks clarifying questions, marks Ready |
+| **Architect** | Analyzes codebase, creates implementation plans with sub-tasks |
+| **Dev** (×1, serial) | Implements on feature branches, creates PRs, handles rework |
+| **Reviewer** | Merges develop into feature, deep code review, approves or rejects |
+| **Ops** | Merges to develop with AI conflict resolution, tracks deployment |
 
-### Strict Serial Pipeline with Context Handoffs
+### Strict Serial Pipeline
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      STRICT SERIAL PIPELINE (v4.2)                      │
-│                                                                         │
-│  ┌──────────┐   ┌─────────┐   ┌────────┐   ┌──────┐   ┌──────────┐    │
-│  │ Architect│ → │   Dev   │ → │ Review │ → │  Ops │ → │  MERGED  │    │
-│  │ (1 task) │   │(1 task) │   │(1 task)│   │merge │   │to develop│    │
-│  └──────────┘   └─────────┘   └────────┘   └──────┘   └──────────┘    │
-│       │               │             │           │                      │
-│       └───────────────┴─────────────┴───────────┘                      │
-│                    Context Handoffs                                     │
-│                                                                         │
-│  ONE task at a time → No merge conflicts → Plans always fresh          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-In strict serial mode, only ONE task moves through the Architect→Dev→Review→Ops pipeline at a time. Devs work directly on feature branches (no worktrees needed). This prevents merge conflicts and ensures plans reference the current codebase state.
+One task moves through Architect → Dev → Review → Ops at a time. No merge conflicts, plans always reference current codebase state.
 
 ---
 
-## 📊 Workflow
+## Workflow
 
-Tasks flow through these columns (auto-created by `/agents:init`):
+Tasks flow through Kanban columns (auto-created by `/agents:init`):
 
 ```
 To Do → Analyse → Development → Review → Deploy → Done
@@ -331,30 +262,32 @@ To Do → Analyse → Development → Review → Deploy → Done
 | Approve merge to develop | `Ops-Ready` |
 | Recover failed task | Remove `Implementation-Failed`, ensure `Planned` exists |
 
-### Quality Gates
+> In YOLO mode, `Plan-Approved` and `Ops-Ready` are added automatically.
 
-- **BA → Architect**: Requirements must be clear
-- **Architect → Dev**: Plan must be approved by human
-- **Dev → Reviewer**: All sub-tasks checked off
-- **Reviewer → Ops**: Code review passed, tests green
-- **Ops → Done**: Deployed to production
+### Workflow Modes
+
+**Standard mode** (default): Human approval required for plan approval and merge approval.
+
+**YOLO mode**: Fully autonomous. BA makes assumptions, Architect auto-approves plans, Dev retries on failure, Reviewer only blocks critical issues, Ops auto-merges. All decisions logged for audit trail.
+
+```bash
+/agents:dispatch --loop --mode=yolo
+```
 
 ---
 
-## 📁 Directory Structure
+## Directory Structure
 
 ```
-~/.claude/
-├── CLAUDE.md                    # Global instructions
-├── agents/ → ~/joan-agents/.claude/agents/
-└── commands/
-    └── agents/ → ~/joan-agents/.claude/commands/agents/
-
-~/joan-agents/                   # Source repository
+~/joan-agents/                   # This repository
 ├── .claude/
 │   ├── agents/                  # Agent definitions
 │   ├── commands/agents/         # Slash commands
 │   └── CLAUDE.md                # System documentation
+├── scripts/
+│   ├── ws-client.py             # WebSocket client
+│   ├── joan                     # CLI monitoring tool
+│   └── install-joan-cli.sh      # CLI installer
 ├── shared/
 │   └── joan-shared-specs/       # Shared specifications
 └── README.md
@@ -364,110 +297,26 @@ To Do → Analyse → Development → Review → Deploy → Done
 └── ...
 ```
 
-Note: Devs work directly on feature branches in the main directory (no worktrees needed in strict serial mode).
-
 ---
 
-## 💾 Resource Recommendations
-
-| Dev Workers | RAM | Use Case |
-|-------------|-----|----------|
-| 2 | 4-6 GB | Light workload |
-| 4 | 6-10 GB | Standard (recommended) |
-| 6 | 10-14 GB | Heavy workload |
-
----
-
-## 📚 Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
 | [Setup Guide](shared/joan-shared-specs/docs/joan-agents/setup.md) | Full installation walkthrough |
-| [Global Installation](shared/joan-shared-specs/docs/joan-agents/global-installation.md) | Symlink-based setup |
 | [Troubleshooting](shared/joan-shared-specs/docs/joan-agents/troubleshooting.md) | Common issues and fixes |
-| [Prevention Strategies](docs/PREVENTION_STRATEGIES.md) | How to prevent common workflow failures |
-| [Best Practices](shared/joan-shared-specs/docs/joan-agents/best-practices.md) | Workflow optimization tips |
 | [Architecture](shared/joan-shared-specs/docs/joan-agents/architecture.md) | System design details |
 | [Agentic Workflow](shared/joan-shared-specs/docs/workflow/agentic-workflow.md) | Task lifecycle spec |
 | [ALS Syntax](shared/joan-shared-specs/docs/workflow/als-spec.md) | Comment format for agents |
 | [Worker Result Schema](shared/joan-shared-specs/docs/workflow/worker-result-schema.md) | Worker output format and context handoffs |
-| [Human Inbox](shared/joan-shared-specs/docs/human-interface/human-inbox.md) | Human interaction patterns |
 
 ---
 
-## ✨ Key Benefits
-
-- **Tag-Based Orchestration** - Deterministic state machine, no comment parsing
-- **10x Lower Overhead** - Single coordinator vs N independent polling agents
-- **Strict Serial Pipeline** - One task at a time prevents merge conflicts
-- **Context Handoffs** - Structured context passed between workflow stages
-- **Single-Pass Workers** - Stateless workers, easy to retry on failure
-- **Quality Gate** - Automated code review before merge
-- **Self-Healing** - Auto-recovery from stale claims, anomaly detection
-- **External Scheduler** - Context-safe long-running operations
-
----
-
-## 🔄 Updating
+## Updating
 
 ```bash
 cd ~/joan-agents
 git pull
 ```
 
-Changes are immediately available in all projects via symlinks.
-
----
-
-## What's New in v4.5
-
-| Feature | v4.2 | v4.5 |
-|---------|------|------|
-| Backlog onboarding | Manual tag application | Comprehensive `/agents:clean-project` cure-all |
-| State recovery | Manual intervention | Auto-detects and fixes broken states |
-| Evidence validation | Not checked | Validates completion evidence (PRs, commits) |
-| Column drift | No detection | Auto-corrects misplaced tasks |
-| Context management | Internal loop only | External scheduler for long-running ops |
-
-### Comprehensive Project Cleanup
-
-The new `/agents:clean-project` command replaces manual backlog setup with an intelligent cure-all that:
-- Detects tasks with incorrect end-stage tags (Review-Approved/Ops-Ready) but no completion evidence
-- Auto-corrects column misplacement (e.g., completed tasks in wrong columns)
-- Validates workflow state consistency
-- Provides detailed dry-run preview before making changes
-
-This eliminates common setup errors and enables self-service recovery from broken states.
-
----
-
-## What's New in v4.2
-
-| Feature | v4 | v4.2 |
-|---------|-----|------|
-| Dev pipeline | Parallel (N workers) | Strict serial (1 worker, no merge conflicts) |
-| Context passing | Manual via comments | Structured handoffs between stages |
-| Session management | Internal loop | External scheduler (context-safe) |
-| Self-healing | Basic claim recovery | Anomaly detection, stuck state recovery |
-
-### Context Handoffs
-
-Workers now pass **structured context** between workflow stages:
-- BA → Architect: Requirements clarifications and user decisions
-- Architect → Dev: Architecture decisions, files to modify, dependencies
-- Dev → Reviewer: Implementation notes, files changed, warnings
-- Reviewer → Dev (rework): Blockers with file:line, suggestions
-
-Context is persisted in Joan comments (not in-memory), making it durable across coordinator restarts.
-
-See [Worker Result Schema](shared/joan-shared-specs/docs/workflow/worker-result-schema.md) for details.
-
-## What's New in v4
-
-| Feature | v3 | v4 |
-|---------|-----|-----|
-| Orchestration | N agents poll independently | Single coordinator dispatches workers |
-| State triggers | Comment parsing (@approve-plan) | Tag-based (Plan-Approved tag) |
-| Human workflow | Add comments | Add tags in Joan UI |
-| Polling overhead | N polls per interval | 1 poll per interval |
-| Worker lifetime | Continuous loops | Single-pass (exit after task) |
+Changes are immediately available in all projects via the plugin system.

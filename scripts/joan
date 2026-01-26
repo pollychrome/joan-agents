@@ -59,12 +59,13 @@ class JoanMonitor:
             )
 
             for line in result.stdout.splitlines():
-                # Support Python webhook server, bash wrapper, and legacy scheduler
+                # Support Python webhook server, bash wrapper, WebSocket client, and legacy scheduler
                 is_python_webhook = "webhook-server.py" in line and "grep" not in line
                 is_bash_webhook = "webhook-receiver.sh" in line and "grep" not in line
+                is_ws_client = "ws-client.py" in line and "grep" not in line
                 is_scheduler = "joan-scheduler.sh" in line and "grep" not in line
 
-                is_webhook = is_python_webhook or is_bash_webhook
+                is_webhook = is_python_webhook or is_bash_webhook or is_ws_client
 
                 if is_webhook or is_scheduler:
                     # Extract PID and project directory from command line
@@ -108,12 +109,12 @@ class JoanMonitor:
                             project_dir = Path(raw_path).resolve()
 
                         if project_dir.exists():
-                            self._add_instance(project_dir, line, is_webhook=is_webhook)
+                            self._add_instance(project_dir, line, is_webhook=is_webhook, is_ws_client=is_ws_client)
 
         except subprocess.CalledProcessError:
             pass
 
-    def _add_instance(self, project_dir: Path, ps_line: str, is_webhook: bool = False):
+    def _add_instance(self, project_dir: Path, ps_line: str, is_webhook: bool = False, is_ws_client: bool = False):
         """Add a discovered instance to the tracking dict."""
         config_file = project_dir / ".joan-agents.json"
         if not config_file.exists():
@@ -130,7 +131,9 @@ class JoanMonitor:
         project_name = config.get("projectName", project_dir.name)
 
         # Use appropriate log file based on mode
-        if is_webhook:
+        if is_ws_client:
+            log_file = project_dir / ".claude/logs/websocket-client.log"
+        elif is_webhook:
             log_file = project_dir / ".claude/logs/webhook-receiver.log"
         else:
             log_file = project_dir / ".claude/logs/scheduler.log"
@@ -424,8 +427,8 @@ class JoanMonitor:
                     except:
                         pass
 
-                # Count received events (support both old and new format)
-                if "Received event:" in line or "Webhook received:" in line:
+                # Count received events (support old, new, and ws-client formats)
+                if "Received event:" in line or "Webhook received:" in line or "Event received:" in line:
                     stats["events_received"] += 1
                     if timestamp:
                         stats["last_event"] = timestamp
@@ -462,7 +465,7 @@ class JoanMonitor:
 
                 # Build recent events list
                 if any(kw in line for kw in ["Dispatching:", "Received event:", "Webhook received:",
-                                              "completed", "error", "CATCHUP", "Handler"]):
+                                              "Event received:", "completed", "error", "CATCHUP", "Handler"]):
                     if timestamp:
                         stats["recent_events"].append({
                             "timestamp": timestamp,
