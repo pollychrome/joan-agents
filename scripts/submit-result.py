@@ -67,6 +67,7 @@ def submit_result(
     success: bool,
     output: dict = None,
     comment: str = None,
+    structured_comment: dict = None,
     error: str = None
 ):
     """Submit worker result to Joan API."""
@@ -80,7 +81,10 @@ def submit_result(
 
     if output:
         payload["output"] = output
-    if comment:
+    # Prefer structured_comment over raw comment (server generates ALS format)
+    if structured_comment:
+        payload["structured_comment"] = structured_comment
+    elif comment:
         payload["comment"] = comment
     if error:
         payload["error"] = error
@@ -131,7 +135,8 @@ def main():
     parser.add_argument('--project-id', help='Project ID (default: JOAN_PROJECT_ID env var)')
     parser.add_argument('--task-id', help='Task ID (default: JOAN_TASK_ID env var)')
     parser.add_argument('--output', help='JSON output object')
-    parser.add_argument('--comment', help='ALS comment to add')
+    parser.add_argument('--comment', help='ALS comment to add (raw string)')
+    parser.add_argument('--structured-comment', help='Structured comment JSON (server generates ALS format, preferred over --comment)')
     parser.add_argument('--error', help='Error message if success=false')
     parser.add_argument('--api-url', help='Joan API URL (default: JOAN_API_URL env var)')
 
@@ -159,6 +164,15 @@ def main():
             print(f"Error: Invalid JSON in --output: {e}", file=sys.stderr)
             sys.exit(1)
 
+    # Parse structured comment JSON if provided
+    structured_comment = None
+    if args.structured_comment:
+        try:
+            structured_comment = json.loads(args.structured_comment)
+        except json.JSONDecodeError as e:
+            print(f"Error: Invalid JSON in --structured-comment: {e}", file=sys.stderr)
+            sys.exit(1)
+
     # Submit result
     success = submit_result(
         api_url=api_url,
@@ -169,6 +183,7 @@ def main():
         success=args.success == 'true',
         output=output,
         comment=args.comment,
+        structured_comment=structured_comment,
         error=args.error
     )
 

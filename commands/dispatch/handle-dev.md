@@ -35,57 +35,21 @@ IF NOT config.agents.devs.enabled:
   EXIT
 ```
 
-## Phase 3: Smart Payload Check
-
-```
-# Phase 3: Check for pre-fetched smart payload (zero MCP calls)
-SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
-HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
-
-IF HAS_SMART_PAYLOAD:
-  smart_data = JSON.parse(SMART_PAYLOAD)
-  Report: "Phase 3: Using smart payload (zero MCP fetching)"
-```
-
 ## Single Task Mode (Event-Driven)
 
 ```
 IF TASK_ID provided:
   Report: "Dev Handler: Processing task {TASK_ID} mode={OPERATION_MODE}"
 
-  # Phase 3: Use smart payload if available
-  IF HAS_SMART_PAYLOAD:
-    task = {
-      id: smart_data.task.id,
-      title: smart_data.task.title,
-      description: smart_data.task.description,
-      column_id: smart_data.task.column_id,
-      column_name: smart_data.task.column_name,
-      tags: smart_data.tags
-    }
-    handoff_context = smart_data.handoff_context
-    recent_comments = smart_data.recent_comments
-    COLUMN_CACHE = smart_data.columns OR {}
-  ELSE:
-    # Fallback: Fetch via MCP
-    task = mcp__joan__get_task(TASK_ID)
-    comments = mcp__joan__list_task_comments(TASK_ID)
-    columns = mcp__joan__list_columns(PROJECT_ID)
+  # Use shared smart payload extraction (see helpers.md)
+  payload_data = extractSmartPayload(TASK_ID, PROJECT_ID)
+  task = payload_data.task
+  handoff_context = payload_data.handoff_context
+  recent_comments = payload_data.recent_comments
+  COLUMN_CACHE = payload_data.COLUMN_CACHE
 
-    COLUMN_CACHE = {}
-    FOR col IN columns:
-      COLUMN_CACHE[col.name] = col.id
-
-    handoff_context = null
-    recent_comments = comments
-
-  # Build tag set
-  TAG_SET = Set()
-  FOR tag IN task.tags:
-    IF typeof tag == "string":
-      TAG_SET.add(tag)
-    ELSE:
-      TAG_SET.add(tag.name)
+  # Build tag set (see helpers.md)
+  TAG_SET = buildTagSet(task.tags)
 
   # Verify task is in Development column
   IF task.column_name != "Development" AND task.column_id != COLUMN_CACHE["Development"]:
@@ -266,7 +230,7 @@ Task agent:
     {
       "success": true,
       "result_type": "implementation_complete" | "rework_complete" | "implementation_failed" | "branch_setup_failed",
-      "comment": "ALS/1 format handoff comment (see below)",
+      "structured_comment": { ... },
       "output": {
         "pr_number": 42,
         "pr_url": "https://github.com/...",
@@ -276,37 +240,27 @@ Task agent:
     }
     ```
 
-    ## ALS Comment Format
+    ## Structured Comment (server generates ALS format)
 
-    For implementation_complete/rework_complete (handoff to reviewer):
-    ```
-    ALS/1
-    actor: dev
-    intent: handoff
-    action: context-handoff
-    from_stage: dev
-    to_stage: reviewer
-    summary: [Implementation summary]
-    key_decisions:
-    - [Implementation decision 1]
-    - [Implementation decision 2]
-    files_of_interest:
-    - [Modified file 1]
-    - [Modified file 2]
-    warnings:
-    - [Any concerns or incomplete items]
+    For implementation_complete/rework_complete:
+    ```json
+    "structured_comment": {
+      "actor": "dev", "intent": "handoff", "action": "context-handoff",
+      "from_stage": "dev", "to_stage": "reviewer",
+      "summary": "Implementation summary",
+      "key_decisions": ["Decision 1", "Decision 2"],
+      "files_of_interest": ["file1.ts", "file2.ts"],
+      "warnings": ["Any concerns"]
+    }
     ```
 
     For implementation_failed:
-    ```
-    ALS/1
-    actor: dev
-    intent: error
-    action: implementation-failed
-    summary: [What failed and why]
-    blockers:
-    - [Blocker 1]
-    - [Blocker 2]
+    ```json
+    "structured_comment": {
+      "actor": "dev", "intent": "error", "action": "implementation-failed",
+      "summary": "What failed and why",
+      "blockers": ["Blocker 1", "Blocker 2"]
+    }
     ```
 
     IMPORTANT: Do NOT return joan_actions. Joan backend handles state transitions automatically.
@@ -327,34 +281,13 @@ GOTO PROCESS_RESULT
 
 ```
 IF NOT WORKER_RESULT.success:
-  Report: "Dev worker failed: {WORKER_RESULT.error}"
-
   # YOLO mode: Attempt intelligent recovery instead of failing immediately
   IF MODE == "yolo" AND NOT RECOVERY_ATTEMPTED:
     Report: "  [YOLO] Attempting intelligent recovery..."
     GOTO YOLO_RECOVERY
 
-  # Standard mode or recovery already attempted: Submit failure
-  Bash: python3 ~/joan-agents/scripts/submit-result.py dev-worker implementation_failed false \
-    --project-id "{PROJECT_ID}" \
-    --task-id "{WORK_PACKAGE.task_id}" \
-    --error "{WORKER_RESULT.error}"
-  RETURN
-
-# Phase 3: Submit result to Joan API (state transitions handled server-side)
-result_type = WORKER_RESULT.result_type
-comment = WORKER_RESULT.comment OR ""
-output_json = JSON.stringify(WORKER_RESULT.output OR {})
-
-Report: "Submitting result: {result_type}"
-
-Bash: python3 ~/joan-agents/scripts/submit-result.py dev-worker "{result_type}" true \
-  --project-id "{PROJECT_ID}" \
-  --task-id "{WORK_PACKAGE.task_id}" \
-  --output '{output_json}' \
-  --comment '{comment}'
-
-Report: "**Dev worker completed for '{WORK_PACKAGE.task_title}' - {result_type}**"
+# Use shared result submission (see helpers.md)
+submitWorkerResult("dev-worker", WORKER_RESULT, WORK_PACKAGE, PROJECT_ID)
 ```
 
 ## YOLO_RECOVERY
@@ -429,7 +362,7 @@ Task agent:
     Return a JSON object with:
     - success: true/false
     - result_type: "implementation_complete" or "implementation_failed"
-    - comment: ALS handoff comment (include warnings about skipped/stubbed items)
+    - structured_comment: { actor: "dev", intent: "handoff", action: "context-handoff", from_stage: "dev", to_stage: "reviewer", summary: "...", warnings: ["YOLO recovery: ..."] }
     - output: { pr_number, pr_url, files_changed, recovery_notes }
 
 WORKER_RESULT = Task.result
@@ -438,8 +371,13 @@ IF WORKER_RESULT.success:
   logWorkerActivity(".", "Dev", "YOLO-RECOVERED", "task=#{WORK_PACKAGE.task_id} recovery succeeded")
   Report: "  [YOLO] Recovery successful!"
 
-  # Add recovery note to comment if not present
-  IF WORKER_RESULT.comment AND NOT "YOLO recovery" IN WORKER_RESULT.comment:
+  # Add recovery warning to structured comment if not already present
+  IF WORKER_RESULT.structured_comment:
+    IF NOT WORKER_RESULT.structured_comment.warnings:
+      WORKER_RESULT.structured_comment.warnings = []
+    IF NOT "YOLO recovery" IN WORKER_RESULT.structured_comment.warnings.join(""):
+      WORKER_RESULT.structured_comment.warnings.push("YOLO recovery: Some functionality may be incomplete - review carefully")
+  ELIF WORKER_RESULT.comment AND NOT "YOLO recovery" IN WORKER_RESULT.comment:
     WORKER_RESULT.comment = WORKER_RESULT.comment + "\nwarnings:\n- YOLO recovery: Some functionality may be incomplete - review carefully"
 
 ELSE:
@@ -451,15 +389,4 @@ GOTO PROCESS_RESULT
 
 ## Helper Functions
 
-```
-def extractTagNames(tags):
-  names = []
-  FOR tag IN tags:
-    names.push(tag.name)
-  RETURN names
-
-def logWorkerActivity(projectDir, workerType, status, message):
-  logFile = "{projectDir}/.claude/logs/worker-activity.log"
-  timestamp = NOW.strftime("%Y-%m-%d %H:%M:%S")
-  Bash: mkdir -p "$(dirname {logFile})" && echo "[{timestamp}] [{workerType}] [{status}] {message}" >> {logFile}
-```
+See `helpers.md` for shared functions: `extractSmartPayload`, `buildTagSet`, `extractTagNames`, `submitWorkerResult`, `logWorkerActivity`.

@@ -32,57 +32,21 @@ IF NOT config.agents.ops.enabled:
   EXIT
 ```
 
-## Phase 3: Smart Payload Check
-
-```
-# Phase 3: Check for pre-fetched smart payload (zero MCP calls)
-SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
-HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
-
-IF HAS_SMART_PAYLOAD:
-  smart_data = JSON.parse(SMART_PAYLOAD)
-  Report: "Phase 3: Using smart payload (zero MCP fetching)"
-```
-
 ## Single Task Mode (Event-Driven)
 
 ```
 IF TASK_ID provided:
   Report: "Ops Handler: Processing task {TASK_ID} mode={OPERATION_MODE}"
 
-  # Phase 3: Use smart payload if available
-  IF HAS_SMART_PAYLOAD:
-    task = {
-      id: smart_data.task.id,
-      title: smart_data.task.title,
-      description: smart_data.task.description,
-      column_id: smart_data.task.column_id,
-      column_name: smart_data.task.column_name,
-      tags: smart_data.tags
-    }
-    handoff_context = smart_data.handoff_context
-    recent_comments = smart_data.recent_comments
-    COLUMN_CACHE = smart_data.columns OR {}
-  ELSE:
-    # Fallback: Fetch via MCP
-    task = mcp__joan__get_task(TASK_ID)
-    comments = mcp__joan__list_task_comments(TASK_ID)
-    columns = mcp__joan__list_columns(PROJECT_ID)
+  # Use shared smart payload extraction (see helpers.md)
+  payload_data = extractSmartPayload(TASK_ID, PROJECT_ID)
+  task = payload_data.task
+  handoff_context = payload_data.handoff_context
+  recent_comments = payload_data.recent_comments
+  COLUMN_CACHE = payload_data.COLUMN_CACHE
 
-    COLUMN_CACHE = {}
-    FOR col IN columns:
-      COLUMN_CACHE[col.name] = col.id
-
-    handoff_context = null
-    recent_comments = comments
-
-  # Build tag set
-  TAG_SET = Set()
-  FOR tag IN task.tags:
-    IF typeof tag == "string":
-      TAG_SET.add(tag)
-    ELSE:
-      TAG_SET.add(tag.name)
+  # Build tag set (see helpers.md)
+  TAG_SET = buildTagSet(task.tags)
 
   # Verify task is in Review or Deploy column
   IF task.column_name != "Review" AND task.column_name != "Deploy" AND
@@ -228,7 +192,7 @@ Task agent:
     {
       "success": true,
       "result_type": "merge_complete" | "merge_conflict" | "invoke_architect",
-      "comment": "ALS/1 format comment (see below)",
+      "structured_comment": { ... },
       "output": {
         "merged_commit": "abc123",
         "branch_deleted": true,
@@ -237,50 +201,44 @@ Task agent:
     }
     ```
 
-    ## ALS Comment Format
+    ## Structured Comment (server generates ALS format)
 
     For merge_complete:
-    ```
-    ALS/1
-    actor: ops
-    intent: complete
-    action: merged-to-develop
-    summary: [Merge summary]
-    merged_commit: [commit hash]
-    branch_deleted: [feature/branch-name]
+    ```json
+    "structured_comment": {
+      "actor": "ops", "intent": "complete", "action": "merged-to-develop",
+      "summary": "Merge summary",
+      "metadata": {"merged_commit": "abc123", "branch_deleted": "feature/branch-name"}
+    }
     ```
 
     For invoke_architect (need Architect guidance):
-    ```
-    ALS/1
-    actor: ops
-    intent: request
-    action: invoke-request
-    invoked_agent: architect
-    invocation_mode: advisory-conflict
-    summary: [Why guidance is needed]
-    question: [Specific question for Architect]
-    files_of_interest:
-    - [conflicting file 1]
-    - [conflicting file 2]
-    conflict_details:
-      conflicting_files: [list]
-      develop_summary: [what develop changed]
-      feature_summary: [what feature changed]
+    ```json
+    "structured_comment": {
+      "actor": "ops", "intent": "request", "action": "invoke-request",
+      "summary": "Why guidance is needed",
+      "files_of_interest": ["conflicting-file-1", "conflicting-file-2"],
+      "metadata": {
+        "invoked_agent": "architect",
+        "invocation_mode": "advisory-conflict",
+        "question": "Specific question for Architect",
+        "conflict_details": {
+          "conflicting_files": [],
+          "develop_summary": "what develop changed",
+          "feature_summary": "what feature changed"
+        }
+      }
+    }
     ```
 
     For merge_conflict (send back to dev):
-    ```
-    ALS/1
-    actor: ops
-    intent: rework
-    action: merge-conflict-unresolved
-    from_stage: ops
-    to_stage: dev
-    summary: [Conflict cannot be auto-resolved]
-    conflict_files:
-    - [file1]
-    - [file2]
+    ```json
+    "structured_comment": {
+      "actor": "ops", "intent": "rework", "action": "merge-conflict-unresolved",
+      "from_stage": "ops", "to_stage": "dev",
+      "summary": "Conflict cannot be auto-resolved",
+      "blockers": ["file1 - conflict description", "file2 - conflict description"]
+    }
     ```
 
     IMPORTANT: Do NOT return joan_actions. Joan backend handles state transitions automatically.
@@ -300,46 +258,14 @@ GOTO PROCESS_RESULT
 ## PROCESS_RESULT (Phase 3)
 
 ```
-IF NOT WORKER_RESULT.success:
-  Report: "Ops worker failed: {WORKER_RESULT.error}"
-  # Submit failure result
-  Bash: python3 ~/joan-agents/scripts/submit-result.py ops-worker merge_conflict false \
-    --project-id "{PROJECT_ID}" \
-    --task-id "{WORK_PACKAGE.task_id}" \
-    --error "{WORKER_RESULT.error}"
-  RETURN
-
-# Phase 3: Submit result to Joan API (state transitions handled server-side)
-result_type = WORKER_RESULT.result_type
-comment = WORKER_RESULT.comment OR ""
-output_json = JSON.stringify(WORKER_RESULT.output OR {})
-
-Report: "Submitting result: {result_type}"
-
-Bash: python3 ~/joan-agents/scripts/submit-result.py ops-worker "{result_type}" true \
-  --project-id "{PROJECT_ID}" \
-  --task-id "{WORK_PACKAGE.task_id}" \
-  --output '{output_json}' \
-  --comment '{comment}'
+# Use shared result submission (see helpers.md)
+submitWorkerResult("ops-worker", WORKER_RESULT, WORK_PACKAGE, PROJECT_ID)
 
 # YOLO mode: auto-complete to Done is handled by backend
-IF MODE == "yolo" AND result_type == "merge_complete":
+IF MODE == "yolo" AND WORKER_RESULT.result_type == "merge_complete":
   Report: "  [YOLO] Auto-completing task to Done - backend will handle"
-
-Report: "**Ops worker completed for '{WORK_PACKAGE.task_title}' - {result_type}**"
 ```
 
 ## Helper Functions
 
-```
-def extractTagNames(tags):
-  names = []
-  FOR tag IN tags:
-    names.push(tag.name)
-  RETURN names
-
-def logWorkerActivity(projectDir, workerType, status, message):
-  logFile = "{projectDir}/.claude/logs/worker-activity.log"
-  timestamp = NOW.strftime("%Y-%m-%d %H:%M:%S")
-  Bash: mkdir -p "$(dirname {logFile})" && echo "[{timestamp}] [{workerType}] [{status}] {message}" >> {logFile}
-```
+See `helpers.md` for shared functions: `extractSmartPayload`, `buildTagSet`, `extractTagNames`, `submitWorkerResult`, `logWorkerActivity`.

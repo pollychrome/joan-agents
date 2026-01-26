@@ -32,58 +32,21 @@ IF NOT config.agents.architect.enabled:
   EXIT
 ```
 
-## Phase 3: Smart Payload Check
-
-```
-# Phase 3: Check for pre-fetched smart payload (zero MCP calls)
-SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
-HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
-
-IF HAS_SMART_PAYLOAD:
-  smart_data = JSON.parse(SMART_PAYLOAD)
-  Report: "Phase 3: Using smart payload (zero MCP fetching)"
-```
-
 ## Single Task Mode (Event-Driven)
 
 ```
 IF TASK_ID provided:
   Report: "Architect Handler: Processing task {TASK_ID} mode={OPERATION_MODE}"
 
-  # Phase 3: Use smart payload if available
-  IF HAS_SMART_PAYLOAD:
-    task = {
-      id: smart_data.task.id,
-      title: smart_data.task.title,
-      description: smart_data.task.description,
-      column_id: smart_data.task.column_id,
-      column_name: smart_data.task.column_name,
-      tags: smart_data.tags
-    }
-    handoff_context = smart_data.handoff_context
-    recent_comments = smart_data.recent_comments
-    COLUMN_CACHE = smart_data.columns OR {}
-  ELSE:
-    # Fallback: Fetch via MCP
-    task = mcp__joan__get_task(TASK_ID)
-    comments = mcp__joan__list_task_comments(TASK_ID)
-    columns = mcp__joan__list_columns(PROJECT_ID)
+  # Use shared smart payload extraction (see helpers.md)
+  payload_data = extractSmartPayload(TASK_ID, PROJECT_ID)
+  task = payload_data.task
+  handoff_context = payload_data.handoff_context
+  recent_comments = payload_data.recent_comments
+  COLUMN_CACHE = payload_data.COLUMN_CACHE
 
-    # Build column cache
-    COLUMN_CACHE = {}
-    FOR col IN columns:
-      COLUMN_CACHE[col.name] = col.id
-
-    handoff_context = null
-    recent_comments = comments
-
-  # Build tag set
-  TAG_SET = Set()
-  FOR tag IN task.tags:
-    IF typeof tag == "string":
-      TAG_SET.add(tag)
-    ELSE:
-      TAG_SET.add(tag.name)
+  # Build tag set (see helpers.md)
+  TAG_SET = buildTagSet(task.tags)
 
   # Verify task is in expected state
   IF NOT (task.column_name == "Analyse" OR task.column_id == COLUMN_CACHE["Analyse"] OR
@@ -270,7 +233,7 @@ Task agent:
     {
       "success": true,
       "result_type": "plan_created" | "plan_finalized" | "plan_revised" | "advisory_complete",
-      "comment": "ALS/1 format handoff comment (see below)",
+      "structured_comment": { ... },
       "output": {
         "plan_description": "Updated task description with plan (for plan_created/plan_revised)",
         "resolution_strategy": "Strategy for conflict resolution (for advisory_complete)"
@@ -278,50 +241,37 @@ Task agent:
     }
     ```
 
-    ## ALS Comment Format
+    ## Structured Comment (server generates ALS format)
 
     For plan_created:
-    ```
-    ALS/1
-    actor: architect
-    intent: plan
-    action: plan-created
-    summary: [Brief summary of the plan]
-    key_decisions:
-    - [Decision 1]
-    - [Decision 2]
-    files_of_interest:
-    - [File 1]
-    - [File 2]
+    ```json
+    "structured_comment": {
+      "actor": "architect", "intent": "plan", "action": "plan-created",
+      "summary": "Brief summary of the plan",
+      "key_decisions": ["Decision 1", "Decision 2"],
+      "files_of_interest": ["file1.ts", "file2.ts"]
+    }
     ```
 
     For plan_finalized (handoff to dev):
-    ```
-    ALS/1
-    actor: architect
-    intent: handoff
-    action: context-handoff
-    from_stage: architect
-    to_stage: dev
-    summary: [Plan finalized, ready for implementation]
-    key_decisions:
-    - [Key architectural decisions]
-    files_of_interest:
-    - [Files to modify]
-    warnings:
-    - [Any concerns]
+    ```json
+    "structured_comment": {
+      "actor": "architect", "intent": "handoff", "action": "context-handoff",
+      "from_stage": "architect", "to_stage": "dev",
+      "summary": "Plan finalized, ready for implementation",
+      "key_decisions": ["Key architectural decisions"],
+      "files_of_interest": ["Files to modify"],
+      "warnings": ["Any concerns"]
+    }
     ```
 
     For advisory_complete:
-    ```
-    ALS/1
-    actor: architect
-    intent: advisory
-    action: conflict-resolution
-    summary: [Resolution strategy summary]
-    resolution_strategy: [Detailed strategy]
-    files_to_keep:
-    - [Files to prefer from which branch]
+    ```json
+    "structured_comment": {
+      "actor": "architect", "intent": "advisory", "action": "conflict-resolution",
+      "summary": "Resolution strategy summary",
+      "metadata": {"resolution_strategy": "Detailed strategy"}
+    }
     ```
 
     IMPORTANT: Do NOT return joan_actions. Joan backend handles state transitions automatically.
@@ -341,33 +291,12 @@ GOTO PROCESS_RESULT
 ## PROCESS_RESULT (Phase 3)
 
 ```
-IF NOT WORKER_RESULT.success:
-  Report: "Architect worker failed: {WORKER_RESULT.error}"
-  # Submit failure result
-  Bash: python3 ~/joan-agents/scripts/submit-result.py architect-worker plan_created false \
-    --project-id "{PROJECT_ID}" \
-    --task-id "{WORK_PACKAGE.task_id}" \
-    --error "{WORKER_RESULT.error}"
-  RETURN
-
-# Phase 3: Submit result to Joan API (state transitions handled server-side)
-result_type = WORKER_RESULT.result_type
-comment = WORKER_RESULT.comment OR ""
-output_json = JSON.stringify(WORKER_RESULT.output OR {})
-
-Report: "Submitting result: {result_type}"
-
-Bash: python3 ~/joan-agents/scripts/submit-result.py architect-worker "{result_type}" true \
-  --project-id "{PROJECT_ID}" \
-  --task-id "{WORK_PACKAGE.task_id}" \
-  --output '{output_json}' \
-  --comment '{comment}'
+# Use shared result submission (see helpers.md)
+submitWorkerResult("architect-worker", WORKER_RESULT, WORK_PACKAGE, PROJECT_ID)
 
 # YOLO mode: Auto-approve plan immediately after creation
-IF MODE == "yolo" AND result_type == "plan_created":
+IF MODE == "yolo" AND WORKER_RESULT.result_type == "plan_created":
   Report: "  [YOLO] Auto-approved plan - backend will handle Plan-Approved tag"
-
-Report: "**Architect worker completed for '{WORK_PACKAGE.task_title}' - {result_type}**"
 ```
 
 ## Pipeline Gate Check
@@ -393,15 +322,4 @@ def hasTasksInDevPipeline(tasks, TAG_INDEX, COLUMN_CACHE):
 
 ## Helper Functions
 
-```
-def extractTagNames(tags):
-  names = []
-  FOR tag IN tags:
-    names.push(tag.name)
-  RETURN names
-
-def logWorkerActivity(projectDir, workerType, status, message):
-  logFile = "{projectDir}/.claude/logs/worker-activity.log"
-  timestamp = NOW.strftime("%Y-%m-%d %H:%M:%S")
-  Bash: mkdir -p "$(dirname {logFile})" && echo "[{timestamp}] [{workerType}] [{status}] {message}" >> {logFile}
-```
+See `helpers.md` for shared functions: `extractSmartPayload`, `buildTagSet`, `extractTagNames`, `submitWorkerResult`, `logWorkerActivity`.
