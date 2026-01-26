@@ -16,28 +16,29 @@ This plan achieves **100x improvement** through:
 
 ## Phase 1: Immediate Wins (No Backend Changes)
 
-### 1.1 Split Coordinator into Micro-Handlers
+### 1.1 Split Coordinator into Micro-Handlers — COMPLETED
 
-**Current**: One 2,143-line dispatch.md loaded every spawn.
+**Was**: One 2,283-line dispatch.md loaded every spawn.
 
-**Optimized**: Event-specific handlers loaded only when needed:
+**Now**: Event-specific handlers loaded only when needed. The monolith has been
+renamed to `dispatch-legacy.md` and replaced by the `dispatch/` directory:
 
 ```
 commands/
-├── dispatch.md              # Slim router (~100 lines)
+├── dispatch-legacy.md       # Archived monolith (2,283 lines, for reference only)
 ├── dispatch/
-│   ├── init.md             # Config loading + validation (~80 lines)
-│   ├── fetch-delta.md      # Delta task fetching (~50 lines)
-│   ├── handle-ba.md        # BA queue processing (~100 lines)
-│   ├── handle-architect.md # Architect queue processing (~120 lines)
-│   ├── handle-dev.md       # Dev claiming + dispatch (~150 lines)
-│   ├── handle-reviewer.md  # Review queue processing (~120 lines)
-│   ├── handle-ops.md       # Ops merge processing (~130 lines)
-│   ├── self-healing.md     # Recovery passes (~200 lines) - LAZY
-│   └── result-processor.md # WorkerResult execution (~150 lines)
+│   ├── router.md            # Slim coordinator router (~370 lines, v3)
+│   ├── init.md              # Config loading + validation
+│   ├── queue-builder.md     # Queue building logic
+│   ├── helpers.md           # Shared helper functions
+│   ├── handle-ba.md         # BA queue processing
+│   ├── handle-architect.md  # Architect queue processing
+│   ├── handle-dev.md        # Dev claiming + dispatch
+│   ├── handle-reviewer.md   # Review queue processing
+│   └── handle-ops.md        # Ops merge processing
 ```
 
-**Token savings**: ~80% reduction per spawn (2KB vs 30KB)
+**Token savings**: ~84% reduction per spawn (~4K vs ~20K tokens)
 
 ### 1.2 Delta Task Tracking
 
@@ -300,22 +301,16 @@ Task agent:
 
 ## Implementation Roadmap
 
-### Week 1: Phase 1 Foundation
+### Phase 1 — COMPLETED
 
-- [ ] Create `commands/dispatch/` directory structure
-- [ ] Implement `init.md` (config loading extracted from dispatch.md)
-- [ ] Implement `fetch-delta.md` with timestamp tracking
-- [ ] Add `--healing-mode` flag to existing dispatch.md
-- [ ] Test with existing scheduler
+All micro-handlers extracted, router.md (v3) is the production entry point.
+Monolith renamed to `dispatch-legacy.md` for reference.
 
-### Week 2: Phase 1 Micro-Handlers
-
-- [ ] Extract `handle-ba.md` from dispatch.md
-- [ ] Extract `handle-architect.md` from dispatch.md
-- [ ] Extract `handle-dev.md` from dispatch.md
-- [ ] Extract `handle-reviewer.md` from dispatch.md
-- [ ] Extract `handle-ops.md` from dispatch.md
-- [ ] Update main dispatch.md to route to handlers
+- [x] Create `commands/dispatch/` directory structure
+- [x] Extract handler files (handle-ba, handle-architect, handle-dev, handle-reviewer, handle-ops)
+- [x] Implement router.md with API-first queue building + MCP fallback
+- [x] Add dev claiming protocol to router
+- [x] Rename monolith to dispatch-legacy.md
 
 ### Week 3: Phase 2 Joan Backend
 
@@ -352,7 +347,7 @@ Task agent:
 
 Each phase is independent:
 
-- **Phase 1 rollback**: Set `--healing-mode=full`, point scheduler back to original dispatch.md
+- **Phase 1 rollback**: Rename `dispatch-legacy.md` back to `dispatch.md` (file takes priority over directory)
 - **Phase 2 rollback**: Disable webhook URL in project config, fall back to Phase 1 polling
 
 ---

@@ -127,7 +127,7 @@ After global installation:
     └── agents/ -> ~/joan-agents/.claude/commands/agents/
         ├── init.md
         ├── start.md
-        ├── dispatch.md
+        ├── dispatch/              # Coordinator router + handlers
         ├── model.md
         ├── ba-worker.md
         ├── architect-worker.md

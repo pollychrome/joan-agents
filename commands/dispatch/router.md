@@ -1,21 +1,26 @@
 ---
-description: Slim coordinator router - routes to focused handlers (~100 lines vs 2143)
-argument-hint: [--loop] [--max-idle=N] [--mode=standard|yolo] [--handler=ba|architect|dev|reviewer|ops]
+description: Run coordinator (single pass or continuous WebSocket client)
+argument-hint: [--loop] [--mode=standard|yolo] [--handler=ba|architect|dev|reviewer|ops] [--task=UUID]
 allowed-tools: Bash, Read, Task
 ---
 
-# Coordinator Router (v2 - Optimized)
+# Coordinator Router (v3 - Production)
 
 Lightweight router that delegates to focused micro-handlers.
-~100 lines vs original 2143 lines = 95% token reduction.
+~370 lines vs original 2,283-line monolith = 84% token reduction.
 
 ## Arguments
 
-- `--loop` → Run continuously via external scheduler
-- `--max-idle=N` → Max consecutive idle polls before shutdown
+**CRITICAL: If no `--loop` flag is passed, you MUST run in single-pass mode. Do NOT start the WebSocket client.**
+
+- `--loop` → Start WebSocket client for real-time event-driven dispatch
+- No flag → **DEFAULT: Single pass** (process all queues once, then exit)
 - `--mode=standard|yolo` → Workflow mode override
 - `--handler=NAME` → Run specific handler only (event-driven mode)
 - `--task=UUID` → Process specific task (with --handler)
+
+**Argument Detection Rule:**
+Look for the LITERAL string `--loop` in the command arguments. If it is NOT present, you are in single-pass mode.
 
 ## Configuration
 
@@ -25,25 +30,106 @@ PROJECT_ID = config.projectId
 PROJECT_NAME = config.projectName
 MODE = config.settings.mode OR "standard"
 MODEL = config.settings.model OR "opus"
-MAX_IDLE = config.settings.maxIdlePolls OR 12
+DEV_COUNT = config.agents.devs.count OR 1
+STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes OR 120
+API_URL = "https://joan-api.alexbbenson.workers.dev"
+
+# Agent enabled flags (all default to true)
+BA_ENABLED = config.agents.businessAnalyst.enabled OR true
+ARCHITECT_ENABLED = config.agents.architect.enabled OR true
+REVIEWER_ENABLED = config.agents.reviewer.enabled OR true
+OPS_ENABLED = config.agents.ops.enabled OR true
+DEVS_ENABLED = config.agents.devs.enabled OR true
+```
+
+Parse CLI overrides:
+1. Look for `--mode=standard` or `--mode=yolo` in command arguments → MODE = cli_value
+2. Check environment variable `JOAN_WORKFLOW_MODE` → MODE = env_value
+3. Fallback to config value above
+
+## Configuration Validation
+
+```
+ERRORS = []
+
+IF NOT PROJECT_ID:
+  ERRORS.push("projectId is required in .joan-agents.json. Run /agents:init")
+
+IF NOT PROJECT_NAME:
+  ERRORS.push("projectName is required in .joan-agents.json. Run /agents:init")
+
+IF DEV_COUNT !== 1:
+  ERRORS.push("devs.count must be 1 for strict serial mode (found: " + DEV_COUNT + "). " +
+              "This prevents merge conflicts. Update .joan-agents.json.")
+
+IF ERRORS.length > 0:
+  Report: "Configuration validation failed:"
+  FOR error IN ERRORS:
+    Report: "  - " + error
+  EXIT with error
 ```
 
 ## Execution Branch
 
 ```
 IF --loop flag present:
-  # Delegate to external scheduler (unchanged from original)
-  Report: "Starting external scheduler..."
-  SCHEDULER_SCRIPT="$HOME/joan-agents/scripts/joan-scheduler.sh"
-  Bash: "$SCHEDULER_SCRIPT" . --mode={MODE} (run_in_background: true)
-  EXIT
+  GOTO LOOP_MODE
 
 IF --handler flag present:
-  # Event-driven: run specific handler
   GOTO SINGLE_HANDLER
 ELSE:
-  # Polling: run full dispatch cycle
   GOTO FULL_DISPATCH
+```
+
+## LOOP_MODE
+
+Start the WebSocket client for real-time event-driven dispatch.
+
+```
+PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+
+Report: "Starting WebSocket client for real-time event-driven dispatch"
+Report: "  Mode: {MODE}"
+Report: "  Startup: state-driven (actionable-tasks API)"
+Report: ""
+Report: "NOTE: If you have existing tasks, run '/agents:clean-project --apply' first"
+Report: "      to integrate them into the workflow."
+Report: ""
+Report: "========================================"
+Report: "  MONITORING"
+Report: "========================================"
+Report: "  Live dashboard:  joan status {PROJECT_SLUG} -f"
+Report: "  Tail logs:       joan logs {PROJECT_SLUG}"
+Report: "  Global view:     joan status"
+Report: ""
+Report: "  Stop gracefully: Ctrl+C or kill the process"
+Report: "========================================"
+Report: ""
+
+# Execute the WebSocket client script
+WS_CLIENT_SCRIPT="$HOME/joan-agents/scripts/ws-client.py"
+
+IF WebSocket client script does not exist at $WS_CLIENT_SCRIPT:
+  Report: "ERROR: WebSocket client not found at {WS_CLIENT_SCRIPT}"
+  Report: "Expected joan-agents repository at ~/joan-agents"
+  Report: ""
+  Report: "Installation issue - verify joan-agents is cloned to ~/joan-agents:"
+  Report: "  git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents"
+  EXIT with error
+
+# Auth is handled by ws-client.py which resolves tokens from:
+# 1. JOAN_AUTH_TOKEN environment variable
+# 2. ~/.joan-mcp/credentials.json (shared with joan-mcp, auto-decrypted)
+
+Bash:
+  command: python3 "$HOME/joan-agents/scripts/ws-client.py" --project-dir . --mode {MODE}
+  description: Start WebSocket client for real-time event-driven dispatch
+  # NOT run_in_background - we want to keep this session alive for monitoring
+
+# Client exited (user stopped it)
+Report: ""
+Report: "WebSocket client stopped."
+EXIT
 ```
 
 ## SINGLE_HANDLER
@@ -97,7 +183,7 @@ EXIT with error
 
 ## FULL_DISPATCH
 
-Full polling cycle - build queues and dispatch handlers:
+Full single-pass cycle — build queues and dispatch handlers:
 
 ```
 Report: "=== COORDINATOR - {PROJECT_NAME} ==="
@@ -107,98 +193,208 @@ Report: "Mode: {MODE}, Model: {MODEL}"
 PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 Bash: echo "$(date -Iseconds)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
 
-# 2. Fetch tasks and build lightweight summary
-tasks = mcp__joan__list_tasks(project_id: PROJECT_ID)
-columns = mcp__joan__list_columns(PROJECT_ID)
+# 2. Try API-first queue building, fall back to MCP
+API_SUCCESS = false
+BA_QUEUE = []
+ARCHITECT_QUEUE = []
+DEV_QUEUE = []
+REVIEWER_QUEUE = []
+OPS_QUEUE = []
+PIPELINE_BLOCKED = false
+```
 
-# Build column cache
-COLUMN_CACHE = {}
-FOR col IN columns:
-  COLUMN_CACHE[col.name] = col.id
+### API-First Queue Building
 
-# Build tag index for O(1) lookups
-TAG_INDEX = {}
-FOR task IN tasks:
-  tagSet = Set()
-  FOR tag IN task.tags:
-    tagSet.add(tag.name)
-  TAG_INDEX[task.id] = tagSet
+```
+# Try the actionable-tasks API (pre-computed queues, includes recovery info)
+Bash:
+  command: curl -sf -H "Authorization: Bearer $JOAN_AUTH_TOKEN" \
+    "{API_URL}/api/v1/projects/{PROJECT_ID}/actionable-tasks?mode={MODE}&include_payloads=true&include_recovery=true&stale_claim_minutes={STALE_CLAIM_MINUTES}" \
+    -o /tmp/joan-dispatch-response.json
+  timeout: 15000
 
-# 3. Count queue sizes (don't build full queues - just counts)
-BA_COUNT = 0
-ARCHITECT_COUNT = 0
-DEV_COUNT = 0
-REVIEWER_COUNT = 0
-OPS_COUNT = 0
+IF curl succeeded (exit code 0):
+  response = JSON.parse(read("/tmp/joan-dispatch-response.json"))
+  API_SUCCESS = true
 
-FOR task IN tasks:
-  taskId = task.id
-  tags = TAG_INDEX[taskId]
+  # Extract queue counts
+  queues = response.queues OR {}
+  BA_QUEUE = queues.ba OR []
+  ARCHITECT_QUEUE = queues.architect OR []
+  DEV_QUEUE = queues.dev OR []
+  REVIEWER_QUEUE = queues.reviewer OR []
+  OPS_QUEUE = queues.ops OR []
 
-  # BA tasks
-  IF task.column_id == COLUMN_CACHE["To Do"] AND NOT tags.has("Ready"):
-    BA_COUNT += 1
-  ELIF task.column_id == COLUMN_CACHE["Analyse"] AND tags.has("Needs-Clarification") AND tags.has("Clarification-Answered"):
-    BA_COUNT += 1
+  # Pipeline status
+  pipeline = response.pipeline OR {}
+  PIPELINE_BLOCKED = pipeline.blocked OR false
 
-  # Architect tasks
-  ELIF task.column_id == COLUMN_CACHE["Review"] AND tags.has("Invoke-Architect") AND NOT tags.has("Architect-Assist-Complete"):
-    ARCHITECT_COUNT += 1
-  ELIF task.column_id == COLUMN_CACHE["Analyse"] AND tags.has("Plan-Pending-Approval") AND tags.has("Plan-Approved"):
-    ARCHITECT_COUNT += 1
-  ELIF task.column_id == COLUMN_CACHE["Analyse"] AND tags.has("Ready") AND NOT tags.has("Plan-Pending-Approval"):
-    ARCHITECT_COUNT += 1
+  # Log summary
+  summary = response.summary OR {}
+  Report: "API: {summary.total_actionable} actionable, {summary.total_recovery_issues} recovery, {summary.pending_human_action} pending human"
 
-  # Dev tasks
-  ELIF task.column_id == COLUMN_CACHE["Development"] AND NOT isClaimedByAnyDev(tags) AND
-       (tags.has("Planned") OR tags.has("Rework-Requested") OR tags.has("Merge-Conflict")) AND
-       NOT tags.has("Implementation-Failed") AND NOT tags.has("Branch-Setup-Failed"):
-    DEV_COUNT += 1
+  IF PIPELINE_BLOCKED:
+    Report: "Pipeline BLOCKED: '{pipeline.blocking_task_title}' - {pipeline.blocking_reason}"
 
-  # Reviewer tasks
-  ELIF task.column_id == COLUMN_CACHE["Review"] AND
-       (tags.has("Dev-Complete") OR tags.has("Rework-Complete")) AND
-       NOT tags.has("Review-In-Progress") AND NOT tags.has("Review-Approved"):
-    REVIEWER_COUNT += 1
+  # Log recovery issues (informational — doctor/API handle remediation)
+  recovery = response.recovery OR {}
+  FOR stale IN (recovery.stale_claims OR []):
+    Report: "  STALE CLAIM: '{stale.task_title}' ({stale.claim_age_minutes}m)"
+  FOR anomaly IN (recovery.anomalies OR []):
+    Report: "  ANOMALY: '{anomaly.task_title}' [{anomaly.type}]"
 
-  # Ops tasks
-  ELIF (task.column_id == COLUMN_CACHE["Review"] OR task.column_id == COLUMN_CACHE["Deploy"]) AND
-       tags.has("Review-Approved") AND tags.has("Ops-Ready"):
-    OPS_COUNT += 1
+ELSE:
+  Report: "API unavailable, falling back to MCP queue building"
+```
 
-Report: "Queues: BA={BA_COUNT}, Arch={ARCHITECT_COUNT}, Dev={DEV_COUNT}, Rev={REVIEWER_COUNT}, Ops={OPS_COUNT}"
+### MCP Fallback Queue Building
 
-# 4. Dispatch handlers in priority order (only if work exists)
+```
+IF NOT API_SUCCESS:
+  # Fetch tasks and columns via MCP
+  tasks = mcp__joan__list_tasks(project_id: PROJECT_ID)
+  columns = mcp__joan__list_columns(PROJECT_ID)
+
+  # Build column cache
+  COLUMN_CACHE = {}
+  FOR col IN columns:
+    COLUMN_CACHE[col.name] = col.id
+
+  # Build tag index for O(1) lookups
+  TAG_INDEX = {}
+  FOR task IN tasks:
+    tagSet = Set()
+    FOR tag IN task.tags:
+      tagSet.add(tag.name)
+    TAG_INDEX[task.id] = tagSet
+
+  # Count queue sizes
+  BA_COUNT = 0
+  ARCHITECT_COUNT = 0
+  DEV_COUNT_Q = 0
+  REVIEWER_COUNT = 0
+  OPS_COUNT = 0
+
+  FOR task IN tasks:
+    taskId = task.id
+    tags = TAG_INDEX[taskId]
+
+    # BA tasks
+    IF task.column_id == COLUMN_CACHE["To Do"] AND NOT tags.has("Ready"):
+      BA_COUNT += 1
+
+    ELIF task.column_id == COLUMN_CACHE["Analyse"] AND tags.has("Needs-Clarification") AND tags.has("Clarification-Answered"):
+      BA_COUNT += 1
+
+    # Architect tasks
+    ELIF task.column_id == COLUMN_CACHE["Review"] AND tags.has("Invoke-Architect") AND NOT tags.has("Architect-Assist-Complete"):
+      ARCHITECT_COUNT += 1
+
+    ELIF task.column_id == COLUMN_CACHE["Analyse"] AND tags.has("Plan-Pending-Approval") AND tags.has("Plan-Approved"):
+      ARCHITECT_COUNT += 1
+
+    ELIF task.column_id == COLUMN_CACHE["Analyse"] AND tags.has("Ready") AND NOT tags.has("Plan-Pending-Approval"):
+      ARCHITECT_COUNT += 1
+
+    # Dev tasks
+    ELIF task.column_id == COLUMN_CACHE["Development"] AND NOT isClaimedByAnyDev(tags) AND
+         (tags.has("Planned") OR tags.has("Rework-Requested") OR tags.has("Merge-Conflict")) AND
+         NOT tags.has("Implementation-Failed") AND NOT tags.has("Branch-Setup-Failed"):
+      DEV_COUNT_Q += 1
+
+    # Reviewer tasks
+    ELIF task.column_id == COLUMN_CACHE["Review"] AND
+         (tags.has("Dev-Complete") OR tags.has("Rework-Complete")) AND
+         NOT tags.has("Review-In-Progress") AND NOT tags.has("Review-Approved"):
+      REVIEWER_COUNT += 1
+
+    # Ops tasks
+    ELIF (task.column_id == COLUMN_CACHE["Review"] OR task.column_id == COLUMN_CACHE["Deploy"]) AND
+         tags.has("Review-Approved") AND tags.has("Ops-Ready"):
+      OPS_COUNT += 1
+
+  # Check pipeline blocker (MCP path)
+  PIPELINE_BLOCKED = hasPipelineBlocker(tasks, TAG_INDEX, COLUMN_CACHE)
+
+Report: "Queues: BA={len(BA_QUEUE) or BA_COUNT}, Arch={len(ARCHITECT_QUEUE) or ARCHITECT_COUNT}, Dev={len(DEV_QUEUE) or DEV_COUNT_Q}, Rev={len(REVIEWER_QUEUE) or REVIEWER_COUNT}, Ops={len(OPS_QUEUE) or OPS_COUNT}"
+```
+
+### Cache Project Tags (for Dev Claiming)
+
+```
+# Cache project tags for claiming (needed in both API and MCP paths)
+project_tags = mcp__joan__list_project_tags(PROJECT_ID)
+TAG_CACHE = {}
+FOR tag IN project_tags:
+  TAG_CACHE[tag.name] = tag.id
+```
+
+### Dispatch in Priority Order
+
+```
 DISPATCHED = 0
 
 # P0: Invocations (highest priority)
-IF ARCHITECT_COUNT > 0 AND hasInvocationPending(tasks, TAG_INDEX, COLUMN_CACHE):
+IF API_SUCCESS:
+  # API path: check if any architect queue item has mode "advisory-conflict"
+  HAS_INVOCATION = any(item.mode == "advisory-conflict" FOR item IN ARCHITECT_QUEUE)
+ELSE:
+  HAS_INVOCATION = hasInvocationPending(tasks, TAG_INDEX, COLUMN_CACHE)
+
+IF HAS_INVOCATION AND ARCHITECT_ENABLED:
   Report: "Dispatching Architect (invocation priority)"
   Task agent: handle-architect --all
   DISPATCHED += 1
 
 # P1: Ops (finish what's started)
-IF OPS_COUNT > 0:
+IF (len(OPS_QUEUE) > 0 OR OPS_COUNT > 0) AND OPS_ENABLED:
   Report: "Dispatching Ops"
   Task agent: handle-ops --all
   DISPATCHED += 1
 
 # P2: Reviewer
-IF REVIEWER_COUNT > 0:
+IF (len(REVIEWER_QUEUE) > 0 OR REVIEWER_COUNT > 0) AND REVIEWER_ENABLED:
   Report: "Dispatching Reviewer"
   Task agent: handle-reviewer --all
   DISPATCHED += 1
 
-# P3: Dev (strict serial - only if pipeline clear)
-IF DEV_COUNT > 0 AND NOT hasPipelineBlocker(tasks, TAG_INDEX, COLUMN_CACHE):
-  Report: "Dispatching Dev"
-  Task agent: handle-dev --all
-  DISPATCHED += 1
+# P3: Dev (strict serial — only if pipeline clear)
+IF (len(DEV_QUEUE) > 0 OR DEV_COUNT_Q > 0) AND DEVS_ENABLED AND NOT PIPELINE_BLOCKED:
+  # === DEV CLAIMING PROTOCOL ===
+  # Pick first dev task from queue
+  IF API_SUCCESS:
+    DEV_TASK_ID = DEV_QUEUE[0].task_id
+  ELSE:
+    # Find first claimable dev task from MCP data
+    DEV_TASK_ID = first task in tasks WHERE:
+      task.column_id == COLUMN_CACHE["Development"] AND
+      NOT isClaimedByAnyDev(TAG_INDEX[task.id]) AND
+      (TAG_INDEX[task.id].has("Planned") OR TAG_INDEX[task.id].has("Rework-Requested") OR TAG_INDEX[task.id].has("Merge-Conflict")) AND
+      NOT TAG_INDEX[task.id].has("Implementation-Failed") AND NOT TAG_INDEX[task.id].has("Branch-Setup-Failed")
 
-# P4: Architect (planning)
-IF ARCHITECT_COUNT > 0 AND NOT hasInvocationPending(tasks, TAG_INDEX, COLUMN_CACHE):
-  # Check pipeline gate for new plans
-  IF NOT hasPipelineBlocker(tasks, TAG_INDEX, COLUMN_CACHE):
+  IF DEV_TASK_ID AND TAG_CACHE["Claimed-Dev-1"]:
+    # Add claim tag
+    mcp__joan__add_tag_to_task(PROJECT_ID, DEV_TASK_ID, TAG_CACHE["Claimed-Dev-1"])
+
+    # Verify claim (wait 1 second, re-fetch, check tag present)
+    Bash: sleep 1
+    verify_task = mcp__joan__get_task(DEV_TASK_ID)
+    verify_tags = Set(tag.name FOR tag IN verify_task.tags)
+
+    IF verify_tags.has("Claimed-Dev-1"):
+      Report: "Dispatching Dev (claimed task {DEV_TASK_ID})"
+      Task agent: handle-dev --task={DEV_TASK_ID}
+      DISPATCHED += 1
+    ELSE:
+      # Claim failed — release and skip
+      Report: "WARN: Dev claim verification failed for {DEV_TASK_ID}, skipping"
+      mcp__joan__remove_tag_from_task(PROJECT_ID, DEV_TASK_ID, TAG_CACHE["Claimed-Dev-1"])
+  ELSE:
+    Report: "Dev queue has work but claiming prerequisites not met"
+
+# P4: Architect (planning — skip if invocation already dispatched above)
+IF (len(ARCHITECT_QUEUE) > 0 OR ARCHITECT_COUNT > 0) AND ARCHITECT_ENABLED AND NOT HAS_INVOCATION:
+  IF NOT PIPELINE_BLOCKED:
     Report: "Dispatching Architect (planning)"
     Task agent: handle-architect --all
     DISPATCHED += 1
@@ -206,17 +402,25 @@ IF ARCHITECT_COUNT > 0 AND NOT hasInvocationPending(tasks, TAG_INDEX, COLUMN_CAC
     Report: "Architect blocked by pipeline gate"
 
 # P5: BA (always allowed)
-IF BA_COUNT > 0:
+IF (len(BA_QUEUE) > 0 OR BA_COUNT > 0) AND BA_ENABLED:
   Report: "Dispatching BA"
   Task agent: handle-ba --all --max=10
   DISPATCHED += 1
+```
 
-# 5. Report results
+### Status Report and Exit
+
+```
 Report: ""
 Report: "Dispatched {DISPATCHED} handlers"
 
 IF DISPATCHED == 0:
   Report: "No work to dispatch (idle)"
+
+# Write status file for monitoring
+Bash: echo '{"dispatched":'$DISPATCHED',"timestamp":"'$(date -Iseconds)'","mode":"{MODE}"}' > /tmp/joan-agents-{PROJECT_SLUG}.status
+
+EXIT
 ```
 
 ## Helper Functions
@@ -255,7 +459,15 @@ def hasPipelineBlocker(tasks, TAG_INDEX, COLUMN_CACHE):
 
 ## Migration Notes
 
-This router replaces `dispatch.md` with ~100 lines vs 2143 lines.
+This router (`v3`) replaces the 2,283-line `dispatch.md` monolith (renamed to `dispatch-legacy.md`).
+
+**What's in this router:**
+- Configuration loading + validation
+- WebSocket client launch (`--loop` mode)
+- API-first queue building with MCP fallback
+- Dev claiming protocol (coordinator-managed)
+- Priority-based handler dispatch
+- Status file for monitoring
 
 **What moved to handlers:**
 - BA dispatch logic → `handle-ba.md`
@@ -263,22 +475,24 @@ This router replaces `dispatch.md` with ~100 lines vs 2143 lines.
 - Dev dispatch logic → `handle-dev.md`
 - Reviewer dispatch logic → `handle-reviewer.md`
 - Ops dispatch logic → `handle-ops.md`
-- Self-healing → `self-healing.md` (lazy, on-demand)
-- Doctor diagnostics → `doctor.md` (existing, unchanged)
+
+**What moved to API/backend:**
+- Self-healing → actionable-tasks API + `/agents:doctor`
+- YOLO auto-approvals → Joan backend workflow rules
+- Queue computation → actionable-tasks API (MCP fallback retained)
 
 **Token savings:**
-- Before: 30KB loaded every spawn
-- After: ~2KB router + ~3KB per handler (only loaded when needed)
-- Typical cycle: 5-8KB vs 30KB = 75% reduction
+- Before: ~20K tokens loaded every spawn (2,283 lines)
+- After: ~4K tokens router + ~3K per handler (only loaded when needed)
+- Typical single-pass: ~4K vs ~20K = 80% reduction
 
-**Event-driven usage:**
+**Event-driven usage (via ws-client.py):**
 ```bash
-# Webhook triggers specific handler with task ID
-/dispatch/router --handler=architect --task=abc-123
+/agents:dispatch --loop
 ```
 
-**Polling usage:**
+**Single-pass usage:**
 ```bash
-# Full dispatch cycle (backwards compatible)
-/dispatch/router
+/agents:dispatch
+/agents:dispatch --mode=yolo
 ```
