@@ -70,9 +70,18 @@ def generate_global_table(instances: dict) -> Table:
             mode_str = "[green]\u26a1[/green]"
             events_str = str(stats.get("events_received", 0))
             active_count = len(stats.get("active_workers", []))
+            catchup = stats.get("catchup", {})
             if active_count > 0:
                 status = f"\U0001f504 {active_count} worker{'s' if active_count > 1 else ''}"
                 status_style = "green"
+            elif catchup.get("in_progress"):
+                scan_start = catchup.get("started_at")
+                if scan_start:
+                    elapsed_s = int((now - scan_start).total_seconds())
+                    status = f"\U0001f50d Scanning ({elapsed_s}s)"
+                else:
+                    status = "\U0001f50d Scanning"
+                status_style = "cyan"
             else:
                 last_event = stats.get("last_event")
                 if last_event:
@@ -273,6 +282,14 @@ def generate_pipeline_visual(
                 active_task = worker.get("task", "")
 
     pipeline_state = stats.get("pipeline_state", {})
+
+    # In webhook mode, use catchup scan queue counts as pipeline state
+    catchup = stats.get("catchup", {})
+    last_scan = catchup.get("last_scan") or {}
+    scan_queues = last_scan.get("queues", {})
+    if not pipeline_state and scan_queues:
+        pipeline_state = {stage: scan_queues.get(stage, 0) for stage in PIPELINE_STAGES}
+
     if not active_stage and pipeline_state:
         waiting_stages = pipeline_state
         for stage in reversed(PIPELINE_STAGES):
@@ -369,6 +386,36 @@ def generate_pipeline_visual(
         else:
             text.append("  \U0001f3e5 DOCTOR ", "bold red")
         text.append(" Diagnosing issues...", "red")
+
+    # Catchup scan indicator
+    catchup_in_progress = catchup.get("in_progress", False)
+    if catchup_in_progress:
+        text.append("\n\n  ")
+        scan_started = catchup.get("started_at")
+        if blink_state:
+            text.append("  \U0001f50d SCANNING ", "bold bright_cyan on blue")
+        else:
+            text.append("  \U0001f50d SCANNING ", "bold cyan")
+        text.append(" Catchup scan running", "cyan")
+        if scan_started:
+            elapsed = datetime.now() - scan_started
+            text.append(f" ({format_duration(elapsed)})", "dim")
+    elif not is_actively_working and not active_stage and last_scan:
+        # No active work — show last scan summary
+        gate = last_scan.get("pipeline_gate", "")
+        dispatched = last_scan.get("dispatched", 0)
+        tasks_scanned = last_scan.get("tasks_scanned", 0)
+        pending = last_scan.get("pending_human", 0)
+        text.append("\n\n  ")
+        text.append("  Last scan: ", "dim")
+        text.append(f"{tasks_scanned} tasks", "dim")
+        if dispatched:
+            text.append(f", {dispatched} dispatched", "dim green")
+        if gate:
+            gate_style = "dim yellow" if gate == "BLOCKED" else "dim green"
+            text.append(f", gate {gate}", gate_style)
+        if pending:
+            text.append(f", {pending} awaiting human", "dim yellow")
 
     return text
 
@@ -862,6 +909,32 @@ def generate_project_layout(
     if stats.get("started_at"):
         runtime = now - stats["started_at"]
         stats_table.add_row("Runtime", format_duration(runtime))
+
+    # Catchup scan info
+    catchup = stats.get("catchup", {})
+    last_scan = catchup.get("last_scan") or {}
+    if catchup.get("in_progress"):
+        scan_start = catchup.get("started_at")
+        if scan_start:
+            elapsed_s = int((now - scan_start).total_seconds())
+            stats_table.add_row("Scan", f"[cyan]Running ({elapsed_s}s)[/cyan]")
+        else:
+            stats_table.add_row("Scan", "[cyan]Running[/cyan]")
+    elif last_scan:
+        gate = last_scan.get("pipeline_gate", "")
+        if gate:
+            gate_style = "yellow" if gate == "BLOCKED" else "green"
+            stats_table.add_row("Pipeline Gate", f"[{gate_style}]{gate}[/{gate_style}]")
+        scan_queues = last_scan.get("queues", {})
+        if scan_queues:
+            active_queues = [
+                f"{s}:{scan_queues[s]}" for s in PIPELINE_STAGES if scan_queues.get(s, 0) > 0
+            ]
+            if active_queues:
+                stats_table.add_row("Queues", " ".join(active_queues))
+        pending = last_scan.get("pending_human", 0)
+        if pending:
+            stats_table.add_row("Human Action", f"[yellow]{pending} pending[/yellow]")
 
     layout["stats"].update(Panel(stats_table, title="Stats", border_style="green"))
 

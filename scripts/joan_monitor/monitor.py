@@ -405,6 +405,66 @@ class JoanMonitor:
         )
         self.console.print()
 
+        # Catchup scan info (webhook mode)
+        catchup = stats.get("catchup", {})
+        last_scan = catchup.get("last_scan") or {}
+        if catchup.get("in_progress") or last_scan:
+            from joan_monitor.constants import PIPELINE_STAGES
+
+            scan_table = Table(show_header=False, box=None, padding=(0, 2))
+            scan_table.add_column("Key", style="cyan")
+            scan_table.add_column("Value")
+
+            if catchup.get("in_progress"):
+                scan_start = catchup.get("started_at")
+                if scan_start:
+                    elapsed = int((now - scan_start).total_seconds())
+                    scan_table.add_row("Status", f"[bold cyan]Scanning ({elapsed}s)[/bold cyan]")
+                else:
+                    scan_table.add_row("Status", "[bold cyan]Scanning[/bold cyan]")
+            elif catchup.get("last_completed_at"):
+                elapsed = int((now - catchup["last_completed_at"]).total_seconds())
+                if elapsed < 60:
+                    scan_table.add_row("Last Scan", f"{elapsed}s ago")
+                else:
+                    scan_table.add_row("Last Scan", f"{int(elapsed / 60)}m ago")
+
+            if last_scan.get("tasks_scanned"):
+                scan_table.add_row("Tasks Scanned", str(last_scan["tasks_scanned"]))
+
+            scan_queues = last_scan.get("queues", {})
+            if scan_queues:
+                active_queues = [
+                    f"{s}: {scan_queues[s]}" for s in PIPELINE_STAGES if scan_queues.get(s, 0) > 0
+                ]
+                if active_queues:
+                    scan_table.add_row("Active Queues", ", ".join(active_queues))
+                else:
+                    scan_table.add_row("Active Queues", "[dim]All empty[/dim]")
+
+            gate = last_scan.get("pipeline_gate", "")
+            if gate:
+                gate_style = "yellow" if gate == "BLOCKED" else "green"
+                scan_table.add_row("Pipeline Gate", f"[{gate_style}]{gate}[/{gate_style}]")
+
+            dispatched = last_scan.get("dispatched", 0)
+            if dispatched:
+                scan_table.add_row("Workers Dispatched", str(dispatched))
+
+            pending = last_scan.get("pending_human", 0)
+            if pending:
+                scan_table.add_row("Awaiting Human", f"[yellow]{pending}[/yellow]")
+
+            healing = last_scan.get("self_healing", {})
+            issues = sum(healing.values()) if healing else 0
+            if issues > 0:
+                scan_table.add_row("Self-Healing", f"[yellow]{issues} issues found[/yellow]")
+
+            self.console.print(
+                Panel(scan_table, title="\U0001f50d Catchup Scan", border_style="cyan")
+            )
+            self.console.print()
+
         # Active workers
         if stats.get("active_workers"):
             workers_table = Table(show_header=True, box=box.ROUNDED)

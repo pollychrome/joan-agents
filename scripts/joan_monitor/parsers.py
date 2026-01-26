@@ -299,6 +299,12 @@ def parse_webhook_log_stats(log_file: Path) -> dict:
         "tasks_completed": 0,
         "recent_events": [],
         "handlers_by_type": {},
+        "catchup": {
+            "in_progress": False,
+            "started_at": None,
+            "last_completed_at": None,
+            "last_scan": None,
+        },
     }
 
     try:
@@ -362,10 +368,83 @@ def parse_webhook_log_stats(log_file: Path) -> dict:
             ):
                 stats["tasks_completed"] += 1
 
-            # CATCHUP messages
-            if "Single-pass dispatch complete" in line or "CATCHUP" in line:
+            # CATCHUP messages — track scan lifecycle
+            if "CATCHUP" in line and "Dispatch started" in line:
                 if timestamp:
+                    stats["catchup"]["started_at"] = timestamp
                     stats["last_event"] = timestamp
+            elif "Single-pass dispatch complete" in line:
+                if timestamp:
+                    stats["catchup"]["last_completed_at"] = timestamp
+                    stats["last_event"] = timestamp
+
+            # [dispatch] lines — parse coordinator summary output
+            if "[dispatch]" in line:
+                dispatch_msg = line.split("[dispatch]", 1)[1].strip()
+
+                # Queue counts: "BA:               0" or "Architect:        4 (processed 1)"
+                queue_match = re.match(
+                    r"(BA|Architect|Dev|Reviewer|Ops):\s+(\d+)", dispatch_msg
+                )
+                if queue_match:
+                    if stats["catchup"]["last_scan"] is None:
+                        stats["catchup"]["last_scan"] = {}
+                    queues = stats["catchup"]["last_scan"].setdefault("queues", {})
+                    queues[queue_match.group(1)] = int(queue_match.group(2))
+
+                # Tasks scanned
+                scanned_match = re.match(r"Tasks scanned:\s+(\d+)", dispatch_msg)
+                if scanned_match:
+                    if stats["catchup"]["last_scan"] is None:
+                        stats["catchup"]["last_scan"] = {}
+                    stats["catchup"]["last_scan"]["tasks_scanned"] = int(
+                        scanned_match.group(1)
+                    )
+
+                # Pipeline gate
+                gate_match = re.match(r"Pipeline gate:\s+(\w+)", dispatch_msg)
+                if gate_match:
+                    if stats["catchup"]["last_scan"] is None:
+                        stats["catchup"]["last_scan"] = {}
+                    stats["catchup"]["last_scan"]["pipeline_gate"] = gate_match.group(1)
+
+                # Dispatched workers
+                dispatched_match = re.match(r"Dispatched:\s+(\d+)", dispatch_msg)
+                if dispatched_match:
+                    if stats["catchup"]["last_scan"] is None:
+                        stats["catchup"]["last_scan"] = {}
+                    stats["catchup"]["last_scan"]["dispatched"] = int(
+                        dispatched_match.group(1)
+                    )
+
+                # Self-healing stats
+                for key, label in [
+                    ("stale_claims", "Stale claims"),
+                    ("anomalies", "Anomalies"),
+                    ("stuck_states", "Stuck states"),
+                    ("invalid_states", "Invalid states"),
+                ]:
+                    heal_match = re.match(
+                        rf"{label}:\s+(\d+)", dispatch_msg
+                    )
+                    if heal_match:
+                        if stats["catchup"]["last_scan"] is None:
+                            stats["catchup"]["last_scan"] = {}
+                        healing = stats["catchup"]["last_scan"].setdefault(
+                            "self_healing", {}
+                        )
+                        healing[key] = int(heal_match.group(1))
+
+                # Pending human action
+                pending_match = re.match(
+                    r"(\d+) tasks? awaiting human action", dispatch_msg
+                )
+                if pending_match:
+                    if stats["catchup"]["last_scan"] is None:
+                        stats["catchup"]["last_scan"] = {}
+                    stats["catchup"]["last_scan"]["pending_human"] = int(
+                        pending_match.group(1)
+                    )
 
             # Build recent events list
             if any(
@@ -387,6 +466,15 @@ def parse_webhook_log_stats(log_file: Path) -> dict:
                     )
 
         stats["recent_events"] = stats["recent_events"][-20:]
+
+        # Determine if catchup scan is in progress
+        catchup = stats["catchup"]
+        if catchup["started_at"]:
+            if (
+                catchup["last_completed_at"] is None
+                or catchup["started_at"] > catchup["last_completed_at"]
+            ):
+                catchup["in_progress"] = True
 
     except Exception:
         pass
