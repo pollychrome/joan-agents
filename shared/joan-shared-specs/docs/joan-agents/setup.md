@@ -351,7 +351,6 @@ The agents need to run git, npm, and test commands without permission prompts. `
 {
   "permissions": {
     "allow": [
-      "Bash(git worktree:*)",
       "Bash(git fetch:*)",
       "Bash(git checkout:*)",
       "Bash(git merge:*)",
@@ -364,13 +363,20 @@ The agents need to run git, npm, and test commands without permission prompts. `
       "Bash(git log:*)",
       "Bash(git diff:*)",
       "Bash(git reset:*)",
+      "Bash(git stash:*)",
       "Bash(npm install:*)",
       "Bash(npm test:*)",
       "Bash(npm run:*)",
       "Bash(pip install:*)",
       "Bash(pytest:*)",
       "Bash(mkdir:*)",
+      "Bash(cd:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh api:*)",
+      "Bash(python3:*)",
       "mcp__joan__*",
+      "mcp__plugin_agents_joan__*",
       "mcp__github__*"
     ]
   }
