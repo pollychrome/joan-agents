@@ -1373,6 +1373,9 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
 
       Report: "BA [{ba_count + 1}/{MAX_BA_TASKS_PER_CYCLE}] Dispatching for '{item.task.title}' (mode: {item.mode})"
 
+      # Track dispatch timing for worker_session metrics
+      worker_dispatch_start = Date.now()
+
       # Dispatch worker with work package in prompt
       result = Task tool call:
         subagent_type: "business-analyst"
@@ -1415,7 +1418,7 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
         Report: "  WARNING: BA task '{item.task.title}' failed - continuing with others"
         # Record failure but don't stop - we continue processing remaining BA tasks
 
-      RESULTS.push({worker: "ba", task: item.task, result: result})
+      RESULTS.push({worker: "ba", task: item.task, result: result, dispatched_at: worker_dispatch_start})
       ba_count++
       DISPATCHED++
 
@@ -1449,6 +1452,7 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
     }
 
     Report: "Dispatching BA worker for '{item.task.title}' (mode: {item.mode})"
+    worker_dispatch_start = Date.now()
 
     result = Task tool call:
       subagent_type: "business-analyst"
@@ -1484,7 +1488,7 @@ IF BA_ENABLED AND BA_QUEUE.length > 0:
         }
         ```
 
-    RESULTS.push({worker: "ba", task: item.task, result: result})
+    RESULTS.push({worker: "ba", task: item.task, result: result, dispatched_at: worker_dispatch_start})
     DISPATCHED++
 
 # 4b: Dispatch Architect worker (1 task, pipeline gate applies)
@@ -1515,6 +1519,7 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
   }
 
   Report: "Dispatching Architect worker for '{item.task.title}' (mode: {item.mode})"
+  worker_dispatch_start = Date.now()
 
   result = Task tool call:
     subagent_type: "architect"
@@ -1551,7 +1556,7 @@ IF ARCHITECT_ENABLED AND ARCHITECT_QUEUE.length > 0:
       }
       ```
 
-  RESULTS.push({worker: "architect", task: item.task, result: result})
+  RESULTS.push({worker: "architect", task: item.task, result: result, dispatched_at: worker_dispatch_start})
   DISPATCHED++
 
 # 4c: Dispatch Dev worker (1 task, strict serial)
@@ -1596,6 +1601,7 @@ IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
       }
 
       Report: "Dispatching Dev worker for '{task.title}' (mode: {item.mode})"
+      worker_dispatch_start = Date.now()
 
       result = Task tool call:
         subagent_type: "implementation-worker"
@@ -1637,7 +1643,7 @@ IF DEVS_ENABLED AND DEV_QUEUE.length > 0:
           }
           ```
 
-      RESULTS.push({worker: "dev", dev_id: dev_id, task: task, result: result})
+      RESULTS.push({worker: "dev", dev_id: dev_id, task: task, result: result, dispatched_at: worker_dispatch_start})
       DISPATCHED++
 
     ELSE:
@@ -1676,6 +1682,7 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
   }
 
   Report: "Dispatching Reviewer worker for '{item.task.title}'"
+  worker_dispatch_start = Date.now()
 
   result = Task tool call:
     subagent_type: "code-reviewer"
@@ -1711,7 +1718,7 @@ IF REVIEWER_ENABLED AND REVIEWER_QUEUE.length > 0:
       }
       ```
 
-  RESULTS.push({worker: "reviewer", task: item.task, result: result})
+  RESULTS.push({worker: "reviewer", task: item.task, result: result, dispatched_at: worker_dispatch_start})
   DISPATCHED++
 
 # 4e: Dispatch Ops worker (1 task, unlocks pipeline)
@@ -1742,6 +1749,7 @@ IF OPS_ENABLED AND OPS_QUEUE.length > 0:
   }
 
   Report: "Dispatching Ops worker for '{item.task.title}' (mode: {item.mode})"
+  worker_dispatch_start = Date.now()
 
   result = Task tool call:
     subagent_type: "ops"
@@ -1781,7 +1789,7 @@ IF OPS_ENABLED AND OPS_QUEUE.length > 0:
       }
       ```
 
-  RESULTS.push({worker: "ops", task: item.task, result: result})
+  RESULTS.push({worker: "ops", task: item.task, result: result, dispatched_at: worker_dispatch_start})
   DISPATCHED++
 
 Report: "Dispatched {DISPATCHED} workers"
@@ -2024,6 +2032,26 @@ FOR EACH {worker, task, result, dev_id} IN RESULTS:
       echo '{JSON.stringify(failure_metric)}' >> {METRICS_FILE}
 
     Report: "  ✓ Failure metric logged"
+
+  # 3g-session. Log worker_session metric (for cost dashboard)
+  IF dispatched_at:
+    duration_seconds = Math.round((Date.now() - dispatched_at) / 1000)
+    session_metric = {
+      "timestamp": new Date().toISOString(),
+      "event": "worker_session",
+      "project": PROJECT_NAME,
+      "worker": worker,
+      "model": MODEL,
+      "task_id": task.id,
+      "task_title": task.title,
+      "success": parsed.success,
+      "duration_seconds": duration_seconds
+    }
+
+    Run bash command:
+      echo '{JSON.stringify(session_metric)}' >> {METRICS_FILE}
+
+    Report: "  ✓ Worker session metric logged ({duration_seconds}s)"
 
   # 3h. Handle agent invocation (cross-agent consultation)
   IF parsed.invoke_agent:
