@@ -192,8 +192,11 @@ class JoanMonitor:
         else:
             stats = parse_log_stats(log_file) if log_file.exists() else {}
 
+        # Use session start time to scope metrics to current session only
+        session_start = stats.get("started_at")
+
         metrics_file = project_dir / ".claude/logs/agent-metrics.jsonl"
-        metrics = parse_metrics(metrics_file) if metrics_file.exists() else {}
+        metrics = parse_metrics(metrics_file, since=session_start) if metrics_file.exists() else {}
 
         worker_log = project_dir / ".claude/logs/worker-activity.log"
         worker_activity = (
@@ -215,6 +218,16 @@ class JoanMonitor:
             "worker_activity": worker_activity,
             "mode": "webhook" if is_webhook else "polling",
         }
+
+    @staticmethod
+    def _get_session_start(info: dict) -> "datetime | None":
+        """Extract the current coordinator session start time from parsed stats.
+
+        The websocket log is rotated on each session start, so its first line
+        timestamp IS the session start. We use this to scope metrics/throughput/cost
+        to the current session only, avoiding stale data from previous runs.
+        """
+        return info.get("stats", {}).get("started_at")
 
     # --- Public view methods ---
 
@@ -470,9 +483,10 @@ class JoanMonitor:
         # Throughput metrics (Phase 2)
         worker_log = info.get("worker_log")
         metrics_file = info.get("metrics_file")
+        session_start = self._get_session_start(info)
         if worker_log and worker_log.exists():
             tp = ThroughputMetrics()
-            throughput_data = tp.compute_all(worker_log, metrics_file)
+            throughput_data = tp.compute_all(worker_log, metrics_file, since=session_start)
             if throughput_data.get("stage_durations"):
                 has_data = any(
                     d.get("count", 0) > 0
@@ -486,7 +500,7 @@ class JoanMonitor:
         # Cost metrics (Phase 4)
         if metrics_file and metrics_file.exists():
             cm = CostMetrics()
-            cost_data = cm.compute_all(metrics_file)
+            cost_data = cm.compute_all(metrics_file, since=session_start)
             if cost_data.get("sessions"):
                 from joan_monitor.panels import generate_cost_panel
                 self.console.print(generate_cost_panel(cost_data))
@@ -615,9 +629,11 @@ class JoanMonitor:
             else:
                 info["stats"] = parse_log_stats(log_file)
 
+        session_start = self._get_session_start(info)
+
         metrics_file = info.get("metrics_file")
         if metrics_file and metrics_file.exists():
-            info["metrics"] = parse_metrics(metrics_file)
+            info["metrics"] = parse_metrics(metrics_file, since=session_start)
 
         worker_log = info.get("worker_log")
         if worker_log and worker_log.exists():
@@ -627,19 +643,21 @@ class JoanMonitor:
         """Refresh throughput metrics (Phase 2)."""
         worker_log = info.get("worker_log")
         metrics_file = info.get("metrics_file")
+        session_start = self._get_session_start(info)
         if worker_log and worker_log.exists():
             self._throughput = ThroughputMetrics()  # Reset for fresh computation
             self._throughput_data = self._throughput.compute_all(
-                worker_log, metrics_file
+                worker_log, metrics_file, since=session_start
             )
         self._throttler.mark_refreshed("throughput_metrics")
 
     def _refresh_cost(self, info: dict):
         """Refresh cost metrics (Phase 4)."""
         metrics_file = info.get("metrics_file")
+        session_start = self._get_session_start(info)
         if metrics_file and metrics_file.exists():
             self._cost = CostMetrics()
-            self._cost_data = self._cost.compute_all(metrics_file)
+            self._cost_data = self._cost.compute_all(metrics_file, since=session_start)
         self._throttler.mark_refreshed("cost_metrics")
 
     def _refresh_task_data(self, info: dict):

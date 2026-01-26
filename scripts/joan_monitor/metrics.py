@@ -25,8 +25,12 @@ class ThroughputMetrics:
         self._stage_durations = defaultdict(list)  # stage -> [duration_seconds]
         self._completion_times = []  # [(timestamp, stage)]
 
-    def parse_worker_activity_durations(self, worker_log: Path) -> dict:
+    def parse_worker_activity_durations(self, worker_log: Path, since: datetime = None) -> dict:
         """Match START/COMPLETE pairs per stage, compute avg/min/max duration.
+
+        Args:
+            worker_log: Path to worker-activity.log
+            since: If provided, only include events with timestamp >= since.
 
         Returns dict keyed by stage name with avg_seconds, min_seconds,
         max_seconds, count, and rate_per_hour.
@@ -60,6 +64,10 @@ class ThroughputMetrics:
                             timestamp_str, "%Y-%m-%d %H:%M:%S"
                         )
                     except ValueError:
+                        continue
+
+                    # Filter by session start time if provided
+                    if since and timestamp < since:
                         continue
 
                     if status == "START":
@@ -206,9 +214,13 @@ class ThroughputMetrics:
             "rate_per_hour": total_rate,
         }
 
-    def compute_all(self, worker_log: Path, metrics_file: Path) -> dict:
-        """Compute all throughput metrics. Main entry point."""
-        stage_durations = self.parse_worker_activity_durations(worker_log)
+    def compute_all(self, worker_log: Path, metrics_file: Path, since: datetime = None) -> dict:
+        """Compute all throughput metrics. Main entry point.
+
+        Args:
+            since: If provided, only include data from after this timestamp.
+        """
+        stage_durations = self.parse_worker_activity_durations(worker_log, since=since)
         completion_rates = self.parse_completion_rate(metrics_file)
         bottleneck = self.identify_bottleneck(stage_durations)
         pipeline = self.calculate_pipeline_velocity(stage_durations)
@@ -225,8 +237,12 @@ class ThroughputMetrics:
 class CostMetrics:
     """Duration-based cost estimation per worker from worker_session events."""
 
-    def parse_worker_sessions(self, metrics_file: Path) -> list:
-        """Read worker_session events from agent-metrics.jsonl."""
+    def parse_worker_sessions(self, metrics_file: Path, since: datetime = None) -> list:
+        """Read worker_session events from agent-metrics.jsonl.
+
+        Args:
+            since: If provided, only include sessions with timestamp >= since.
+        """
         sessions = []
         if not metrics_file.exists():
             return sessions
@@ -241,6 +257,20 @@ class CostMetrics:
                         event = json.loads(line)
                         if event.get("event") != "worker_session":
                             continue
+
+                        # Filter by session start time if provided
+                        if since:
+                            ts_str = event.get("timestamp", "")
+                            if ts_str:
+                                try:
+                                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                                    ts_naive = ts.replace(tzinfo=None) if ts.tzinfo else ts
+                                    since_naive = since.replace(tzinfo=None) if since.tzinfo else since
+                                    if ts_naive < since_naive:
+                                        continue
+                                except Exception:
+                                    pass
+
                         sessions.append(
                             {
                                 "worker": event.get("worker", "unknown"),
@@ -315,9 +345,13 @@ class CostMetrics:
             "total_seconds": total_seconds,
         }
 
-    def compute_all(self, metrics_file: Path) -> dict:
-        """Compute all cost metrics. Main entry point."""
-        sessions = self.parse_worker_sessions(metrics_file)
+    def compute_all(self, metrics_file: Path, since: datetime = None) -> dict:
+        """Compute all cost metrics. Main entry point.
+
+        Args:
+            since: If provided, only include data from after this timestamp.
+        """
+        sessions = self.parse_worker_sessions(metrics_file, since=since)
         if not sessions:
             return {"sessions": [], "by_worker": {}, "total_cost": 0, "total_seconds": 0}
         return self.aggregate_costs(sessions)

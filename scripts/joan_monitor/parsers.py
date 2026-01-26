@@ -434,8 +434,14 @@ def parse_webhook_log_stats(log_file: Path) -> dict:
     return stats
 
 
-def parse_metrics(metrics_file: Path) -> dict:
-    """Parse agent-metrics.jsonl for Doctor invocations, reworks, and worker sessions."""
+def parse_metrics(metrics_file: Path, since: datetime = None) -> dict:
+    """Parse agent-metrics.jsonl for Doctor invocations, reworks, and worker sessions.
+
+    Args:
+        metrics_file: Path to agent-metrics.jsonl
+        since: If provided, only include events with timestamp >= since.
+               Used to scope metrics to the current coordinator session.
+    """
     if not metrics_file.exists():
         return {}
 
@@ -470,6 +476,13 @@ def parse_metrics(metrics_file: Path) -> dict:
                             )
                         except Exception:
                             pass
+
+                    # Filter by session start time if provided
+                    if since and timestamp:
+                        ts_naive = timestamp.replace(tzinfo=None) if timestamp.tzinfo else timestamp
+                        since_naive = since.replace(tzinfo=None) if since.tzinfo else since
+                        if ts_naive < since_naive:
+                            continue
 
                     if event_type == "doctor_invocation":
                         metrics["doctor_invocations"] += 1
