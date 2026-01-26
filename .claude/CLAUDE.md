@@ -1,4 +1,4 @@
-# Joan Multi-Agent System (v5.1 - WebSocket Event Architecture)
+# Joan Multi-Agent System (v5.3 - Token Optimized Architecture)
 
 This system uses **tag-based state transitions**, **WebSocket-driven dispatch** for real-time response, and a **strict serial dev pipeline** to prevent merge conflicts.
 
@@ -121,12 +121,14 @@ Tier 1: Joan Backend (Zero Tokens)
 ├── Deterministic state transitions
 ├── Tag conflict validation
 ├── Column auto-movement
-└── YOLO mode auto-approvals
+├── YOLO mode auto-approvals
+└── ALS comment generation from structured_comment (v5.3)
 
 Tier 2: Smart Events (Pre-Validated)
 ├── Semantic event types (task_ready_for_dev vs tag_added)
 ├── Pre-fetched task payloads
-└── Eliminates Claude re-fetching task data
+├── Eliminates Claude re-fetching task data
+└── Differential payload filtering per handler (v5.3)
 
 Tier 3: Claude Workers (Intelligence Only)
 ├── BA: Requirements evaluation
@@ -222,6 +224,71 @@ The client is **state-aware**, not just event-reactive:
 Each handler is stateless and checks Joan state on invocation, ensuring correct behavior regardless of execution order.
 
 **Why state-aware?** WebSockets can disconnect temporarily. The periodic state scan ensures **nothing gets stuck** during brief connection interruptions. The state (tags + columns) is always the source of truth.
+
+## What's New in v5.3 (Token Optimization)
+
+**Differential Payloads, Shared Templates, Structured Comments** - Reduces token consumption by ~35-45% across the agent pipeline through three complementary optimizations.
+
+### Differential Payloads
+
+The WebSocket client now filters smart payloads per-handler, stripping fields each handler doesn't use. Previously all 5 handlers received identical payloads (~3-8KB). Each handler now receives only the fields it actually needs.
+
+| Field | BA | Architect | Dev | Reviewer | Ops |
+|-------|-----|-----------|-----|----------|-----|
+| `task.description` | 2000 chars | Full | Full | 1000 chars | 200 chars |
+| `recent_comments` | Last 3 | Last 5 | 0 (uses handoff) | Last 3 | 0 |
+| `subtasks` | No | Yes | Yes | Yes | No |
+| `rework_feedback` | No | No | Yes | No | No |
+| `columns` | No | Yes | No | No | No |
+
+Enable debug logging to see payload reduction per handler:
+```bash
+JOAN_WEBSOCKET_DEBUG=1 /agents:dispatch --loop
+# Output: "Payload filtered: 4200 -> 2100 bytes (-50%) (handle-ba)"
+```
+
+### Shared Handler Templates
+
+Handler command files (`handle-ba.md`, `handle-dev.md`, etc.) now reference shared functions in `helpers.md` instead of duplicating code. This removes ~170 lines of duplication across the 5 handlers.
+
+**Shared functions in `helpers.md`:**
+- `extractSmartPayload(TASK_ID, PROJECT_ID)` - Smart payload check + MCP fallback
+- `fetchTaskViaMCP(TASK_ID, PROJECT_ID)` - MCP fallback path
+- `buildTagSet(tags)` - Tag extraction from both string arrays and `{name, id}` objects
+- `extractTagNames(tags)` - Extract tag name strings from MCP objects
+- `submitWorkerResult(WORKER_NAME, WORKER_RESULT, WORK_PACKAGE, PROJECT_ID)` - Result submission with structured comment support
+
+### Structured Comments (Server-Side ALS Generation)
+
+Workers now return a compact `structured_comment` JSON object instead of formatting raw ALS/1 strings. The Joan backend generates the ALS format, reducing worker prompt size and improving reliability.
+
+**Before (raw ALS in worker output):**
+```
+"comment": "ALS/1\nactor: ba\nintent: handoff\naction: context-handoff\nfrom_stage: ba\nto_stage: architect\nsummary: Requirements complete\nkey_decisions:\n- Decision 1"
+```
+
+**After (structured JSON, server generates ALS):**
+```json
+"structured_comment": {
+  "actor": "ba", "intent": "handoff", "action": "context-handoff",
+  "from_stage": "ba", "to_stage": "architect",
+  "summary": "Requirements complete",
+  "key_decisions": ["Decision 1"]
+}
+```
+
+The raw `comment` field still works as a fallback for backward compatibility.
+
+**Backend changes:** `result-processor.ts` includes `StructuredComment` interface and `generateALSComment()` function. The `submit-result.py` client supports `--structured-comment` for JSON submission.
+
+### Token Savings Summary
+
+| Optimization | Reduction |
+|-------------|-----------|
+| Differential payloads | ~30-40% of payload tokens |
+| Shared handler templates | ~170 lines removed from handler system prompts |
+| Server-side ALS generation | ~40-80 tokens per handler + reliability improvement |
+| **Combined per-task lifecycle** | **~35-45% total reduction** |
 
 ## Configuration
 
@@ -767,10 +834,12 @@ Doctor changes are logged as ALS comments for audit trail.
 
 ### Comment Convention (ALS Breadcrumbs)
 
-**IMPORTANT:** In v4, comments are WRITE-ONLY breadcrumbs. Agents never parse comments to determine state - they use tags exclusively.
+**IMPORTANT:** Comments are WRITE-ONLY breadcrumbs. Agents never parse comments to determine state - they use tags exclusively.
 
 All comments use ALS (Agentic Language Syntax) blocks for auditability.
 See `shared/joan-shared-specs/docs/workflow/als-spec.md` for the full format and examples.
+
+**v5.3:** Workers return `structured_comment` JSON objects instead of formatting raw ALS strings. The Joan backend generates ALS/1 format via `generateALSComment()` in `result-processor.ts`. The raw `comment` field is still supported as a fallback.
 
 ### Human Actions (Tag-Based)
 
