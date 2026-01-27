@@ -13,6 +13,7 @@ This guide walks you through setting up the Joan Multi-Agent Orchestration Syste
 | Software | Version | Purpose |
 |----------|---------|---------|
 | Claude Code | Latest | Agent runtime ([install guide](https://docs.anthropic.com/claude-code)) |
+| Python | 3.9+ | Status dashboard and WebSocket client |
 | Git | 2.x+ | Version control and worktree management |
 | Node.js | 18+ | If your project uses Node (optional) |
 | iTerm2 | 3.x+ | Recommended terminal for macOS (optional) |
@@ -55,6 +56,9 @@ git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
 
 # Make scripts executable
 chmod +x ~/joan-agents/*.sh
+
+# Install dashboard dependencies (Rich UI + terminal effects)
+python3 -m pip install --user --break-system-packages -r ~/joan-agents/scripts/requirements.txt
 ```
 
 ### Step 2: Create Symlinks
@@ -242,6 +246,9 @@ cp -r ~/joan-agents/.claude/commands .claude/
 
 # Copy system instructions
 cp ~/joan-agents/.claude/CLAUDE.md .claude/
+
+# Install dashboard dependencies
+python3 -m pip install --user --break-system-packages -r ~/joan-agents/scripts/requirements.txt
 
 # Initialize and run
 claude

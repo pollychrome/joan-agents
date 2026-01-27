@@ -10,16 +10,26 @@ shell: bash
 
 set -euo pipefail
 
-# Check if Rich library is installed
+# Check if Rich library is installed (required)
 if ! python3 -c "import rich" 2>/dev/null; then
   echo "Error: Rich library not installed"
   echo ""
-  echo "The monitor requires the Rich library for beautiful terminal output."
+  echo "The monitor requires the Rich library for terminal output."
   echo ""
-  echo "Install with:"
+  echo "Install all dashboard dependencies with:"
+  echo "  python3 -m pip install --user --break-system-packages -r ~/joan-agents/scripts/requirements.txt"
+  echo ""
+  echo "Or install Rich alone:"
   echo "  python3 -m pip install --user --break-system-packages rich"
   echo ""
   exit 1
+fi
+
+# Check if TTE is installed (optional, enables startup animations)
+if ! python3 -c "import terminaltexteffects" 2>/dev/null; then
+  echo "Note: terminaltexteffects not installed — dashboard will use basic startup banner."
+  echo "  Install for animated effects: python3 -m pip install --user --break-system-packages terminaltexteffects"
+  echo ""
 fi
 
 # Determine project directory

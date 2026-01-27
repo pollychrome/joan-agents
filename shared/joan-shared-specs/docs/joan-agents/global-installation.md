@@ -11,6 +11,7 @@ This guide shows how to install the Joan Multi-Agent System globally so the comm
 ## Prerequisites
 
 - Claude Code installed
+- Python 3.9+ (`python3 --version`)
 - This repository cloned to a permanent location
 
 ## Installation
@@ -26,6 +27,9 @@ git clone https://github.com/pollychrome/joan-agents.git ~/joan-agents
 # Or if you already have it elsewhere
 cd /path/to/joan-agents
 pwd  # Note this path for Step 2
+
+# Install dashboard dependencies (Rich UI + terminal effects)
+python3 -m pip install --user --break-system-packages -r ~/joan-agents/scripts/requirements.txt
 ```
 
 ### Step 2: Create Symlinks

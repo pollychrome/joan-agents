@@ -534,6 +534,10 @@ class JoanMonitor:
         # Play startup banner (Phase 5)
         self._effects.play_startup_banner()
 
+        # Rain the full dashboard layout into view
+        first_frame = self._build_project_layout(proj_name, info, terminal_width)
+        self._effects.play_dashboard_init(first_frame)
+
         try:
             live = Live(
                 self._build_project_layout(proj_name, info, terminal_width),

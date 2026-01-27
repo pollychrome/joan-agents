@@ -11,10 +11,12 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
+from io import StringIO
 
 try:
-    from terminaltexteffects.effects.effect_decrypt import Decrypt
+    from terminaltexteffects.effects.effect_beams import Beams
     from terminaltexteffects.effects.effect_fireworks import Fireworks
+    from terminaltexteffects.effects.effect_rain import Rain
     from terminaltexteffects.effects.effect_slide import Slide
 
     TTE_AVAILABLE = True
@@ -69,14 +71,16 @@ class EffectManager:
             self._play_rich_startup()
 
     def _play_tte_startup(self):
-        """TTE Decrypt effect on ASCII art banner."""
+        """TTE Beams effect on ASCII art banner."""
         try:
-            effect = Decrypt(STARTUP_BANNER.strip("\n"))
+            effect = Beams(STARTUP_BANNER.strip("\n"))
+            effect.effect_config.beam_delay = 4
             effect.effect_config.final_gradient_frames = 5
+            effect.effect_config.final_wipe_speed = 2
             with effect.terminal_output() as terminal:
                 for frame in effect:
                     terminal.print(frame)
-            time.sleep(0.5)
+            time.sleep(0.3)
         except Exception:
             self._play_rich_startup()
 
@@ -89,6 +93,48 @@ class EffectManager:
         time.sleep(0.8)
         # Clear screen after banner
         self.console.clear()
+
+    def play_dashboard_init(self, layout_renderable):
+        """Rain the full dashboard layout into view.
+
+        Renders the dashboard layout to plain text, then plays a Rain
+        TTE effect so characters fall into place from the top.
+        """
+        if layout_renderable is None:
+            return
+
+        if TTE_AVAILABLE:
+            text = self._render_to_text(layout_renderable)
+            if text.strip():
+                self._play_rain(text.strip())
+        else:
+            # Rich fallback: print the layout briefly, then clear for Live
+            self.console.clear()
+            self.console.print(layout_renderable)
+            time.sleep(1.0)
+            self.console.clear()
+
+    def _render_to_text(self, renderable) -> str:
+        """Render a Rich renderable to plain text for TTE effects."""
+        buf = StringIO()
+        temp_console = Console(
+            file=buf, width=self.console.width, no_color=True
+        )
+        temp_console.print(renderable)
+        return buf.getvalue()
+
+    def _play_rain(self, text: str):
+        """Rain effect — characters fall from the top into their final positions."""
+        try:
+            effect = Rain(text)
+            effect.effect_config.movement_speed = (0.5, 0.8)
+            effect.effect_config.final_gradient_steps = 8
+            with effect.terminal_output() as terminal:
+                for frame in effect:
+                    terminal.print(frame)
+            time.sleep(0.2)
+        except Exception:
+            pass
 
     def play_celebration(self, task_name: str):
         """Play task completion celebration."""

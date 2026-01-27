@@ -48,6 +48,8 @@ def parse_log_stats(log_file: Path) -> dict:
 
         # Track which workers have completed
         completed_workers = set()
+        # Track completed task IDs to deduplicate lifecycle/merge matches
+        completed_task_ids = set()
 
         # Check coordinator running state from last 100 lines
         coordinator_last_started = None
@@ -208,7 +210,7 @@ def parse_log_stats(log_file: Path) -> dict:
                             }
                         )
 
-            # Completed workers
+            # Completed workers (original bold pattern)
             if "**" in line and "completed" in line:
                 match = re.search(r"\*\*(\w+) worker completed", line)
                 if match:
@@ -221,6 +223,28 @@ def parse_log_stats(log_file: Path) -> dict:
                         if w["type"] != worker_type
                     ]
 
+            # Tasks completed from coordinator markdown output
+            # Lifecycle summary: "  #23: Review → ... → Done ✓"
+            if "\u2192 Done" in line or "→ Done" in line:
+                task_id_match = re.search(r"#(\d+):.*(?:\u2192|→)\s*Done", line)
+                if task_id_match:
+                    tid = task_id_match.group(1)
+                    if tid not in completed_task_ids:
+                        completed_task_ids.add(tid)
+                        stats["tasks_completed"] += 1
+            # Ops merge result: "- Ops → #23 ... → MERGED"
+            elif "\u2192 MERGED" in line or "→ MERGED" in line:
+                if re.search(r"(?:Ops|ops).*(?:\u2192|→)\s*MERGED", line):
+                    task_id_match = re.search(r"#(\d+)", line)
+                    if task_id_match:
+                        tid = task_id_match.group(1)
+                        if tid not in completed_task_ids:
+                            completed_task_ids.add(tid)
+                            stats["tasks_completed"] += 1
+                    else:
+                        # No task ID extractable, count it
+                        stats["tasks_completed"] += 1
+
             # Dispatched count
             if "dispatched" in line.lower():
                 match = re.search(
@@ -229,6 +253,11 @@ def parse_log_stats(log_file: Path) -> dict:
                 if not match:
                     match = re.search(
                         r"dispatched\s+\*\*(\d+)\*\*\s+worker", line, re.IGNORECASE
+                    )
+                if not match:
+                    # Coordinator summary: "Workers dispatched: 2"
+                    match = re.search(
+                        r"Workers dispatched:\s*(\d+)", line
                     )
                 if match:
                     stats["workers_dispatched"] += int(match.group(1))

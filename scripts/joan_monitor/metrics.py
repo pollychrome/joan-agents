@@ -214,13 +214,125 @@ class ThroughputMetrics:
             "rate_per_hour": total_rate,
         }
 
+    def supplement_from_worker_sessions(
+        self, stage_durations: dict, metrics_file: Path, since: datetime = None
+    ) -> dict:
+        """Merge worker_session events from agent-metrics.jsonl into throughput data.
+
+        BA and Architect workers don't write to worker-activity.log, so their
+        throughput data comes exclusively from here. For other stages, session
+        data is merged with worker-activity.log data for more complete metrics.
+        """
+        if not metrics_file or not metrics_file.exists():
+            return stage_durations
+
+        # Map worker_session "worker" field to pipeline stage names
+        worker_to_stage = {
+            "ba": "BA",
+            "architect": "Architect",
+            "dev": "Dev",
+            "reviewer": "Reviewer",
+            "ops": "Ops",
+        }
+
+        # Collect durations per stage from worker_session events
+        session_durations = defaultdict(list)
+
+        try:
+            with open(metrics_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                        if event.get("event") != "worker_session":
+                            continue
+
+                        # Filter by session start time
+                        if since:
+                            ts_str = event.get("timestamp", "")
+                            if ts_str:
+                                try:
+                                    ts = datetime.fromisoformat(
+                                        ts_str.replace("Z", "+00:00")
+                                    )
+                                    ts_naive = (
+                                        ts.replace(tzinfo=None) if ts.tzinfo else ts
+                                    )
+                                    since_naive = (
+                                        since.replace(tzinfo=None)
+                                        if since.tzinfo
+                                        else since
+                                    )
+                                    if ts_naive < since_naive:
+                                        continue
+                                except Exception:
+                                    pass
+
+                        worker = event.get("worker", "").lower()
+                        stage = worker_to_stage.get(worker)
+                        if not stage:
+                            continue
+
+                        duration = event.get("duration_seconds", 0)
+                        if duration > 0:
+                            session_durations[stage].append(duration)
+
+                            # Also record completion time for rate calculation
+                            ts_str = event.get("timestamp", "")
+                            if ts_str:
+                                try:
+                                    ts = datetime.fromisoformat(
+                                        ts_str.replace("Z", "+00:00")
+                                    )
+                                    if ts.tzinfo:
+                                        ts = ts.replace(tzinfo=None)
+                                    self._completion_times.append((ts, stage))
+                                except Exception:
+                                    pass
+
+                    except json.JSONDecodeError:
+                        continue
+        except Exception:
+            pass
+
+        # Merge session durations into stage data
+        for stage, durations in session_durations.items():
+            if not durations:
+                continue
+
+            # Combine with raw durations from worker-activity.log
+            raw_durations = list(self._stage_durations.get(stage, []))
+            merged = raw_durations + durations
+            avg_secs = sum(merged) / len(merged)
+            stage_durations[stage] = {
+                "avg_seconds": avg_secs,
+                "min_seconds": min(merged),
+                "max_seconds": max(merged),
+                "count": len(merged),
+                "rate_per_hour": self._compute_rate(stage),
+            }
+
+        return stage_durations
+
     def compute_all(self, worker_log: Path, metrics_file: Path, since: datetime = None) -> dict:
         """Compute all throughput metrics. Main entry point.
 
         Args:
             since: If provided, only include data from after this timestamp.
         """
-        stage_durations = self.parse_worker_activity_durations(worker_log, since=since)
+        # Parse worker-activity.log WITHOUT session scoping — it contains completion
+        # data from workers dispatched by previous coordinator cycles that finished
+        # after the current scheduler restarted.
+        stage_durations = self.parse_worker_activity_durations(worker_log)
+
+        # Supplement with worker_session events for stages missing from worker-activity.log
+        # (keep session scoping here — agent-metrics.jsonl has cumulative data)
+        stage_durations = self.supplement_from_worker_sessions(
+            stage_durations, metrics_file, since=since
+        )
+
         completion_rates = self.parse_completion_rate(metrics_file)
         bottleneck = self.identify_bottleneck(stage_durations)
         pipeline = self.calculate_pipeline_velocity(stage_durations)

@@ -4,6 +4,4 @@ cryptography>=41.0.0  # For joan-mcp credential decryption
 
 # Joan Status Dashboard
 rich>=13.0.0
-
-# Optional: Terminal text effects for dashboard celebrations
-# pip install terminaltexteffects>=0.11.0
+terminaltexteffects>=0.11.0  # Beam/firework effects for dashboard startup & celebrations

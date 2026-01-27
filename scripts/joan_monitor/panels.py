@@ -123,7 +123,7 @@ def generate_global_table(instances: dict) -> Table:
             mode_str,
             events_str,
             str(active_count),
-            str(stats.get("tasks_completed", 0)),
+            str(max(stats.get("tasks_completed", 0), metrics.get("completions", 0))),
             f"[{doctor_style}]{doctor_count}[/{doctor_style}]",
             f"[{rework_style}]{rework_count}[/{rework_style}]",
             runtime_str,
@@ -891,7 +891,8 @@ def generate_project_layout(
             elapsed = (now - stats["last_poll"]).total_seconds()
             stats_table.add_row("Last Poll", f"{int(elapsed)}s ago")
 
-    stats_table.add_row("Tasks Completed", str(stats.get("tasks_completed", 0)))
+    tasks_completed = max(stats.get("tasks_completed", 0), metrics.get("completions", 0))
+    stats_table.add_row("Tasks Completed", str(tasks_completed))
 
     if stats.get("started_at"):
         runtime = now - stats["started_at"]

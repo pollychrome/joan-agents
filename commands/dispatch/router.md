@@ -33,6 +33,8 @@ MODEL = config.settings.model OR "opus"
 DEV_COUNT = config.agents.devs.count OR 1
 STALE_CLAIM_MINUTES = config.settings.staleClaimMinutes OR 120
 API_URL = "https://joan-api.alexbbenson.workers.dev"
+MODELS = config.settings.models OR {}
+METRICS_FILE = ".claude/logs/agent-metrics.jsonl"
 
 # Agent enabled flags (all default to true)
 BA_ENABLED = config.agents.businessAnalyst.enabled OR true
@@ -139,6 +141,7 @@ Event-driven mode - process single handler/task:
 ```
 HANDLER = --handler value
 TASK_ID = --task value (optional)
+DISPATCH_START = Date.now()
 
 Report: "Router: Running {HANDLER} handler"
 
@@ -147,38 +150,38 @@ IF HANDLER == "ba":
     Task agent: handle-ba --task={TASK_ID}
   ELSE:
     Task agent: handle-ba --all
-  EXIT
 
-IF HANDLER == "architect":
+ELIF HANDLER == "architect":
   IF TASK_ID:
     Task agent: handle-architect --task={TASK_ID}
   ELSE:
     Task agent: handle-architect --all
-  EXIT
 
-IF HANDLER == "dev":
+ELIF HANDLER == "dev":
   IF TASK_ID:
     Task agent: handle-dev --task={TASK_ID}
   ELSE:
     Task agent: handle-dev --all
-  EXIT
 
-IF HANDLER == "reviewer":
+ELIF HANDLER == "reviewer":
   IF TASK_ID:
     Task agent: handle-reviewer --task={TASK_ID}
   ELSE:
     Task agent: handle-reviewer --all
-  EXIT
 
-IF HANDLER == "ops":
+ELIF HANDLER == "ops":
   IF TASK_ID:
     Task agent: handle-ops --task={TASK_ID}
   ELSE:
     Task agent: handle-ops --all
-  EXIT
 
-Report: "Unknown handler: {HANDLER}"
-EXIT with error
+ELSE:
+  Report: "Unknown handler: {HANDLER}"
+  EXIT with error
+
+# Record session metric for dashboard throughput & cost tracking
+recordWorkerSession(HANDLER, TASK_ID, null, DISPATCH_START)
+EXIT
 ```
 
 ## FULL_DISPATCH
@@ -191,7 +194,7 @@ Report: "Mode: {MODE}, Model: {MODEL}"
 
 # 1. Write heartbeat
 PROJECT_SLUG = PROJECT_NAME.toLowerCase().replace(/[^a-z0-9]+/g, '-')
-Bash: echo "$(date -Iseconds)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
 
 # 2. Try API-first queue building, fall back to MCP
 API_SUCCESS = false
@@ -245,6 +248,9 @@ IF curl succeeded (exit code 0):
 
 ELSE:
   Report: "API unavailable, falling back to MCP queue building"
+
+# Refresh heartbeat (milestone: API phase complete)
+Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
 ```
 
 ### MCP Fallback Queue Building
@@ -317,6 +323,9 @@ IF NOT API_SUCCESS:
   PIPELINE_BLOCKED = hasPipelineBlocker(tasks, TAG_INDEX, COLUMN_CACHE)
 
 Report: "Queues: BA={len(BA_QUEUE) or BA_COUNT}, Arch={len(ARCHITECT_QUEUE) or ARCHITECT_COUNT}, Dev={len(DEV_QUEUE) or DEV_COUNT_Q}, Rev={len(REVIEWER_QUEUE) or REVIEWER_COUNT}, Ops={len(OPS_QUEUE) or OPS_COUNT}"
+
+# Refresh heartbeat (milestone: queue building complete)
+Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
 ```
 
 ### Cache Project Tags (for Dev Claiming)
@@ -327,6 +336,9 @@ project_tags = mcp__joan__list_project_tags(PROJECT_ID)
 TAG_CACHE = {}
 FOR tag IN project_tags:
   TAG_CACHE[tag.name] = tag.id
+
+# Refresh heartbeat (milestone: tag cache built, entering dispatch)
+Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
 ```
 
 ### Dispatch in Priority Order
@@ -343,19 +355,28 @@ ELSE:
 
 IF HAS_INVOCATION AND ARCHITECT_ENABLED:
   Report: "Dispatching Architect (invocation priority)"
+  Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+  DISPATCH_START = Date.now()
   Task agent: handle-architect --all
+  recordWorkerSession("architect", null, null, DISPATCH_START)
   DISPATCHED += 1
 
 # P1: Ops (finish what's started)
 IF (len(OPS_QUEUE) > 0 OR OPS_COUNT > 0) AND OPS_ENABLED:
   Report: "Dispatching Ops"
+  Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+  DISPATCH_START = Date.now()
   Task agent: handle-ops --all
+  recordWorkerSession("ops", null, null, DISPATCH_START)
   DISPATCHED += 1
 
 # P2: Reviewer
 IF (len(REVIEWER_QUEUE) > 0 OR REVIEWER_COUNT > 0) AND REVIEWER_ENABLED:
   Report: "Dispatching Reviewer"
+  Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+  DISPATCH_START = Date.now()
   Task agent: handle-reviewer --all
+  recordWorkerSession("reviewer", null, null, DISPATCH_START)
   DISPATCHED += 1
 
 # P3: Dev (strict serial — only if pipeline clear)
@@ -382,8 +403,12 @@ IF (len(DEV_QUEUE) > 0 OR DEV_COUNT_Q > 0) AND DEVS_ENABLED AND NOT PIPELINE_BLO
     verify_tags = Set(tag.name FOR tag IN verify_task.tags)
 
     IF verify_tags.has("Claimed-Dev-1"):
+      DEV_TASK_TITLE = DEV_QUEUE[0].task_title IF API_SUCCESS ELSE null
       Report: "Dispatching Dev (claimed task {DEV_TASK_ID})"
+      Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+      DISPATCH_START = Date.now()
       Task agent: handle-dev --task={DEV_TASK_ID}
+      recordWorkerSession("dev", DEV_TASK_ID, DEV_TASK_TITLE, DISPATCH_START)
       DISPATCHED += 1
     ELSE:
       # Claim failed — release and skip
@@ -396,7 +421,10 @@ IF (len(DEV_QUEUE) > 0 OR DEV_COUNT_Q > 0) AND DEVS_ENABLED AND NOT PIPELINE_BLO
 IF (len(ARCHITECT_QUEUE) > 0 OR ARCHITECT_COUNT > 0) AND ARCHITECT_ENABLED AND NOT HAS_INVOCATION:
   IF NOT PIPELINE_BLOCKED:
     Report: "Dispatching Architect (planning)"
+    Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+    DISPATCH_START = Date.now()
     Task agent: handle-architect --all
+    recordWorkerSession("architect", null, null, DISPATCH_START)
     DISPATCHED += 1
   ELSE:
     Report: "Architect blocked by pipeline gate"
@@ -404,15 +432,130 @@ IF (len(ARCHITECT_QUEUE) > 0 OR ARCHITECT_COUNT > 0) AND ARCHITECT_ENABLED AND N
 # P5: BA (always allowed)
 IF (len(BA_QUEUE) > 0 OR BA_COUNT > 0) AND BA_ENABLED:
   Report: "Dispatching BA"
+  Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+  DISPATCH_START = Date.now()
   Task agent: handle-ba --all --max=10
+  recordWorkerSession("ba", null, null, DISPATCH_START)
   DISPATCHED += 1
+```
+
+### Re-poll for Downstream Work
+
+After handlers complete, their state changes may create new actionable tasks
+(e.g., Reviewer approves → Ops queue populated). Re-poll to chain pipeline
+stages within one cycle instead of paying cold-start + sleep per transition.
+
+```
+TOTAL_DISPATCHED = DISPATCHED
+MAX_REPOLL = 3
+REPOLL = 0
+
+WHILE DISPATCHED > 0 AND REPOLL < MAX_REPOLL:
+  REPOLL += 1
+
+  # Wait for tag propagation in Joan backend
+  Bash: sleep 5
+
+  Report: ""
+  Report: "=== RE-POLL {REPOLL}/{MAX_REPOLL} (checking downstream work) ==="
+
+  # Re-query API for fresh queues
+  Bash:
+    command: curl -sf -H "Authorization: Bearer $JOAN_AUTH_TOKEN" \
+      "{API_URL}/api/v1/projects/{PROJECT_ID}/actionable-tasks?mode={MODE}&include_payloads=true&include_recovery=true&stale_claim_minutes={STALE_CLAIM_MINUTES}" \
+      -o /tmp/joan-dispatch-response.json
+    timeout: 15000
+
+  IF curl failed:
+    Report: "Re-poll API failed, ending dispatch loop"
+    BREAK
+
+  response = JSON.parse(read("/tmp/joan-dispatch-response.json"))
+  queues = response.queues OR {}
+  pipeline = response.pipeline OR {}
+
+  OPS_QUEUE = queues.ops OR []
+  REVIEWER_QUEUE = queues.reviewer OR []
+  DEV_QUEUE = queues.dev OR []
+  ARCHITECT_QUEUE = queues.architect OR []
+  BA_QUEUE = queues.ba OR []
+  PIPELINE_BLOCKED = pipeline.blocked OR false
+
+  Report: "Re-poll queues: Ops={len(OPS_QUEUE)}, Rev={len(REVIEWER_QUEUE)}, Dev={len(DEV_QUEUE)}, Arch={len(ARCHITECT_QUEUE)}, BA={len(BA_QUEUE)}"
+
+  DISPATCHED = 0
+
+  # Dispatch any new work using same priority order
+
+  # P1: Ops
+  IF len(OPS_QUEUE) > 0 AND OPS_ENABLED:
+    Report: "Dispatching Ops (downstream)"
+    Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+    DISPATCH_START = Date.now()
+    Task agent: handle-ops --all
+    recordWorkerSession("ops", null, null, DISPATCH_START)
+    DISPATCHED += 1
+
+  # P2: Reviewer
+  IF len(REVIEWER_QUEUE) > 0 AND REVIEWER_ENABLED:
+    Report: "Dispatching Reviewer (downstream)"
+    Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+    DISPATCH_START = Date.now()
+    Task agent: handle-reviewer --all
+    recordWorkerSession("reviewer", null, null, DISPATCH_START)
+    DISPATCHED += 1
+
+  # P3: Dev (if pipeline cleared)
+  IF len(DEV_QUEUE) > 0 AND DEVS_ENABLED AND NOT PIPELINE_BLOCKED:
+    DEV_TASK_ID = DEV_QUEUE[0].task_id
+    IF DEV_TASK_ID AND TAG_CACHE["Claimed-Dev-1"]:
+      mcp__joan__add_tag_to_task(PROJECT_ID, DEV_TASK_ID, TAG_CACHE["Claimed-Dev-1"])
+      Bash: sleep 1
+      verify_task = mcp__joan__get_task(DEV_TASK_ID)
+      verify_tags = Set(tag.name FOR tag IN verify_task.tags)
+      IF verify_tags.has("Claimed-Dev-1"):
+        DEV_TASK_TITLE = DEV_QUEUE[0].task_title IF len(DEV_QUEUE) > 0 ELSE null
+        Report: "Dispatching Dev (downstream, claimed {DEV_TASK_ID})"
+        Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+        DISPATCH_START = Date.now()
+        Task agent: handle-dev --task={DEV_TASK_ID}
+        recordWorkerSession("dev", DEV_TASK_ID, DEV_TASK_TITLE, DISPATCH_START)
+        DISPATCHED += 1
+      ELSE:
+        Report: "WARN: Dev claim verification failed for {DEV_TASK_ID}, skipping"
+        mcp__joan__remove_tag_from_task(PROJECT_ID, DEV_TASK_ID, TAG_CACHE["Claimed-Dev-1"])
+
+  # P4: Architect (if pipeline cleared)
+  IF len(ARCHITECT_QUEUE) > 0 AND ARCHITECT_ENABLED AND NOT PIPELINE_BLOCKED:
+    Report: "Dispatching Architect (downstream)"
+    Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+    DISPATCH_START = Date.now()
+    Task agent: handle-architect --all
+    recordWorkerSession("architect", null, null, DISPATCH_START)
+    DISPATCHED += 1
+
+  # P5: BA
+  IF len(BA_QUEUE) > 0 AND BA_ENABLED:
+    Report: "Dispatching BA (downstream)"
+    Bash: echo "$(date +%s)" > /tmp/joan-agents-{PROJECT_SLUG}.heartbeat
+    DISPATCH_START = Date.now()
+    Task agent: handle-ba --all --max=10
+    recordWorkerSession("ba", null, null, DISPATCH_START)
+    DISPATCHED += 1
+
+  TOTAL_DISPATCHED += DISPATCHED
+
+  IF DISPATCHED == 0:
+    Report: "No new downstream work, ending dispatch loop"
+
+DISPATCHED = TOTAL_DISPATCHED
 ```
 
 ### Status Report and Exit
 
 ```
 Report: ""
-Report: "Dispatched {DISPATCHED} handlers"
+Report: "Dispatched {DISPATCHED} handlers total"
 
 IF DISPATCHED == 0:
   Report: "No work to dispatch (idle)"
@@ -436,6 +579,12 @@ def hasInvocationPending(tasks, TAG_INDEX, COLUMN_CACHE):
        NOT TAG_INDEX[task.id].has("Architect-Assist-Complete"):
       RETURN true
   RETURN false
+
+def recordWorkerSession(worker_name, task_id, task_title, dispatch_start):
+  duration_seconds = Math.round((Date.now() - dispatch_start) / 1000)
+  worker_model = MODELS[worker_name] OR MODEL
+
+  Bash: echo '{"timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","event":"worker_session","project":"{PROJECT_NAME}","worker":"{worker_name}","model":"{worker_model}","task_id":"{task_id}","task_title":"{task_title}","success":true,"duration_seconds":{duration_seconds}}' >> {METRICS_FILE}
 
 def hasPipelineBlocker(tasks, TAG_INDEX, COLUMN_CACHE):
   # Check if any task is in Development or Review that would block new work
@@ -467,6 +616,7 @@ This router (`v3`) replaces the 2,283-line `dispatch.md` monolith (renamed to `d
 - API-first queue building with MCP fallback
 - Dev claiming protocol (coordinator-managed)
 - Priority-based handler dispatch
+- Session recording (worker_session events → agent-metrics.jsonl)
 - Status file for monitoring
 
 **What moved to handlers:**

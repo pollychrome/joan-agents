@@ -16,6 +16,16 @@ fi
 # Make executable
 chmod +x "$JOAN_SCRIPT"
 
+# Install Python dependencies for the status dashboard
+REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
+if [[ -f "$REQUIREMENTS" ]]; then
+    echo "Installing dashboard dependencies..."
+    python3 -m pip install --user --break-system-packages -r "$REQUIREMENTS" -q 2>/dev/null \
+        || python3 -m pip install --user -r "$REQUIREMENTS" -q 2>/dev/null \
+        || { echo "Warning: Could not auto-install Python dependencies."; \
+             echo "  Install manually: python3 -m pip install -r $REQUIREMENTS"; }
+fi
+
 # Determine install location
 if [[ -w "/usr/local/bin" ]]; then
     INSTALL_DIR="/usr/local/bin"

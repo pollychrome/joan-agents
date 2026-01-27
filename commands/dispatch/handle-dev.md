@@ -73,7 +73,21 @@ IF TASK_ID provided:
       Report: "Cannot determine Dev mode from tags: {TAG_SET}"
       EXIT
 
-  # Build work package (claim happens via result submission)
+  # Claim task before starting work (prevents double-dispatch by scheduler)
+  Report: "  Claiming task: adding Claimed-Dev-1"
+  project_tags = mcp__joan__list_project_tags(project_id: PROJECT_ID)
+  claim_tag = project_tags.find(t => t.name == "Claimed-Dev-1")
+  IF NOT claim_tag:
+    claim_tag = mcp__joan__create_project_tag(project_id: PROJECT_ID, name: "Claimed-Dev-1", color: "#0EA5E9")
+  mcp__joan__add_tag_to_task(project_id: PROJECT_ID, task_id: task.id, tag_id: claim_tag.id)
+
+  # Verify claim succeeded
+  updated_tags = mcp__joan__get_task_tags(project_id: PROJECT_ID, task_id: task.id)
+  IF NOT "Claimed-Dev-1" IN extractTagNames(updated_tags):
+    Report: "  Failed to claim task, aborting"
+    EXIT
+
+  # Build work package
   WORK_PACKAGE = {
     task_id: task.id,
     task_title: task.title,
