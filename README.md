@@ -67,10 +67,10 @@ The system is opinionated about workflow: tasks go through BA → Architect → 
 
 ```bash
 # Add joan-agents as a marketplace
-claude plugin marketplace add github:pollychrome/joan-agents
+claude plugin marketplace add pollychrome/joan-agents
 
 # Install the agents plugin (available to all your projects)
-claude plugin install agents@alexbenson-joan-agents
+claude plugin install agents@joan-agents
 ```
 
 ### Step 2: Initialize Your Project
