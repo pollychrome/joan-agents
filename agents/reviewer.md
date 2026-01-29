@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Reviews code for bugs, logic errors, security vulnerabilities, code quality issues, and adherence to project conventions, using confidence-based filtering to report only high-priority issues that truly matter
-# Model is set via .joan-agents.json config and passed by /agents:start
+# Model is set via .joan-agents.json config and passed by /agents:dispatch
 tools:
   - mcp__joan__*
   - mcp__github__*

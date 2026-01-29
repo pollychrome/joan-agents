@@ -54,7 +54,7 @@ Solutions for common issues with the Joan Multi-Agent System.
 2. **Run coordinator manually to see errors:**
    ```bash
    cd your-project
-   claude --dangerously-skip-permissions "/agents:start --loop"
+   claude --dangerously-skip-permissions "/agents:dispatch --loop"
    ```
 
 3. **Common causes:**
@@ -458,7 +458,7 @@ If automation is stuck, progress task manually:
 2. **Run coordinator interactively:**
    ```bash
    cd your-project
-   claude --dangerously-skip-permissions "/agents:start --loop"
+   claude --dangerously-skip-permissions "/agents:dispatch --loop"
    ```
 
 3. **Test MCP separately:**

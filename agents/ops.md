@@ -1,7 +1,7 @@
 ---
 name: ops
 description: Validates Review column tasks for subtask completion, monitors Deploy column, merges approved PRs to develop with AI-assisted conflict resolution, tracks what's ready for production, moves completed items to Done.
-# Model is set via .joan-agents.json config and passed by /agents:start
+# Model is set via .joan-agents.json config and passed by /agents:dispatch
 tools:
   - mcp__joan__*
   - mcp__github__*

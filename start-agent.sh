@@ -44,7 +44,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs/$PROJECT_NAME"
 mkdir -p "$LOG_DIR"
 
-COMMAND="/agents:start --loop"
+COMMAND="/agents:dispatch --loop"
 if [ -n "$MAX_IDLE_ARG" ]; then
     COMMAND="$COMMAND $MAX_IDLE_ARG"
 fi

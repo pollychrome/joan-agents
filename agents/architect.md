@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Reviews Ready tasks in Analyse column, analyzes codebase, creates implementation plans with atomic sub-tasks. Requires Plan-Approved tag to finalize and proceed.
-# Model is set via .joan-agents.json config and passed by /agents:start
+# Model is set via .joan-agents.json config and passed by /agents:dispatch
 tools:
   - mcp__joan__*
   - Read

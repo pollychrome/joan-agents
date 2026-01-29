@@ -253,7 +253,7 @@ python3 -m pip install --user --break-system-packages -r ~/joan-agents/scripts/r
 # Initialize and run
 claude
 > /agents:init
-> /agents:start --loop
+> /agents:dispatch --loop
 ```
 
 ---

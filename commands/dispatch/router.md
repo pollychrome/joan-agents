@@ -606,9 +606,9 @@ def hasPipelineBlocker(tasks, TAG_INDEX, COLUMN_CACHE):
 
 ---
 
-## Migration Notes
+## Architecture Notes
 
-This router (`v3`) replaces the 2,283-line `dispatch.md` monolith (renamed to `dispatch-legacy.md`).
+This router (`v3`) replaces the original 2,283-line monolith with a modular design.
 
 **What's in this router:**
 - Configuration loading + validation

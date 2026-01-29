@@ -1,7 +1,7 @@
 ---
 name: business-analyst
 description: Evaluates tasks in To Do column, identifies incomplete requirements, asks clarifying questions, and marks tasks Ready when complete. Polls Joan kanban every 30 seconds.
-# Model is set via .joan-agents.json config and passed by /agents:start
+# Model is set via .joan-agents.json config and passed by /agents:dispatch
 tools:
   - mcp__joan__*
   - Read

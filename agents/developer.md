@@ -1,7 +1,7 @@
 ---
 name: implementation-worker
 description: Claims planned tasks, creates worktree, implements all sub-tasks (design, development, testing), creates PR, cleans up. Enables true parallel feature development.
-# Model is set via .joan-agents.json config and passed by /agents:start
+# Model is set via .joan-agents.json config and passed by /agents:dispatch
 tools:
   - mcp__joan__*
   - mcp__github__*
