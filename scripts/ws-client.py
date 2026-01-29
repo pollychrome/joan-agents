@@ -508,6 +508,7 @@ def fetch_actionable_tasks() -> dict:
     req = urllib.request.Request(url, headers={
         'Authorization': f'Bearer {config.auth_token}',
         'Content-Type': 'application/json',
+        'User-Agent': 'joan-agents-websocket-client/1.0',
     })
 
     with urllib.request.urlopen(req, timeout=30) as resp:
