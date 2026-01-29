@@ -446,6 +446,11 @@ def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggere
             env = os.environ.copy()
             env['JOAN_WORKFLOW_MODE'] = config.mode
 
+            # Pass auth token explicitly (critical: ensures spawned processes authenticate
+            # even if this process loaded token from credentials.json instead of env var)
+            if config.auth_token:
+                env['JOAN_AUTH_TOKEN'] = config.auth_token
+
             # Phase 3: Pass context for result submission
             # Handlers can use submit-result.py to report completion
             env['JOAN_PROJECT_ID'] = project_id or config.project_id or ''
@@ -531,6 +536,12 @@ def dispatch_handler_direct(handler: str, task_id: str, handler_args: list,
     try:
         env = os.environ.copy()
         env['JOAN_WORKFLOW_MODE'] = config.mode
+
+        # Pass auth token explicitly (critical: ensures spawned processes authenticate
+        # even if this process loaded token from credentials.json instead of env var)
+        if config.auth_token:
+            env['JOAN_AUTH_TOKEN'] = config.auth_token
+
         env['JOAN_PROJECT_ID'] = project_id or config.project_id or ''
         env['JOAN_TASK_ID'] = task_id
         env['JOAN_API_URL'] = config.api_url
