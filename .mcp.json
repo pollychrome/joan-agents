@@ -2,7 +2,10 @@
   "mcpServers": {
     "joan": {
       "command": "joan-mcp",
-      "args": ["serve"]
+      "args": ["serve"],
+      "env": {
+        "JOAN_AUTH_TOKEN": "${JOAN_AUTH_TOKEN}"
+      }
     }
   }
 }

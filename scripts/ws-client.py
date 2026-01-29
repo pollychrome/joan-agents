@@ -450,6 +450,9 @@ def dispatch_handler(event_type: str, task_id: str, tag_name: str = "", triggere
             # even if this process loaded token from credentials.json instead of env var)
             if config.auth_token:
                 env['JOAN_AUTH_TOKEN'] = config.auth_token
+                log_debug(f"Auth token passed to handler: {config.auth_token[:20]}...")
+            else:
+                log(f"WARNING: No auth token available to pass to handler", "WARN")
 
             # Phase 3: Pass context for result submission
             # Handlers can use submit-result.py to report completion
@@ -541,6 +544,9 @@ def dispatch_handler_direct(handler: str, task_id: str, handler_args: list,
         # even if this process loaded token from credentials.json instead of env var)
         if config.auth_token:
             env['JOAN_AUTH_TOKEN'] = config.auth_token
+            log_debug(f"STARTUP: Auth token passed to handler: {config.auth_token[:20]}...")
+        else:
+            log(f"STARTUP: WARNING: No auth token available to pass to handler", "WARN")
 
         env['JOAN_PROJECT_ID'] = project_id or config.project_id or ''
         env['JOAN_TASK_ID'] = task_id
