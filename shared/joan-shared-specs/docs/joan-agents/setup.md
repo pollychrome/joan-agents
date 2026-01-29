@@ -41,12 +41,39 @@ Choose one of these installation methods:
 
 | Method | Best For | Updates |
 |--------|----------|---------|
-| **Global (Recommended)** | Multiple projects | `git pull` updates all projects |
+| **Plugin (Recommended)** | Most users | Automatic via marketplace |
+| **Global Symlinks** | Advanced users, local development | `git pull` updates all projects |
 | **Per-Project** | Single project or isolated setup | Manual copy per project |
 
 ---
 
-## Global Installation (Recommended)
+## Plugin Installation (Recommended)
+
+The simplest way to install Joan Agents is via the Claude Code plugin system:
+
+```bash
+# Add joan-agents as a marketplace source
+claude plugin marketplace add pollychrome/joan-agents
+
+# Install the agents plugin (available to all your projects)
+claude plugin install agents@joan-agents
+```
+
+Then initialize your project:
+
+```bash
+cd ~/your-project
+claude
+
+# In Claude Code:
+> /agents:init
+```
+
+Skip to [Step 6: Ensure `develop` Branch Exists](#step-6-ensure-develop-branch-exists) after plugin installation.
+
+---
+
+## Global Symlink Installation (Alternative)
 
 ### Step 1: Clone the Repository
 
@@ -292,18 +319,24 @@ You can add project-specific instructions to `.claude/CLAUDE.md`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `settings.model` | `opus` | Claude model for all agents |
-| `settings.pollingIntervalMinutes` | `10` | Minutes between idle polls |
-| `settings.maxIdlePolls` | `6` | Idle polls before shutdown |
-| `agents.devs.count` | `2` | Parallel dev workers |
+| `settings.models` | per-worker | Per-worker model selection (haiku for BA/Ops, opus for rest) |
+| `settings.model` | `opus` | Fallback model if `models` not specified |
+| `settings.mode` | `standard` | `standard` (human gates) or `yolo` (fully autonomous) |
+| `settings.staleClaimMinutes` | `120` | Minutes before orphaned dev claims are auto-released |
+| `agents.devs.count` | `1` | Must be 1 (strict serial mode, enforced by schema) |
 
-### Customizing Poll Interval
+### Workflow Mode
 
-Edit `settings.pollingIntervalMinutes` in `.joan-agents.json`.
+- **Standard mode** (default): Human approval required at plan and merge gates
+- **YOLO mode**: Fully autonomous operation
 
-### Customizing Concurrent Tasks
+```bash
+/agents:dispatch --loop --mode=yolo
+```
 
-Edit `agents.devs.count` in `.joan-agents.json`.
+### Dev Worker Count
+
+`devs.count` must be **1** (strict serial mode). This prevents merge conflicts and ensures plans are never stale. The schema enforces this constraint.
 
 ---
 
@@ -396,53 +429,80 @@ This file is git-ignored and local to your machine. Without these permissions, a
 
 ## Launching the System
 
-### Full Launch (Coordinator)
+### Start the Coordinator
 
 ```bash
-# For iTerm2 (recommended)
 cd /path/to/your/project
-./joan-agents/start-agents-iterm.sh
+claude
 
-# For Terminal.app
-cd /path/to/your/project
-./joan-agents/start-agents.sh
+# In Claude Code:
+> /agents:dispatch --loop              # WebSocket client (recommended)
+> /agents:dispatch --loop --mode=yolo  # Fully autonomous mode
+> /agents:dispatch                     # Single pass (testing only)
 ```
 
-### Single Terminal Launch
+### Monitor Progress (Zero Token Cost)
+
+In a separate terminal:
 
 ```bash
-cd /path/to/your/project
-./joan-agents/start-agent.sh
+joan status                    # Global view of all projects
+joan status myproject -f       # Live dashboard for specific project
+joan logs myproject            # Tail logs in real-time
 ```
 
 ### Verification Checklist
 
 After launching, verify:
 
-- [ ] Coordinator terminal is running without errors
-- [ ] Coordinator reports polling and dispatching
-- [ ] Worker logs appear when tasks are available
+- [ ] Coordinator connects to WebSocket without errors
+- [ ] Coordinator reports mode and startup status
+- [ ] Dashboard shows project activity (`joan status`)
 - [ ] No MCP connection errors
 - [ ] Tags and comments update in Joan as expected
 
+### Stopping the Coordinator
+
+Press `Ctrl+C` in the Claude Code terminal to stop gracefully.
+
 ## Upgrading
 
-To upgrade to a new version:
+### Plugin Installation
 
-1. Stop all agents: `./stop-agents.sh`
-2. Backup your customizations
-3. Extract new package
-4. Restore customizations to agent definitions
-5. Restart agents
+Updates are automatic when the marketplace source is updated:
+
+```bash
+# Check for updates
+claude plugin list
+
+# Reinstall to get latest
+claude plugin install agents@joan-agents
+```
+
+### Symlink Installation
+
+```bash
+cd ~/joan-agents
+git pull
+```
+
+Changes are immediately available in all projects.
 
 ## Uninstallation
 
-```bash
-# Stop agents
-./joan-agents/stop-agents.sh
+### Plugin Installation
 
-# Remove agent files
-rm -rf joan-agents/
-rm -rf .claude/agents/
-rm -rf .claude/commands/agents/
+```bash
+claude plugin uninstall agents
+```
+
+### Symlink Installation
+
+```bash
+# Remove symlinks
+rm -rf ~/.claude/commands/agents
+rm -rf ~/.claude/agents
+
+# Optionally remove repository
+rm -rf ~/joan-agents
 ```

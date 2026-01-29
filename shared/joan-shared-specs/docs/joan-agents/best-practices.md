@@ -231,11 +231,14 @@ find joan-agents/logs -name "*.log" -mtime +7 -delete
 
 ### Periodic Agent Restart
 
-Long-running sessions can accumulate issues:
+Long-running Claude Code sessions can accumulate memory. Restart periodically:
 
 ```bash
-# Daily restart (add to crontab)
-0 6 * * * /path/to/joan-agents/stop-agents.sh && sleep 30 && cd /path/to/your/project && /path/to/joan-agents/start-agents-iterm.sh
+# Stop: Press Ctrl+C in Claude Code terminal
+# Restart:
+cd /path/to/your/project
+claude
+> /agents:dispatch --loop
 ```
 
 ### Keep Claude Code Updated
@@ -249,13 +252,13 @@ claude update
 
 ## Performance Optimization
 
-### Right-Size Concurrency
+### Optimize Performance
 
-If agents are slow or system is overloaded:
+If the system is slow or overloaded:
 
-1. Reduce `agents.devs.count` in `.joan-agents.json`
-2. Increase `settings.pollingIntervalMinutes`
-3. Disable unused agents in `.joan-agents.json`
+1. Use lighter models for simple workers (haiku for BA/Ops)
+2. Disable unused agents in `.joan-agents.json`
+3. Run `/agents:doctor` to diagnose and fix stuck states
 
 ### Use Appropriate Model
 
@@ -289,16 +292,24 @@ When multiple humans work with the system:
 
 ### Multiple Projects
 
-Run separate agent swarms per project:
+Run separate coordinator sessions per project:
 
 ```bash
 # Terminal window 1: Project A
 cd /path/to/project-a
-./start-agents-iterm.sh
+claude
+> /agents:dispatch --loop
 
 # Terminal window 2: Project B
 cd /path/to/project-b
-./start-agents-iterm.sh
+claude
+> /agents:dispatch --loop
+```
+
+Monitor all projects from a single terminal:
+
+```bash
+joan status    # Shows all active project coordinators
 ```
 
 ### Handoffs
@@ -314,10 +325,12 @@ When going offline:
 
 ### Don't Edit While Agents Work
 
-Agents poll based on `settings.pollingIntervalMinutes` (default: 10 minutes). Manual edits during active work can cause:
-- Lost updates
+The coordinator processes tasks in real-time via WebSocket events. Manual edits during active work can cause:
+- Merge conflicts
 - Conflicting states
 - Confused agents
+
+Wait for the current task to complete before making manual changes.
 
 ### Don't Skip the Workflow
 

@@ -118,7 +118,7 @@ $ joan status myproject -f   # Live monitoring dashboard
 [ ] Git installed with push access
 [ ] Joan account with project created
 [ ] Joan MCP server configured in ~/.claude/mcp.json
-[ ] Plugin installed (claude plugin install agents@alexbenson-joan-agents)
+[ ] Plugin installed (claude plugin install agents@joan-agents)
 [ ] /agents:init completed for your project
 [ ] develop branch exists and pushed
 [ ] /agents:dispatch --loop running

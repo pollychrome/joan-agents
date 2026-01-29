@@ -1,11 +1,19 @@
 # Global Installation Guide
 
-This guide shows how to install the Joan Multi-Agent System globally so the commands are available across all your projects.
+This guide shows how to install the Joan Multi-Agent System globally via symlinks.
 
-## Why Global Installation?
+> **Prefer Plugin Installation?** For most users, the plugin method is simpler:
+> ```bash
+> claude plugin marketplace add pollychrome/joan-agents
+> claude plugin install agents@joan-agents
+> ```
+> See the [Setup Guide](setup.md) for details.
 
-- **Convenience**: Run `/agents:*` commands from any project without copying files
-- **Easy Updates**: `git pull` updates agents everywhere instantly
+## Why Global Symlink Installation?
+
+- **Development**: Modify agent code locally and test immediately
+- **Contribution**: Fork the repo, make changes, submit PRs
+- **Offline**: Works without marketplace connectivity
 - **Clean Projects**: Only `.joan-agents.json` config file needed per project
 
 ## Prerequisites
@@ -130,14 +138,18 @@ After global installation:
 └── commands/
     └── agents/ -> ~/joan-agents/.claude/commands/agents/
         ├── init.md
-        ├── start.md
-        ├── dispatch/              # Coordinator router + handlers
+        ├── dispatch.md            # Entry point for coordinator
+        ├── dispatch/              # Modular router + handlers
+        │   ├── router.md
+        │   ├── handle-ba.md
+        │   ├── handle-architect.md
+        │   ├── handle-dev.md
+        │   ├── handle-reviewer.md
+        │   └── handle-ops.md
         ├── model.md
-        ├── ba-worker.md
-        ├── architect-worker.md
-        ├── dev-worker.md
-        ├── reviewer-worker.md
-        └── ops-worker.md
+        ├── doctor.md
+        ├── clean-project.md
+        └── project-planner.md
 
 ~/joan-agents/                   # Source repository
 ├── .claude/

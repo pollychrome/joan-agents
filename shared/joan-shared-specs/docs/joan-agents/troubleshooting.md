@@ -271,15 +271,15 @@ Solutions for common issues with the Joan Multi-Agent System.
 
 **Solutions:**
 
-1. **Reduce concurrent devs:**
-   - Lower `agents.devs.count` in `.joan-agents.json`
-   - Disable unused agents in `.joan-agents.json`
+1. **Disable unused agents:**
+   - Set agents to `enabled: false` in `.joan-agents.json`
 
-2. **Increase poll interval:**
-   - Edit `settings.pollingIntervalMinutes` in `.joan-agents.json`
+2. **Use lighter models:**
+   - Use `/agents:model` to set haiku for BA and Ops workers
 
 3. **Check for infinite loops:**
    - Coordinator may be stuck processing the same task
+   - Use `/agents:doctor` to diagnose stuck states
 
 ### High Memory Usage
 
@@ -370,9 +370,8 @@ pkill -9 -f "claude.*agents"
 
 # Restart (from your project directory)
 cd your-project
-./joan-agents/start-agents.sh          # Terminal.app
-# or
-./joan-agents/start-agents-iterm.sh    # iTerm2
+claude
+> /agents:dispatch --loop
 ```
 
 ### Reset a Stuck Task
@@ -407,14 +406,14 @@ The coordinator doesn't maintain local state beyond the current iteration, but t
 
 ```bash
 # Stop coordinator
-./joan-agents/stop-agents.sh
+# In Claude Code terminal, press Ctrl+C to stop
 
 # Clear logs
-rm -rf joan-agents/logs/*
+rm -rf .claude/logs/*
 
-# Restart (from your project directory)
-cd your-project
-./joan-agents/start-agents.sh
+# Restart
+claude
+> /agents:dispatch --loop
 ```
 
 ### Manual Task Progression
