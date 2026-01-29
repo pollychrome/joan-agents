@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "joan": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/../scripts/joan-mcp-wrapper.sh",
+      "args": []
+    }
+  }
+}
