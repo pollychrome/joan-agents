@@ -359,14 +359,9 @@ Solutions for common issues with the Joan Multi-Agent System.
 ### Restart Coordinator
 
 ```bash
-# Stop coordinator
-./joan-agents/stop-agents.sh
-
-# Wait for graceful shutdown
-sleep 10
-
-# Force kill if needed
-pkill -9 -f "claude.*agents"
+# Stop coordinator (Ctrl+C in the terminal running /agents:dispatch --loop)
+# Or force kill if needed:
+pkill -9 -f "ws-client.py"
 
 # Restart (from your project directory)
 cd your-project

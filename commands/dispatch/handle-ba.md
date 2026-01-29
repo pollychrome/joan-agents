@@ -1,12 +1,22 @@
 ---
 description: Handle BA queue - evaluate requirements, mark tasks Ready
-argument-hint: [--task=UUID] [--all] [--max=N]
+argument-hint: --task=UUID
 allowed-tools: Bash, Read, Task, mcp__joan__*, mcp__plugin_agents_joan__*
 ---
 
 # BA Handler
 
 Process BA queue: evaluate requirements, ask clarifying questions, mark tasks Ready.
+
+## CRITICAL: Smart Payload Check (Do This First!)
+
+**BEFORE calling ANY MCP tools**, check for a pre-fetched smart payload file:
+
+1. First, try to read the file `.claude/smart-payload-{TASK_ID}.json` where TASK_ID comes from the `--task=` argument
+2. If the file exists and contains valid JSON with a `"task"` field: Use that data. DO NOT call MCP.
+3. If the file doesn't exist or is invalid: Fall back to MCP calls.
+
+This is critical because the coordinator pre-fetches task data to avoid redundant API calls.
 
 ## Arguments
 
@@ -67,18 +77,31 @@ IF MODEL == "haiku":
 
 ## Single Task Mode (Event-Driven)
 
-When `--task=UUID` is provided:
+When `--task=UUID` is provided, first check for a pre-fetched smart payload before using MCP.
+
+### Step 1: Check for Smart Payload
+
+**IMPORTANT**: Before calling any MCP tools, run this Bash command to check for pre-fetched task data:
+
+```bash
+echo "$JOAN_SMART_PAYLOAD"
+```
+
+If this outputs a JSON string (more than 10 characters), parse it and use that data instead of calling MCP. This avoids redundant API calls since ws-client.py pre-fetches the task data.
+
+### Step 2: Get Task Data
+
+**If smart payload exists** (Bash output was valid JSON):
+- Parse the JSON from the env var
+- Extract: `task`, `handoff_context`, `recent_comments`, `tags`
+- Skip MCP calls entirely
+
+**If no smart payload** (Bash output was empty or short):
+- Fall back to MCP: `mcp__joan__get_task(TASK_ID)` and `mcp__joan__list_task_comments(TASK_ID)`
+
+### Step 3: Process Task
 
 ```
-IF TASK_ID provided:
-  Report: "BA Handler: Processing single task {TASK_ID}"
-
-  # Use shared smart payload extraction (see helpers.md)
-  payload_data = extractSmartPayload(TASK_ID, PROJECT_ID)
-  task = payload_data.task
-  handoff_context = payload_data.handoff_context
-  recent_comments = payload_data.recent_comments
-
   # Determine mode from tags
   hasNeedsClarification = task.tags.includes("Needs-Clarification")
   hasClarificationAnswered = task.tags.includes("Clarification-Answered")
@@ -104,90 +127,6 @@ IF TASK_ID provided:
 
   # Dispatch BA worker
   GOTO DISPATCH_WORKER
-```
-
-## Batch Mode (Polling)
-
-When `--all` is provided (legacy mode, no smart payload):
-
-```
-IF ALL_MODE:
-  MAX_TASKS = MAX_OVERRIDE OR 10
-  Report: "BA Handler: Processing up to {MAX_TASKS} tasks"
-
-  # Fetch all tasks (batch mode doesn't have smart payloads)
-  tasks = mcp__joan__list_tasks(project_id: PROJECT_ID)
-  columns = mcp__joan__list_columns(PROJECT_ID)
-
-  # Build column and tag indexes
-  COLUMN_CACHE = {}
-  FOR col IN columns:
-    COLUMN_CACHE[col.name] = col.id
-
-  TAG_INDEX = {}
-  FOR task IN tasks:
-    tagSet = Set()
-    FOR tag IN task.tags:
-      tagSet.add(tag.name)
-    TAG_INDEX[task.id] = tagSet
-
-  # Build BA queue
-  BA_QUEUE = []
-
-  FOR task IN tasks:
-    taskId = task.id
-
-    # Reevaluate: Needs-Clarification + Clarification-Answered
-    IF task.column_id == COLUMN_CACHE["Analyse"] AND
-       TAG_INDEX[taskId].has("Needs-Clarification") AND
-       TAG_INDEX[taskId].has("Clarification-Answered"):
-      BA_QUEUE.push({task, mode: "reevaluate"})
-      CONTINUE
-
-    # Evaluate: In To Do, no Ready tag
-    IF task.column_id == COLUMN_CACHE["To Do"] AND
-       NOT TAG_INDEX[taskId].has("Ready"):
-      BA_QUEUE.push({task, mode: "evaluate"})
-
-  Report: "BA queue: {BA_QUEUE.length} tasks"
-
-  IF BA_QUEUE.length == 0:
-    Report: "No BA tasks to process"
-    EXIT
-
-  # Process tasks up to max
-  processed = 0
-  FOR item IN BA_QUEUE:
-    IF processed >= MAX_TASKS:
-      BREAK
-
-    task = item.task
-    mode = item.mode
-
-    # Fetch full task details
-    full_task = mcp__joan__get_task(task.id)
-    comments = mcp__joan__list_task_comments(task.id)
-
-    WORK_PACKAGE = {
-      task_id: full_task.id,
-      task_title: full_task.title,
-      task_description: full_task.description,
-      task_tags: extractTagNames(full_task.tags),
-      mode: mode,
-      workflow_mode: MODE,
-      project_id: PROJECT_ID,
-      project_name: PROJECT_NAME,
-      handoff_context: null,
-      recent_comments: comments
-    }
-
-    # Dispatch BA worker for this task
-    GOTO DISPATCH_WORKER
-
-    processed += 1
-
-  Report: "Processed {processed} BA tasks"
-  EXIT
 ```
 
 ## DISPATCH_WORKER

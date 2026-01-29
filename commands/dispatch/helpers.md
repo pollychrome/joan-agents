@@ -145,8 +145,9 @@ def writeHeartbeat(projectSlug):
 # Extract task data from smart payload or fall back to MCP fetch.
 # Used by all handlers in single-task (event-driven) mode.
 def extractSmartPayload(TASK_ID, PROJECT_ID):
-  SMART_PAYLOAD = env.JOAN_SMART_PAYLOAD
-  HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 0
+  # Read environment variable via Bash (Claude Code can't access env vars directly)
+  SMART_PAYLOAD = Bash: echo "$JOAN_SMART_PAYLOAD"
+  HAS_SMART_PAYLOAD = SMART_PAYLOAD AND SMART_PAYLOAD.length > 2
 
   IF HAS_SMART_PAYLOAD:
     smart_data = JSON.parse(SMART_PAYLOAD)
@@ -168,6 +169,7 @@ def extractSmartPayload(TASK_ID, PROJECT_ID):
       HAS_SMART_PAYLOAD: true
     }
   ELSE:
+    Report: "No smart payload found, falling back to MCP fetch"
     RETURN fetchTaskViaMCP(TASK_ID, PROJECT_ID)
 
 # MCP fallback path when no smart payload is available.

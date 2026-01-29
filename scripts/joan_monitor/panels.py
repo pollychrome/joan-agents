@@ -66,7 +66,7 @@ def generate_global_table(instances: dict) -> Table:
             runtime_str = "N/A"
 
         # Mode-specific display
-        if mode == "webhook":
+        if mode == "websocket":
             mode_str = "[green]\u26a1[/green]"
             events_str = str(stats.get("events_received", 0))
             active_count = len(stats.get("active_workers", []))
@@ -211,8 +211,7 @@ def generate_global_layout(instances: dict) -> Layout:
         return Panel(
             "[yellow]No running joan-agents instances found[/yellow]\n\n"
             "Start with:\n"
-            "  [cyan]./scripts/webhook-receiver.sh --project-dir .[/cyan]  (webhook mode)\n"
-            "  [cyan]/agents:dispatch --loop[/cyan]  (polling mode)",
+            "  [cyan]/agents:dispatch --loop[/cyan]  (WebSocket mode - recommended)",
             title="Joan Agents - Global Status",
         )
 
@@ -877,7 +876,7 @@ def generate_project_layout(
     stats_table.add_column("Value")
 
     mode = info.get("mode", "polling")
-    if mode == "webhook":
+    if mode == "websocket":
         stats_table.add_row("Events", str(stats.get("events_received", 0)))
         stats_table.add_row("Handlers", str(stats.get("handlers_dispatched", 0)))
         if stats.get("last_event"):

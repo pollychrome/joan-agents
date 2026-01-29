@@ -98,27 +98,13 @@ class JoanMonitor:
             )
 
             for line in result.stdout.splitlines():
-                is_python_webhook = (
-                    "webhook-server.py" in line and "grep" not in line
-                )
-                is_bash_webhook = (
-                    "webhook-receiver.sh" in line and "grep" not in line
-                )
                 is_ws_client = "ws-client.py" in line and "grep" not in line
-                is_scheduler = "joan-scheduler.sh" in line and "grep" not in line
 
-                is_webhook = is_python_webhook or is_bash_webhook or is_ws_client
-
-                if is_webhook or is_scheduler:
+                if is_ws_client:
                     pid_match = re.match(r"\S+\s+(\d+)", line)
-                    if is_webhook:
-                        path_match = re.search(
-                            r"--project-dir[=\s]+([^\s]+)", line
-                        )
-                    else:
-                        path_match = re.search(
-                            r"joan-scheduler\.sh\s+([^\s]+)", line
-                        )
+                    path_match = re.search(
+                        r"--project-dir[=\s]+([^\s]+)", line
+                    )
 
                     if path_match and pid_match:
                         raw_path = path_match.group(1)
@@ -153,7 +139,6 @@ class JoanMonitor:
                             self._add_instance(
                                 project_dir,
                                 line,
-                                is_webhook=is_webhook,
                                 is_ws_client=is_ws_client,
                             )
 
@@ -164,7 +149,6 @@ class JoanMonitor:
         self,
         project_dir: Path,
         ps_line: str,
-        is_webhook: bool = False,
         is_ws_client: bool = False,
     ):
         """Add a discovered instance to the tracking dict."""
@@ -180,17 +164,9 @@ class JoanMonitor:
 
         project_name = config.get("projectName", project_dir.name)
 
-        if is_ws_client:
-            log_file = project_dir / ".claude/logs/websocket-client.log"
-        elif is_webhook:
-            log_file = project_dir / ".claude/logs/webhook-receiver.log"
-        else:
-            log_file = project_dir / ".claude/logs/scheduler.log"
-
-        if is_webhook:
-            stats = parse_webhook_log_stats(log_file) if log_file.exists() else {}
-        else:
-            stats = parse_log_stats(log_file) if log_file.exists() else {}
+        # WebSocket client is the only supported mode
+        log_file = project_dir / ".claude/logs/websocket-client.log"
+        stats = parse_webhook_log_stats(log_file) if log_file.exists() else {}
 
         # Use session start time to scope metrics to current session only
         session_start = stats.get("started_at")
@@ -216,7 +192,7 @@ class JoanMonitor:
             "stats": stats,
             "metrics": metrics,
             "worker_activity": worker_activity,
-            "mode": "webhook" if is_webhook else "polling",
+            "mode": "websocket",
         }
 
     @staticmethod
@@ -257,10 +233,7 @@ class JoanMonitor:
             )
             self.console.print("\nStart agents with:")
             self.console.print(
-                "  [cyan]./scripts/webhook-receiver.sh --project-dir .[/cyan]  (webhook mode - recommended)"
-            )
-            self.console.print(
-                "  [cyan]/agents:dispatch --loop[/cyan]  (polling mode - legacy)\n"
+                "  [cyan]/agents:dispatch --loop[/cyan]  (WebSocket mode - recommended)\n"
             )
             return
 
@@ -315,7 +288,7 @@ class JoanMonitor:
         now = datetime.now()
 
         self.console.print()
-        mode_icon = "\u26a1" if mode == "webhook" else "\U0001f504"
+        mode_icon = "\u26a1" if mode == "websocket" else "\U0001f504"
         self.console.rule(
             f"[bold cyan]{proj_name}[/bold cyan] {mode_icon}", style="cyan"
         )
@@ -333,7 +306,7 @@ class JoanMonitor:
         config_table.add_row(
             "Dispatch Mode",
             "[green]Webhook (event-driven)[/green]"
-            if mode == "webhook"
+            if mode == "websocket"
             else "[dim]Polling (legacy)[/dim]",
         )
 
@@ -374,7 +347,7 @@ class JoanMonitor:
         else:
             stats_table.add_row("Runtime", "N/A")
 
-        if mode == "webhook":
+        if mode == "websocket":
             stats_table.add_row(
                 "Events Received", str(stats.get("events_received", 0))
             )
@@ -628,7 +601,7 @@ class JoanMonitor:
         log_file = info.get("log_file")
         if log_file and log_file.exists():
             mode = info.get("mode", "polling")
-            if mode == "webhook":
+            if mode == "websocket":
                 info["stats"] = parse_webhook_log_stats(log_file)
             else:
                 info["stats"] = parse_log_stats(log_file)

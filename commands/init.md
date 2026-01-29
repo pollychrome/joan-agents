@@ -257,7 +257,7 @@ mkdir -p .claude/logs
 ```
 
 This directory will contain:
-- `webhook-receiver.log` - Webhook events and handler dispatch logs
+- `websocket-client.log` - WebSocket events and handler dispatch logs
 - `worker-activity.log` - Real-time worker progress (for `joan status` monitoring)
 - `agent-metrics.jsonl` - Structured metrics for health tracking
 

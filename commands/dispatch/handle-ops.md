@@ -1,12 +1,22 @@
 ---
 description: Handle Ops queue - merge to develop, track deployments
-argument-hint: [--task=UUID] [--mode=merge|merge-with-guidance] [--all]
+argument-hint: --task=UUID [--mode=merge|merge-with-guidance]
 allowed-tools: Bash, Read, Task, mcp__joan__*, mcp__plugin_agents_joan__*
 ---
 
 # Ops Handler
 
 Process Ops queue: merge approved PRs to develop, handle conflict resolution with Architect guidance.
+
+## CRITICAL: Smart Payload Check (Do This First!)
+
+**BEFORE calling ANY MCP tools**, check for a pre-fetched smart payload file:
+
+1. First, try to read the file `.claude/smart-payload-{TASK_ID}.json` where TASK_ID comes from the `--task=` argument
+2. If the file exists and contains valid JSON with a `"task"` field: Use that data. DO NOT call MCP.
+3. If the file doesn't exist or is invalid: Fall back to MCP calls.
+
+This is critical because the coordinator pre-fetches task data to avoid redundant API calls.
 
 ## Arguments
 
@@ -38,15 +48,38 @@ IF NOT config.agents.ops.enabled:
 IF TASK_ID provided:
   Report: "Ops Handler: Processing task {TASK_ID} mode={OPERATION_MODE}"
 
-  # Use shared smart payload extraction (see helpers.md)
-  payload_data = extractSmartPayload(TASK_ID, PROJECT_ID)
-  task = payload_data.task
-  handoff_context = payload_data.handoff_context
-  recent_comments = payload_data.recent_comments
-  COLUMN_CACHE = payload_data.COLUMN_CACHE
+  # Read smart payload from environment variable (set by ws-client.py)
+  SMART_PAYLOAD_RAW = Bash: echo "$JOAN_SMART_PAYLOAD"
+  HAS_SMART_PAYLOAD = SMART_PAYLOAD_RAW AND SMART_PAYLOAD_RAW.trim().length > 10
 
-  # Build tag set (see helpers.md)
-  TAG_SET = buildTagSet(task.tags)
+  IF HAS_SMART_PAYLOAD:
+    Report: "Using smart payload ({SMART_PAYLOAD_RAW.length} chars)"
+    payload_data = JSON.parse(SMART_PAYLOAD_RAW)
+    task = payload_data.task
+    handoff_context = payload_data.handoff_context OR null
+    recent_comments = payload_data.recent_comments OR []
+    # Build COLUMN_CACHE from payload columns if provided
+    COLUMN_CACHE = {}
+    IF payload_data.columns:
+      FOR col IN payload_data.columns:
+        COLUMN_CACHE[col.name] = col.id
+  ELSE:
+    Report: "No smart payload found, falling back to MCP fetch"
+    task = mcp__joan__get_task(TASK_ID)
+    columns = mcp__joan__list_columns(PROJECT_ID)
+    handoff_context = null
+    recent_comments = []
+    COLUMN_CACHE = {}
+    FOR col IN columns:
+      COLUMN_CACHE[col.name] = col.id
+
+  # Build tag set from task.tags (handles both string arrays and {name,id} objects)
+  TAG_SET = Set()
+  FOR tag IN task.tags:
+    IF typeof tag == "string":
+      TAG_SET.add(tag)
+    ELSE:
+      TAG_SET.add(tag.name)
 
   # Verify task is in Review or Deploy column
   IF task.column_name != "Review" AND task.column_name != "Deploy" AND
@@ -65,62 +98,6 @@ IF TASK_ID provided:
       EXIT
 
   GOTO BUILD_WORK_PACKAGE
-```
-
-## Batch Mode (Polling)
-
-When `--all` is provided (legacy mode, no smart payload):
-
-```
-IF ALL_MODE:
-  Report: "Ops Handler: Processing Ops queue"
-
-  tasks = mcp__joan__list_tasks(project_id: PROJECT_ID)
-  columns = mcp__joan__list_columns(PROJECT_ID)
-
-  COLUMN_CACHE = {}
-  FOR col IN columns:
-    COLUMN_CACHE[col.name] = col.id
-
-  TAG_INDEX = {}
-  FOR task IN tasks:
-    tagSet = Set()
-    FOR tag IN task.tags:
-      tagSet.add(tag.name)
-    TAG_INDEX[task.id] = tagSet
-
-  # Build Ops queue
-  OPS_QUEUE = []
-
-  FOR task IN tasks:
-    taskId = task.id
-    tags = TAG_INDEX[taskId]
-
-    # P0: Merge with Architect guidance (invocation complete)
-    IF task.column_id == COLUMN_CACHE["Review"] AND tags.has("Architect-Assist-Complete"):
-      OPS_QUEUE.unshift({task, mode: "merge-with-guidance"})
-      CONTINUE
-
-    # Normal merge (approved + ops-ready)
-    IF (task.column_id == COLUMN_CACHE["Review"] OR task.column_id == COLUMN_CACHE["Deploy"]) AND
-       tags.has("Review-Approved") AND tags.has("Ops-Ready"):
-      OPS_QUEUE.push({task, mode: "merge"})
-
-  Report: "Ops queue: {OPS_QUEUE.length} tasks"
-
-  IF OPS_QUEUE.length == 0:
-    Report: "No Ops tasks to process"
-    EXIT
-
-  # Process first task
-  item = OPS_QUEUE[0]
-  task = item.task
-  OPERATION_MODE = item.mode
-
-  full_task = mcp__joan__get_task(task.id)
-  comments = mcp__joan__list_task_comments(task.id)
-
-  GOTO BUILD_WORK_PACKAGE with full_task, comments
 ```
 
 ## BUILD_WORK_PACKAGE

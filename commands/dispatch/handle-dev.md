@@ -1,12 +1,22 @@
 ---
 description: Handle Dev queue - claim tasks, implement features, handle rework
-argument-hint: [--task=UUID] [--mode=implement|rework|conflict] [--all]
+argument-hint: --task=UUID [--mode=implement|rework|conflict]
 allowed-tools: Bash, Read, Task, mcp__joan__*, mcp__plugin_agents_joan__*
 ---
 
 # Dev Handler
 
 Process Dev queue: claim tasks, implement on feature branches, handle rework and conflicts.
+
+## CRITICAL: Smart Payload Check (Do This First!)
+
+**BEFORE calling ANY MCP tools**, check for a pre-fetched smart payload file:
+
+1. First, try to read the file `.claude/smart-payload-{TASK_ID}.json` where TASK_ID comes from the `--task=` argument
+2. If the file exists and contains valid JSON with a `"task"` field: Use that data. DO NOT call MCP.
+3. If the file doesn't exist or is invalid: Fall back to MCP calls.
+
+This is critical because the coordinator pre-fetches task data to avoid redundant API calls.
 
 ## Arguments
 
@@ -41,15 +51,43 @@ IF NOT config.agents.devs.enabled:
 IF TASK_ID provided:
   Report: "Dev Handler: Processing task {TASK_ID} mode={OPERATION_MODE}"
 
-  # Use shared smart payload extraction (see helpers.md)
-  payload_data = extractSmartPayload(TASK_ID, PROJECT_ID)
-  task = payload_data.task
-  handoff_context = payload_data.handoff_context
-  recent_comments = payload_data.recent_comments
-  COLUMN_CACHE = payload_data.COLUMN_CACHE
+  # Read smart payload from environment variable (set by ws-client.py)
+  SMART_PAYLOAD_RAW = Bash: echo "$JOAN_SMART_PAYLOAD"
+  HAS_SMART_PAYLOAD = SMART_PAYLOAD_RAW AND SMART_PAYLOAD_RAW.trim().length > 10
 
-  # Build tag set (see helpers.md)
-  TAG_SET = buildTagSet(task.tags)
+  IF HAS_SMART_PAYLOAD:
+    Report: "Using smart payload ({SMART_PAYLOAD_RAW.length} chars)"
+    payload_data = JSON.parse(SMART_PAYLOAD_RAW)
+    task = payload_data.task
+    handoff_context = payload_data.handoff_context OR null
+    recent_comments = payload_data.recent_comments OR []
+    subtasks = payload_data.subtasks OR []
+    rework_feedback = payload_data.rework_feedback OR null
+    # Build COLUMN_CACHE from payload columns if provided
+    COLUMN_CACHE = {}
+    IF payload_data.columns:
+      FOR col IN payload_data.columns:
+        COLUMN_CACHE[col.name] = col.id
+  ELSE:
+    Report: "No smart payload found, falling back to MCP fetch"
+    task = mcp__joan__get_task(TASK_ID)
+    comments = mcp__joan__list_task_comments(TASK_ID)
+    columns = mcp__joan__list_columns(PROJECT_ID)
+    handoff_context = null
+    recent_comments = comments
+    subtasks = []
+    rework_feedback = null
+    COLUMN_CACHE = {}
+    FOR col IN columns:
+      COLUMN_CACHE[col.name] = col.id
+
+  # Build tag set from task.tags (handles both string arrays and {name,id} objects)
+  TAG_SET = Set()
+  FOR tag IN task.tags:
+    IF typeof tag == "string":
+      TAG_SET.add(tag)
+    ELSE:
+      TAG_SET.add(tag.name)
 
   # Verify task is in Development column
   IF task.column_name != "Development" AND task.column_id != COLUMN_CACHE["Development"]:
@@ -99,91 +137,6 @@ IF TASK_ID provided:
     project_name: PROJECT_NAME,
     handoff_context: handoff_context,
     recent_comments: recent_comments
-  }
-
-  GOTO DISPATCH_WORKER
-```
-
-## Batch Mode (Polling)
-
-When `--all` is provided (legacy mode, no smart payload):
-
-```
-IF ALL_MODE:
-  Report: "Dev Handler: Looking for available task (strict serial mode)"
-
-  tasks = mcp__joan__list_tasks(project_id: PROJECT_ID)
-  columns = mcp__joan__list_columns(PROJECT_ID)
-
-  COLUMN_CACHE = {}
-  FOR col IN columns:
-    COLUMN_CACHE[col.name] = col.id
-
-  TAG_INDEX = {}
-  FOR task IN tasks:
-    tagSet = Set()
-    FOR tag IN task.tags:
-      tagSet.add(tag.name)
-    TAG_INDEX[task.id] = tagSet
-
-  # Build Dev queue (priority: conflict > rework > implement)
-  DEV_QUEUE = []
-
-  FOR task IN tasks:
-    taskId = task.id
-    tags = TAG_INDEX[taskId]
-
-    IF task.column_id != COLUMN_CACHE["Development"]:
-      CONTINUE
-
-    # Skip if already claimed
-    IF tags.has("Claimed-Dev-1"):
-      CONTINUE
-
-    # Skip failed tasks
-    IF tags.has("Implementation-Failed") OR tags.has("Branch-Setup-Failed"):
-      CONTINUE
-
-    # Conflict priority
-    IF tags.has("Merge-Conflict") AND tags.has("Planned"):
-      DEV_QUEUE.unshift({task, mode: "conflict"})
-      CONTINUE
-
-    # Rework priority
-    IF tags.has("Rework-Requested") AND NOT tags.has("Merge-Conflict"):
-      DEV_QUEUE.push({task, mode: "rework"})
-      CONTINUE
-
-    # Normal implementation
-    IF tags.has("Planned") AND NOT tags.has("Rework-Requested"):
-      DEV_QUEUE.push({task, mode: "implement"})
-
-  Report: "Dev queue: {DEV_QUEUE.length} available tasks"
-
-  IF DEV_QUEUE.length == 0:
-    Report: "No Dev tasks available"
-    EXIT
-
-  # Take first task (strict serial = 1)
-  item = DEV_QUEUE[0]
-  task = item.task
-  OPERATION_MODE = item.mode
-
-  # Fetch full details for work package
-  full_task = mcp__joan__get_task(task.id)
-  comments = mcp__joan__list_task_comments(task.id)
-
-  WORK_PACKAGE = {
-    task_id: full_task.id,
-    task_title: full_task.title,
-    task_description: full_task.description,
-    task_tags: extractTagNames(full_task.tags),
-    mode: OPERATION_MODE,
-    workflow_mode: MODE,
-    project_id: PROJECT_ID,
-    project_name: PROJECT_NAME,
-    handoff_context: null,
-    recent_comments: comments
   }
 
   GOTO DISPATCH_WORKER

@@ -552,9 +552,19 @@ def dispatch_handler_direct(handler: str, task_id: str, handler_args: list,
         env['JOAN_TASK_ID'] = task_id
         env['JOAN_API_URL'] = config.api_url
 
+        # Write smart payload to file for Claude to read (more reliable than env var)
+        payload_file = None
         if smart_payload:
             filtered = filter_payload_for_handler(handler, smart_payload)
-            env['JOAN_SMART_PAYLOAD'] = json.dumps(filtered)
+            payload_dir = config.project_dir / '.claude'
+            payload_dir.mkdir(exist_ok=True)
+            payload_file = payload_dir / f'smart-payload-{task_id}.json'
+            payload_file.write_text(json.dumps(filtered, indent=2))
+            env['JOAN_SMART_PAYLOAD_FILE'] = str(payload_file)
+            env['JOAN_SMART_PAYLOAD'] = json.dumps(filtered)  # Keep env var as backup
+            log(f"STARTUP: Smart payload written to {payload_file} ({len(json.dumps(filtered))} chars)")
+        else:
+            log(f"STARTUP: No smart payload provided for {handler}")
 
         process = subprocess.Popen(
             cmd,
